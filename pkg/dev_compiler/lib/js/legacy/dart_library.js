@@ -27,6 +27,18 @@ dart_library =
   // Longer term, we can easily migrate to an existing JS module system:
   // ES6, AMD, RequireJS, ....
 
+  // Returns a proxy that delegates to the underlying loader.
+  // This defers loading of the code until the library is actually used.
+  dart_library.defer = function(module, name, patch) {
+    return new Proxy(module, {
+      get: function(obj, property) {
+        var lib = obj[name];
+        patch(obj, lib);
+        return lib[property];
+      }
+    });
+  };
+
   class LibraryLoader {
 
     constructor(name, defaultValue, imports, loader) {
