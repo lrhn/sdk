@@ -28,15 +28,21 @@ dart_library =
   // ES6, AMD, RequireJS, ....
 
   // Returns a proxy that delegates to the underlying loader.
-  // This defers loading of the code until the library is actually used.
+  // This defers loading of a module until a library is actually used.
+  const loadedModule = Symbol('loadedModule');
   dart_library.defer = function(module, name, patch) {
-    return new Proxy(module, {
-      get: function(obj, property) {
-        var lib = obj[name];
-        patch(obj, lib);
-        return lib[property];
+    var revocable = Proxy.revocable(module, {
+      get: function(o, p) {
+        var mod = o[loadedModule];
+        var lib = mod[name];
+        // Install unproxied module and library in caller's context.
+        patch(mod, lib);
+        // Ensure proxy is only used on first access.
+        revocable.revoke();
+        return lib[p];
       }
     });
+    return revocable.proxy;
   };
 
   class LibraryLoader {
@@ -77,8 +83,31 @@ dart_library =
       let args = this.loadImports();
 
       // Load the library
-      args.unshift(this._library);
-      this._loader.apply(null, args);
+      let loader = this;
+      let library = this._library;
+      library[loadedModule] = library;
+      args.unshift(library);
+
+      if (this._name == 'dart_sdk') {
+        // Eagerly load the SDK.
+        this._loader.apply(null, args);
+        loader._loader = null;
+      } else {
+        // Load / parse other modules on demand.
+        let done = false;
+        this._library = new Proxy(args, {
+          get: function(o, name) {
+            if (done) {
+              return library[name];
+            }
+            done = true;
+            loader._loader.apply(null, o);
+            loader._loader = null;
+            return library[name];
+          }
+        });
+      }
+
       this._state = LibraryLoader.READY;
       this._library[dartLibraryName] = this._name;
       this._library[libraryImports] = this._imports;
@@ -91,7 +120,8 @@ dart_library =
   }
   LibraryLoader.NOT_LOADED = 0;
   LibraryLoader.LOADING = 1;
-  LibraryLoader.READY = 2;
+  LibraryLoader.PENDING = 2;
+  LibraryLoader.READY = 3;
 
   // Map from name to LibraryLoader
   let libraries = new Map();
@@ -133,14 +163,14 @@ dart_library =
     if (libraryName == null) libraryName = moduleName;
     let library = import_(moduleName)[libraryName];
     let dart_sdk = import_('dart_sdk');
+
     if (!_currentIsolate) {
-      // Create isolate and run main.
+      // Create isolate.
       _currentIsolate = true;
-      dart_sdk._isolate_helper.startRootIsolate(library.main, []);
-    } else {
-      // Main isolate is already initialized - just run main.
-      library.main();
+      dart_sdk._isolate_helper.startRootIsolate(() => {}, []);
     }
+
+    library.main();
   }
   dart_library.start = start;
 
