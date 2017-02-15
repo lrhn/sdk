@@ -120,8 +120,7 @@ dart_library =
   }
   LibraryLoader.NOT_LOADED = 0;
   LibraryLoader.LOADING = 1;
-  LibraryLoader.PENDING = 2;
-  LibraryLoader.READY = 3;
+  LibraryLoader.READY = 2;
 
   // Map from name to LibraryLoader
   let libraries = new Map();
