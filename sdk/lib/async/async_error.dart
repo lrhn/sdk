@@ -14,13 +14,15 @@ _invokeErrorHandler(Function errorHandler,
   }
 }
 
-Function _registerErrorHandler<R>(Function errorHandler, Zone zone) {
+Function _registerErrorHandler(Function errorHandler, Zone zone) {
+  // We are not allowed to use 'void' as type argument for the generic type,
+  // so we use 'dynamic' instead.
   if (errorHandler is ZoneBinaryCallback) {
-    return zone.registerBinaryCallback<R, dynamic, StackTrace>(
-        errorHandler as dynamic/*=ZoneBinaryCallback<R, dynamic, StackTrace>*/);
+    return zone.registerBinaryCallback<dynamic, dynamic, StackTrace>(
+        errorHandler as dynamic/*=ZoneBinaryCallback<dynamic, dynamic, StackTrace>*/);
   } else {
-    return zone.registerUnaryCallback<R, dynamic>(
-        errorHandler as dynamic/*=ZoneUnaryCallback<R, dynamic>*/);
+    return zone.registerUnaryCallback<dynamic, dynamic>(
+        errorHandler as dynamic/*=ZoneUnaryCallback<dynamic, dynamic>*/);
   }
 }
 

@@ -144,9 +144,7 @@ class _BufferingStreamSubscription<T> implements StreamSubscription<T>,
 
   void onError(Function handleError) {
     if (handleError == null) handleError = _nullErrorHandler;
-    // We are not allowed to use 'void' as type argument for the generic type,
-    // so we use 'dynamic' instead.
-    _onError = _registerErrorHandler<dynamic>(handleError, _zone);
+    _onError = _registerErrorHandler(handleError, _zone);
   }
 
   void onDone(void handleDone()) {

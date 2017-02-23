@@ -154,6 +154,7 @@ let ListOfFloat64x2 = () => (ListOfFloat64x2 = dart.constFn(core.List$(typed_dat
 let IterableOfdouble = () => (IterableOfdouble = dart.constFn(core.Iterable$(core.double)))();
 let IterableOfint = () => (IterableOfint = dart.constFn(core.Iterable$(core.int)))();
 let ListOfdouble = () => (ListOfdouble = dart.constFn(core.List$(core.double)))();
+let ZoneBinaryCallbackOfdynamic$dynamic$StackTrace = () => (ZoneBinaryCallbackOfdynamic$dynamic$StackTrace = dart.constFn(async.ZoneBinaryCallback$(dart.dynamic, dart.dynamic, core.StackTrace)))();
 let _StreamImpl = () => (_StreamImpl = dart.constFn(async._StreamImpl$()))();
 let _ControllerStream = () => (_ControllerStream = dart.constFn(async._ControllerStream$()))();
 let _BroadcastStream = () => (_BroadcastStream = dart.constFn(async._BroadcastStream$()))();
@@ -213,7 +214,6 @@ let _AsBroadcastStream = () => (_AsBroadcastStream = dart.constFn(async._AsBroad
 let _BroadcastSubscriptionWrapper = () => (_BroadcastSubscriptionWrapper = dart.constFn(async._BroadcastSubscriptionWrapper$()))();
 let _StreamIterator = () => (_StreamIterator = dart.constFn(async._StreamIterator$()))();
 let _EmptyStream = () => (_EmptyStream = dart.constFn(async._EmptyStream$()))();
-let dynamicAndStackTraceTodynamic = () => (dynamicAndStackTraceTodynamic = dart.constFn(dart.functionType(dart.dynamic, [dart.dynamic, core.StackTrace])))();
 let _ForwardingStream = () => (_ForwardingStream = dart.constFn(async._ForwardingStream$()))();
 let _ForwardingStreamSubscription = () => (_ForwardingStreamSubscription = dart.constFn(async._ForwardingStreamSubscription$()))();
 let _Predicate = () => (_Predicate = dart.constFn(async._Predicate$()))();
@@ -750,7 +750,7 @@ let intTobool = () => (intTobool = dart.constFn(dart.definiteFunctionType(core.b
 let intAndListAndintTovoid = () => (intAndListAndintTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [core.int, core.List, core.int])))();
 let intAndintAndintToint = () => (intAndintAndintToint = dart.constFn(dart.definiteFunctionType(core.int, [core.int, core.int, core.int])))();
 let FunctionAndObjectAndStackTraceTodynamic = () => (FunctionAndObjectAndStackTraceTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [core.Function, core.Object, core.StackTrace])))();
-let FunctionAndZoneToFunction = () => (FunctionAndZoneToFunction = dart.constFn(dart.definiteFunctionType(R => [core.Function, [core.Function, async.Zone]])))();
+let FunctionAndZoneToFunction = () => (FunctionAndZoneToFunction = dart.constFn(dart.definiteFunctionType(core.Function, [core.Function, async.Zone])))();
 let VoidToObject = () => (VoidToObject = dart.constFn(dart.definiteFunctionType(core.Object, [])))();
 let _FutureAnddynamicAnddynamicTovoid = () => (_FutureAnddynamicAnddynamicTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [async._Future, dart.dynamic, dart.dynamic])))();
 let ObjectToObject = () => (ObjectToObject = dart.constFn(dart.definiteFunctionType(core.Object, [core.Object])))();
@@ -761,7 +761,7 @@ let FnToNull = () => (FnToNull = dart.constFn(dart.definiteFunctionType(core.Nul
 let _NotificationHandlerToFuture = () => (_NotificationHandlerToFuture = dart.constFn(dart.definiteFunctionType(async.Future, [async._NotificationHandler])))();
 let dynamicAndStackTraceToNull = () => (dynamicAndStackTraceToNull = dart.constFn(dart.definiteFunctionType(core.Null, [dart.dynamic, core.StackTrace])))();
 let dynamic__Tovoid = () => (dynamic__Tovoid = dart.constFn(dart.definiteFunctionType(dart.void, [dart.dynamic], [core.StackTrace])))();
-let FnAndFnAndFnTodynamic = () => (FnAndFnAndFnTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [VoidTodynamic(), dynamicTodynamic(), dynamicAndStackTraceTodynamic()])))();
+let FnAndFnAndFnTodynamic = () => (FnAndFnAndFnTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [VoidTodynamic(), dynamicTodynamic(), ZoneBinaryCallbackOfdynamic$dynamic$StackTrace()])))();
 let StreamSubscriptionAnd_FutureAnddynamic__Tovoid = () => (StreamSubscriptionAnd_FutureAnddynamic__Tovoid = dart.constFn(dart.definiteFunctionType(dart.void, [async.StreamSubscription, async._Future, dart.dynamic, core.StackTrace])))();
 let StreamSubscriptionAnd_FutureTo_ErrorCallback = () => (StreamSubscriptionAnd_FutureTo_ErrorCallback = dart.constFn(dart.definiteFunctionType(async._ErrorCallback, [async.StreamSubscription, async._Future])))();
 let StreamSubscriptionAnd_FutureAnddynamicTovoid = () => (StreamSubscriptionAnd_FutureAnddynamicTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [async.StreamSubscription, async._Future, dart.dynamic])))();
@@ -17793,14 +17793,12 @@ async._invokeErrorHandler = function(errorHandler, error, stackTrace) {
   }
 };
 dart.lazyFn(async._invokeErrorHandler, () => FunctionAndObjectAndStackTraceTodynamic());
-async._registerErrorHandler = function(R) {
-  return (errorHandler, zone) => {
-    if (async.ZoneBinaryCallback.is(errorHandler)) {
-      return zone.registerBinaryCallback(R, dart.dynamic, core.StackTrace)(async.ZoneBinaryCallback$(R, dart.dynamic, core.StackTrace).as(errorHandler));
-    } else {
-      return zone.registerUnaryCallback(R, dart.dynamic)(async.ZoneUnaryCallback$(R, dart.dynamic).as(errorHandler));
-    }
-  };
+async._registerErrorHandler = function(errorHandler, zone) {
+  if (async.ZoneBinaryCallback.is(errorHandler)) {
+    return zone.registerBinaryCallback(dart.dynamic, dart.dynamic, core.StackTrace)(ZoneBinaryCallbackOfdynamic$dynamic$StackTrace().as(errorHandler));
+  } else {
+    return zone.registerUnaryCallback(dart.dynamic, dart.dynamic)(async.ZoneUnaryCallback.as(errorHandler));
+  }
 };
 dart.lazyFn(async._registerErrorHandler, () => FunctionAndZoneToFunction());
 async.AsyncError = class AsyncError extends core.Object {
@@ -18003,7 +18001,7 @@ async._BufferingStreamSubscription$ = dart.generic(T => {
     }
     onError(handleError) {
       if (handleError == null) handleError = async._nullErrorHandler;
-      this[_onError] = async._registerErrorHandler(dart.dynamic)(handleError, this[_zone]);
+      this[_onError] = async._registerErrorHandler(handleError, this[_zone]);
     }
     onDone(handleDone) {
       if (handleDone == null) handleDone = async._nullDoneHandler;
@@ -19109,7 +19107,7 @@ async.Future$ = dart.flattenFutures(dart.generic(T => {
           }
           return null;
         }
-        dart.fn(handleError, dart.definiteFunctionType(T, [dart.dynamic, core.StackTrace]));
+        dart.fn(handleError, dynamicAndStackTraceTovoid());
         try {
           for (let future of futures) {
             let pos = remaining;
@@ -19585,7 +19583,7 @@ async._Future$ = dart.flattenFutures(dart.generic(T => {
         if (!core.identical(currentZone, async._ROOT_ZONE)) {
           f = currentZone.registerUnaryCallback(async.FutureOr$(E), T)(f);
           if (onError != null) {
-            onError = async._registerErrorHandler(T)(onError, currentZone);
+            onError = async._registerErrorHandler(onError, currentZone);
           }
         }
         return this[_thenNoZoneRegistration](E)(f, onError);
@@ -19602,7 +19600,7 @@ async._Future$ = dart.flattenFutures(dart.generic(T => {
       let test = opts && 'test' in opts ? opts.test : null;
       let result = new (_FutureOfT())();
       if (!core.identical(result[_zone], async._ROOT_ZONE)) {
-        onError = async._registerErrorHandler(T)(onError, result[_zone]);
+        onError = async._registerErrorHandler(onError, result[_zone]);
         if (test != null) test = result[_zone].registerUnaryCallback(core.bool, dart.dynamic)(test);
       }
       this[_addListener](new (_FutureListenerOfT$T()).catchError(result, onError, test));
