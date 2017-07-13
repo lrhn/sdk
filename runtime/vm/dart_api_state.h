@@ -25,25 +25,6 @@
 
 namespace dart {
 
-class FinalizablePersistentHandle;
-typedef MallocGrowableArray<FinalizablePersistentHandle*> FinalizationQueue;
-
-
-class BackgroundFinalizer : public ThreadPool::Task {
- public:
-  BackgroundFinalizer(Isolate* isolate, FinalizationQueue* queue);
-  virtual ~BackgroundFinalizer() {}
-
-  void Run();
-
- private:
-  Isolate* isolate_;
-  FinalizationQueue* queue_;
-
-  DISALLOW_IMPLICIT_CONSTRUCTORS(BackgroundFinalizer);
-};
-
-
 // Implementation of Zone support for very fast allocation of small chunks
 // of memory. The chunks cannot be deallocated individually, but instead
 // zones support deallocating all chunks in one fast operation when the
@@ -244,18 +225,9 @@ class FinalizablePersistentHandle {
   }
 
   // Called when the referent becomes unreachable.
-  void UpdateUnreachable(Isolate* isolate, FinalizationQueue* queue) {
-    if (is_queued_for_finalization()) {
-      return;
-    }
+  void UpdateUnreachable(Isolate* isolate) {
     EnsureFreeExternal(isolate);
-    if (queue == NULL) {
-      Finalize(isolate, this);
-    } else {
-      MarkForFinalization();
-      queue->Add(this);
-      set_is_queued_for_finalization(true);
-    }
+    Finalize(isolate, this);
   }
 
   // Called when the referent has moved, potentially between generations.
@@ -278,9 +250,8 @@ class FinalizablePersistentHandle {
  private:
   enum {
     kExternalNewSpaceBit = 0,
-    kQueuedForFinalizationBit = 1,
-    kExternalSizeBits = 2,
-    kExternalSizeBitsSize = (kBitsPerWord - 2),
+    kExternalSizeBits = 1,
+    kExternalSizeBitsSize = (kBitsPerWord - 1),
   };
 
   // This part of external_data_ is the number of externally allocated bytes.
@@ -292,8 +263,6 @@ class FinalizablePersistentHandle {
   // space and UpdateRelocated has not yet detected any promotion.
   class ExternalNewSpaceBit
       : public BitField<uword, bool, kExternalNewSpaceBit, 1> {};
-  class QueuedForFinalizationBit
-      : public BitField<uword, bool, kQueuedForFinalizationBit, 1> {};
 
   friend class FinalizablePersistentHandles;
 
@@ -324,11 +293,6 @@ class FinalizablePersistentHandle {
     callback_ = NULL;
   }
 
-  void MarkForFinalization() {
-    raw_ = Object::null();
-    ASSERT(callback_ != NULL);
-  }
-
   void set_raw(RawObject* raw) { raw_ = raw; }
   void set_raw(const LocalHandle& ref) { raw_ = ref.raw(); }
   void set_raw(const Object& object) { raw_ = object.raw(); }
@@ -344,13 +308,6 @@ class FinalizablePersistentHandle {
     ASSERT(ExternalSizeInWordsBits::is_valid(size_in_words));
     external_data_ =
         ExternalSizeInWordsBits::update(size_in_words, external_data_);
-  }
-
-  bool is_queued_for_finalization() const {
-    return QueuedForFinalizationBit::decode(external_data_);
-  }
-  void set_is_queued_for_finalization(bool value) {
-    external_data_ = QueuedForFinalizationBit::update(value, external_data_);
   }
 
   bool IsSetNewSpaceBit() const {
@@ -371,8 +328,6 @@ class FinalizablePersistentHandle {
     return (raw_->IsHeapObject() && raw_->IsNewObject()) ? Heap::kNew
                                                          : Heap::kOld;
   }
-
-  friend class BackgroundFinalizer;
 
   RawObject* raw_;
   void* peer_;
@@ -546,12 +501,9 @@ class FinalizablePersistentHandles
       : Handles<kFinalizablePersistentHandleSizeInWords,
                 kFinalizablePersistentHandlesPerChunk,
                 kOffsetOfRawPtrInFinalizablePersistentHandle>(),
-        free_list_(NULL),
-        mutex_(new Mutex()) {}
+        free_list_(NULL) {}
   ~FinalizablePersistentHandles() {
     free_list_ = NULL;
-    delete mutex_;
-    mutex_ = NULL;
   }
 
   // Accessors.
@@ -577,14 +529,11 @@ class FinalizablePersistentHandles
   // by calling FreeHandle.
   FinalizablePersistentHandle* AllocateHandle() {
     FinalizablePersistentHandle* handle;
-    {
-      MutexLocker ml(mutex_);
-      if (free_list_ != NULL) {
-        handle = free_list_;
-        free_list_ = handle->Next();
-        handle->set_raw(Object::null());
-        return handle;
-      }
+    if (free_list_ != NULL) {
+      handle = free_list_;
+      free_list_ = handle->Next();
+      handle->set_raw(Object::null());
+      return handle;
     }
 
     handle =
@@ -594,19 +543,16 @@ class FinalizablePersistentHandles
   }
 
   void FreeHandle(FinalizablePersistentHandle* handle) {
-    MutexLocker ml(mutex_);
     handle->FreeHandle(free_list());
     set_free_list(handle);
   }
 
   // Validate if passed in handle is a Persistent Handle.
   bool IsValidHandle(Dart_WeakPersistentHandle object) const {
-    MutexLocker ml(mutex_);
     return IsValidScopedHandle(reinterpret_cast<uword>(object));
   }
 
   bool IsFreeHandle(Dart_WeakPersistentHandle object) const {
-    MutexLocker ml(mutex_);
     FinalizablePersistentHandle* handle = free_list_;
     while (handle != NULL) {
       if (handle == reinterpret_cast<FinalizablePersistentHandle*>(object)) {
@@ -622,7 +568,6 @@ class FinalizablePersistentHandles
 
  private:
   FinalizablePersistentHandle* free_list_;
-  Mutex* mutex_;
   DISALLOW_COPY_AND_ASSIGN(FinalizablePersistentHandles);
 };
 
@@ -676,7 +621,7 @@ class ApiNativeScope {
                              reinterpret_cast<uword>(this));
     // We manually increment the memory usage counter since there is memory
     // initially allocated within the zone on creation.
-    IncrementNativeScopeMemoryUsage(zone_.GetZone()->CapacityInBytes());
+    IncrementNativeScopeMemoryCapacity(zone_.GetZone()->CapacityInBytes());
   }
 
   ~ApiNativeScope() {
@@ -685,7 +630,7 @@ class ApiNativeScope {
     // We must also manually decrement the memory usage counter since the native
     // is still holding it's initial memory and ~Zone() won't be able to
     // determine which memory usage counter to decrement.
-    DecrementNativeScopeMemoryUsage(zone_.GetZone()->CapacityInBytes());
+    DecrementNativeScopeMemoryCapacity(zone_.GetZone()->CapacityInBytes());
   }
 
   static inline ApiNativeScope* Current() {
@@ -693,13 +638,13 @@ class ApiNativeScope {
         OSThread::GetThreadLocal(Api::api_native_key_));
   }
 
-  static intptr_t current_memory_usage() { return current_memory_usage_; }
+  static uintptr_t current_memory_usage() { return current_memory_usage_; }
 
-  static void IncrementNativeScopeMemoryUsage(intptr_t size) {
+  static void IncrementNativeScopeMemoryCapacity(intptr_t size) {
     AtomicOperations::IncrementBy(&current_memory_usage_, size);
   }
 
-  static void DecrementNativeScopeMemoryUsage(intptr_t size) {
+  static void DecrementNativeScopeMemoryCapacity(intptr_t size) {
     AtomicOperations::DecrementBy(&current_memory_usage_, size);
   }
 
@@ -861,7 +806,6 @@ inline FinalizablePersistentHandle* FinalizablePersistentHandle::New(
   ref->set_raw(object);
   ref->set_peer(peer);
   ref->set_callback(callback);
-  ref->set_is_queued_for_finalization(false);
   // This may trigger GC, so it must be called last.
   ref->SetExternalSize(external_size, isolate);
   return ref;

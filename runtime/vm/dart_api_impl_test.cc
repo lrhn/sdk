@@ -2067,7 +2067,7 @@ static void TestDirectAccess(Dart_Handle lib,
     dataP[i] += 10;
   }
 
-  // Release direct accesss to the typed data object.
+  // Release direct access to the typed data object.
   result = Dart_TypedDataReleaseData(array);
   EXPECT_VALID(result);
 
@@ -3521,7 +3521,7 @@ VM_UNIT_TEST_CASE(IsolateSetCheckedMode) {
 
   // Create an isolate with checked mode flags.
   Dart_IsolateFlags api_flags;
-  api_flags.version = DART_FLAGS_CURRENT_VERSION;
+  Isolate::FlagsInitialize(&api_flags);
   api_flags.enable_type_checks = true;
   api_flags.enable_asserts = true;
   api_flags.enable_error_on_bad_type = true;

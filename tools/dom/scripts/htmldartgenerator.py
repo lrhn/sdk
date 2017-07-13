@@ -393,11 +393,13 @@ class HtmlDartGenerator(object):
       generate_call(stmts_emitter, call_emitter,
           version[0], signature_index, argument_count)
 
+    def IsTypeChecking(interface_argument):
+      return 'LegacyInterfaceTypeChecking' in interface_argument.ext_attrs or \
+      self._database.HasInterface(interface_argument.id)
+
     def GenerateChecksAndCall(signature_index, argument_count):
       checks = []
-      typechecked_interface = \
-          ('TypeChecking' in self._interface.ext_attrs) and \
-          ('Interface' in self._interface.ext_attrs['TypeChecking'])
+      typechecked_interface = IsTypeChecking(self._interface)
 
       for i in reversed(range(0, argument_count)):
         argument = signatures[signature_index][i]
@@ -408,9 +410,7 @@ class HtmlDartGenerator(object):
         if test_type in ['dynamic', 'Object']:
           checks.append('%s != null' % parameter_name)
         elif not can_omit_type_check(test_type, i):
-          typechecked = typechecked_interface or \
-              ('TypeChecking' in argument.ext_attrs) and \
-              ('Interface' in argument.ext_attrs['TypeChecking'])
+          typechecked = typechecked_interface or IsTypeChecking(argument)
           converts_null = \
               ('TreatNullAs' in argument.ext_attrs) or \
               (argument.default_value is not None) or \
@@ -541,9 +541,10 @@ class HtmlDartGenerator(object):
 
   def _AddConstructor(self,
       constructor_info, factory_name, factory_constructor_name):
-    # Hack to ignore the Image constructor used by JavaScript.
+    # Hack to ignore the constructor used by JavaScript.
     if ((self._interface.id == 'HTMLImageElement' or
          self._interface.id == 'Blob' or
+         self._interface.id == 'TouchEvent' or
          self._interface.id == 'DOMException')
       and not constructor_info.pure_dart_constructor):
       return
@@ -572,32 +573,30 @@ class HtmlDartGenerator(object):
       # TODO(antonm): use common dispatcher generation for this case as well.
       has_optional = any(param_info.is_optional
           for param_info in constructor_info.param_infos)
-
+      factory_call = self.MakeFactoryCall(
+          factory_name, factory_constructor_name, factory_parameters,
+          constructor_info)
       if not has_optional:
         self._members_emitter.Emit(
             '\n  $(METADATA)'
             'factory $CTOR($PARAMS) => '
-            '$FACTORY.$CTOR_FACTORY_NAME($FACTORY_PARAMS);\n',
+            '$FACTORY_CALL;\n',
             CTOR=constructor_info._ConstructorFullName(self._DartType),
             PARAMS=constructor_info.ParametersAsDeclaration(InputType),
-            FACTORY=factory_name,
-            METADATA=metadata,
-            CTOR_FACTORY_NAME=factory_constructor_name,
-            FACTORY_PARAMS=factory_parameters)
+            FACTORY_CALL=factory_call,
+            METADATA=metadata)
       else:
         inits = self._members_emitter.Emit(
             '\n  $(METADATA)'
             'factory $CONSTRUCTOR($PARAMS) {\n'
-            '    $CONSTRUCTOR e = $FACTORY.$CTOR_FACTORY_NAME($FACTORY_PARAMS);\n'
+            '    $CONSTRUCTOR e = $FACTORY_CALL;\n'
             '$!INITS'
             '    return e;\n'
             '  }\n',
             CONSTRUCTOR=constructor_info._ConstructorFullName(self._DartType),
             METADATA=metadata,
-            FACTORY=factory_name,
-            CTOR_FACTORY_NAME=factory_constructor_name,
-            PARAMS=constructor_info.ParametersAsDeclaration(InputType),
-            FACTORY_PARAMS=factory_parameters)
+            FACTORY_CALL=factory_call,
+            PARAMS=constructor_info.ParametersAsDeclaration(InputType))
 
         for index, param_info in enumerate(constructor_info.param_infos):
           if param_info.is_optional:

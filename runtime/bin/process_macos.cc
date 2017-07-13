@@ -5,15 +5,16 @@
 #if !defined(DART_IO_DISABLED)
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_MACOS)
 
 #include "bin/process.h"
 
-#if !TARGET_OS_IOS
+#if !HOST_OS_IOS
 #include <crt_externs.h>  // NOLINT
 #endif
 #include <errno.h>   // NOLINT
 #include <fcntl.h>   // NOLINT
+#include <mach/mach.h>  // NOLINT
 #include <poll.h>    // NOLINT
 #include <signal.h>  // NOLINT
 #include <stdio.h>   // NOLINT
@@ -465,7 +466,7 @@ class ProcessStarter {
       ReportChildError();
     }
 
-#if !TARGET_OS_IOS
+#if !HOST_OS_IOS
     if (program_environment_ != NULL) {
       // On MacOS you have to do a bit of magic to get to the
       // environment strings.
@@ -968,6 +969,30 @@ intptr_t Process::CurrentProcessId() {
 }
 
 
+int64_t Process::CurrentRSS() {
+  struct mach_task_basic_info info;
+  mach_msg_type_number_t infoCount = MACH_TASK_BASIC_INFO_COUNT;
+  kern_return_t result =
+      task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &infoCount);
+  if (result != KERN_SUCCESS) {
+    return -1;
+  }
+  return info.resident_size;
+}
+
+
+int64_t Process::MaxRSS() {
+  struct rusage usage;
+  usage.ru_maxrss = 0;
+  int r = getrusage(RUSAGE_SELF, &usage);
+  if (r < 0) {
+    return -1;
+  }
+  return usage.ru_maxrss;
+}
+
+
 static Mutex* signal_mutex = new Mutex();
 static SignalInfo* signal_handlers = NULL;
 static const int kSignalsCount = 7;
@@ -1051,7 +1076,10 @@ intptr_t Process::SetSignalHandler(intptr_t signal) {
 }
 
 
-void Process::ClearSignalHandler(intptr_t signal) {
+void Process::ClearSignalHandler(intptr_t signal, Dart_Port port) {
+  // Either the port is illegal or there is no current isolate, but not both.
+  ASSERT((port != ILLEGAL_PORT) || (Dart_CurrentIsolate() == NULL));
+  ASSERT((port == ILLEGAL_PORT) || (Dart_CurrentIsolate() != NULL));
   signal = SignalMap(signal);
   if (signal == -1) {
     return;
@@ -1063,7 +1091,7 @@ void Process::ClearSignalHandler(intptr_t signal) {
   while (handler != NULL) {
     bool remove = false;
     if (handler->signal() == signal) {
-      if (handler->port() == Dart_GetMainPortId()) {
+      if ((port == ILLEGAL_PORT) || (handler->port() == port)) {
         if (signal_handlers == handler) {
           signal_handlers = handler->next();
         }
@@ -1090,6 +1118,6 @@ void Process::ClearSignalHandler(intptr_t signal) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_MACOS)
+#endif  // defined(HOST_OS_MACOS)
 
 #endif  // !defined(DART_IO_DISABLED)

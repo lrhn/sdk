@@ -6,11 +6,12 @@ library related_types;
 
 import 'package:compiler/src/commandline_options.dart';
 import 'package:compiler/src/compiler.dart';
-import 'package:compiler/src/core_types.dart';
+import 'package:compiler/src/common_elements.dart';
 import 'package:compiler/src/elements/resolution_types.dart';
 import 'package:compiler/src/diagnostics/diagnostic_listener.dart';
 import 'package:compiler/src/diagnostics/messages.dart';
 import 'package:compiler/src/elements/elements.dart';
+import 'package:compiler/src/elements/names.dart';
 import 'package:compiler/src/filenames.dart';
 import 'package:compiler/src/resolution/semantic_visitor.dart';
 import 'package:compiler/src/tree/tree.dart';
@@ -35,7 +36,8 @@ main(List<String> arguments) async {
 
 /// Check all loaded libraries in [compiler] for unrelated types.
 void checkRelatedTypes(Compiler compiler) {
-  compiler.closeResolution();
+  compiler.closeResolution(
+      compiler.frontendStrategy.elementEnvironment.mainFunction);
   for (LibraryElement library in compiler.libraryLoader.libraries) {
     checkLibraryElement(compiler, library);
   }
@@ -46,7 +48,8 @@ void checkLibraryElement(Compiler compiler, LibraryElement library) {
   library.forEachLocalMember((Element element) {
     if (element.isClass) {
       ClassElement cls = element;
-      cls.forEachLocalMember((MemberElement member) {
+      cls.forEachLocalMember((_member) {
+        MemberElement member = _member;
         checkMemberElement(compiler, member);
       });
     } else if (!element.isTypedef) {
@@ -81,7 +84,7 @@ class RelatedTypesChecker
   ClosedWorld get world =>
       compiler.resolutionWorldBuilder.closedWorldForTesting;
 
-  CommonElements get commonElements => compiler.commonElements;
+  CommonElements get commonElements => compiler.resolution.commonElements;
 
   DiagnosticReporter get reporter => compiler.reporter;
 
@@ -423,7 +426,7 @@ class RelatedTypesChecker
 
 /// Computes the [ClassElement] implied by a type.
 // TODO(johnniwinther): Handle type variables, function types and typedefs.
-class ClassFinder extends BaseDartTypeVisitor<ClassElement, dynamic> {
+class ClassFinder extends BaseResolutionDartTypeVisitor<ClassElement, dynamic> {
   const ClassFinder();
 
   ClassElement findClass(ResolutionDartType type) => type.accept(this, null);

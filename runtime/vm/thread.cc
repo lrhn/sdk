@@ -49,7 +49,6 @@ Thread::~Thread() {
   thread_lock_ = NULL;
 }
 
-
 #if defined(DEBUG)
 #define REUSABLE_HANDLE_SCOPE_INIT(object)                                     \
   reusable_##object##_handle_scope_active_(false),
@@ -75,8 +74,8 @@ Thread::Thread(Isolate* isolate)
       os_thread_(NULL),
       thread_lock_(new Monitor()),
       zone_(NULL),
-      current_thread_memory_(0),
-      memory_high_watermark_(0),
+      current_zone_capacity_(0),
+      zone_high_watermark_(0),
       api_reusable_scope_(NULL),
       api_top_scope_(NULL),
       top_resource_(NULL),
@@ -137,15 +136,15 @@ Thread::Thread(Isolate* isolate)
   // This thread should not yet own any zones. If it does, we need to make sure
   // we've accounted for any memory it has already allocated.
   if (zone_ == NULL) {
-    ASSERT(current_thread_memory_ == 0);
+    ASSERT(current_zone_capacity_ == 0);
   } else {
     Zone* current = zone_;
     uintptr_t total_zone_capacity = 0;
     while (current != NULL) {
-      total_zone_capacity += static_cast<uintptr_t>(current->CapacityInBytes());
+      total_zone_capacity += current->CapacityInBytes();
       current = current->previous();
     }
-    ASSERT(current_thread_memory_ == total_zone_capacity);
+    ASSERT(current_zone_capacity_ == total_zone_capacity);
   }
 }
 
@@ -229,16 +228,8 @@ void Thread::PrintJSON(JSONStream* stream) const {
   jsobj.AddPropertyF("id", "threads/%" Pd "",
                      OSThread::ThreadIdToIntPtr(os_thread()->trace_id()));
   jsobj.AddProperty("kind", TaskKindToCString(task_kind()));
-  jsobj.AddPropertyF("_memoryHighWatermark", "%" Pu "", memory_high_watermark_);
-  Zone* zone = zone_;
-  {
-    JSONArray zone_info_array(&jsobj, "zones");
-    zone = zone_;
-    while (zone != NULL) {
-      zone_info_array.AddValue(zone);
-      zone = zone->previous();
-    }
-  }
+  jsobj.AddPropertyF("_zoneHighWatermark", "%" Pu "", zone_high_watermark_);
+  jsobj.AddPropertyF("_zoneCapacity", "%" Pu "", current_zone_capacity_);
 }
 #endif
 
@@ -283,6 +274,14 @@ void Thread::clear_sticky_error() {
 }
 
 
+RawError* Thread::get_and_clear_sticky_error() {
+  NoSafepointScope nss;
+  RawError* return_value = sticky_error_;
+  sticky_error_ = Error::null();
+  return return_value;
+}
+
+
 const char* Thread::TaskKindToCString(TaskKind kind) {
   switch (kind) {
     case kUnknownTask:
@@ -295,8 +294,6 @@ const char* Thread::TaskKindToCString(TaskKind kind) {
       return "kSweeperTask";
     case kMarkerTask:
       return "kMarkerTask";
-    case kFinalizerTask:
-      return "kFinalizerTask";
     default:
       UNREACHABLE();
       return "";
@@ -448,15 +445,15 @@ uword Thread::GetCurrentStackPointer() {
 #if !defined(TARGET_ARCH_DBC)
   // Since AddressSanitizer's detect_stack_use_after_return instruments the
   // C++ code to give out fake stack addresses, we call a stub in that case.
-  ASSERT(StubCode::GetStackPointer_entry() != NULL);
+  ASSERT(StubCode::GetCStackPointer_entry() != NULL);
   uword (*func)() = reinterpret_cast<uword (*)()>(
-      StubCode::GetStackPointer_entry()->EntryPoint());
+      StubCode::GetCStackPointer_entry()->EntryPoint());
 #else
   uword (*func)() = NULL;
 #endif
 // But for performance (and to support simulators), we normally use a local.
 #if defined(__has_feature)
-#if __has_feature(address_sanitizer)
+#if __has_feature(address_sanitizer) || __has_feature(safe_stack)
   uword current_sp = func();
   return current_sp;
 #else
@@ -712,8 +709,26 @@ void Thread::VisitObjectPointers(ObjectPointerVisitor* visitor,
     scope = scope->previous();
   }
 
+  // The MarkTask, which calls this method, can run on a different thread.  We
+  // therefore assume the mutator is at a safepoint and we can iterate it's
+  // stack.
+  // TODO(vm-team): It would be beneficial to be able to ask the mutator thread
+  // whether it is in fact blocked at the moment (at a "safepoint") so we can
+  // safely iterate it's stack.
+  //
+  // Unfortunately we cannot use `this->IsAtSafepoint()` here because that will
+  // return `false` even though the mutator thread is waiting for mark tasks
+  // (which iterate it's stack) to finish.
+  const StackFrameIterator::CrossThreadPolicy cross_thread_policy =
+      StackFrameIterator::kAllowCrossThreadIteration;
+
+  const StackFrameIterator::ValidationPolicy validation_policy =
+      validate_frames ? StackFrameIterator::kValidateFrames
+                      : StackFrameIterator::kDontValidateFrames;
+
   // Iterate over all the stack frames and visit objects on the stack.
-  StackFrameIterator frames_iterator(top_exit_frame_info(), validate_frames);
+  StackFrameIterator frames_iterator(top_exit_frame_info(), validation_policy,
+                                     this, cross_thread_policy);
   StackFrame* frame = frames_iterator.NextFrame();
   while (frame != NULL) {
     frame->VisitObjectPointers(visitor);

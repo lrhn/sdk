@@ -35,7 +35,7 @@ library dart._foreign_helper;
  * accurately.  In addition to the union type already described:
  *
  *  + `=Object` is a plain JavaScript object.  Some DOM methods return instances
- *     that have no corresponing Dart type (e.g. cross-frame documents),
+ *     that have no corresponding Dart type (e.g. cross-frame documents),
  *     `=Object` can be used to describe these untyped' values.
  *
  *  + `var` (or empty string).  If the entire [typeDescription] is `var` (or
@@ -107,8 +107,26 @@ library dart._foreign_helper;
 // Add additional optional arguments if needed. The method is treated internally
 // as a variable argument method.
 JS(String typeDescription, String codeTemplate,
-    [arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11])
-{}
+    [arg0,
+    arg1,
+    arg2,
+    arg3,
+    arg4,
+    arg5,
+    arg6,
+    arg7,
+    arg8,
+    arg9,
+    arg10,
+    arg11,
+    arg12,
+    arg13,
+    arg14,
+    arg15,
+    arg16,
+    arg17,
+    arg18,
+    arg19]) {}
 
 /// Annotates the compiled Js name for fields and methods.
 /// Similar behaviour to `JS` from `package:js/js.dart` (but usable from runtime
@@ -257,7 +275,9 @@ bool JS_GET_FLAG(String name) {}
  * TODO(sra): Replace this hack with something to mark the volatile or
  * externally initialized elements.
  */
-void JS_EFFECT(Function code) { code(null); }
+void JS_EFFECT(Function code) {
+  code(null);
+}
 
 /**
  * Use this class for creating constants that hold JavaScript code.
@@ -294,7 +314,6 @@ class _Rest {
 const _Rest rest = const _Rest();
 
 dynamic spread(args) {
-  throw new StateError(
-      'The spread function cannot be called, '
+  throw new StateError('The spread function cannot be called, '
       'it should be compiled away.');
 }

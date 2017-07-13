@@ -18,13 +18,13 @@ int E(int i) {
 class A {
   // f closes-over arg.  arg needs to be preserved while b2 is initialized.
   A(arg)
-      : a = E(arg += 1)
-      , f = (() => E(arg += 10)) {
+      : a = E(arg += 1),
+        f = (() => E(arg += 10)) {
     // b2 should be initialized between the above initializers and the following
     // statements.
     var r1 = f();
-    E(arg += 100);  // If this is the same arg as closed by f, ...
-    var r2 = f();   // .. the effect of +=100 will be seen here.
+    E(arg += 100); // If this is the same arg as closed by f, ...
+    var r2 = f(); //  .. the effect of +=100 will be seen here.
   }
   final a;
   final f;
@@ -32,7 +32,10 @@ class A {
 
 class B extends A {
   // Initializers in order: b1, super, b2.
-  B(x, y) : b1 = E(x++), super(1000), b2 = E(y++) {
+  B(x, y)
+      : b1 = E(x++),
+        super(1000),
+        b2 = E(y++) {
     // Implicit super call to A's body happens here.
     E(x);
     E(y);

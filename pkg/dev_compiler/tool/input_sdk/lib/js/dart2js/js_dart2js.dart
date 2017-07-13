@@ -76,7 +76,7 @@
  * [JsObject.jsify] constructor, which converts Dart [Map]s and [Iterable]s
  * into JavaScript Objects and Arrays.
  *
- * The following expression creats a new JavaScript object with the properties
+ * The following expression creates a new JavaScript object with the properties
  * `a` and `b` defined:
  *
  *     var jsMap = new JsObject.jsify({'a': 1, 'b': 2});
@@ -204,7 +204,7 @@ class JsObject {
    *
    * The type of [property] must be either [String] or [num].
    */
-  operator []=(Object property, value) {
+  void operator []=(Object property, value) {
     if (property is! String && property is! num) {
       throw new ArgumentError("property is not a String or num");
     }
@@ -284,19 +284,24 @@ class JsObject {
  * Proxies a JavaScript Function object.
  */
 class JsFunction extends JsObject {
-
   /**
    * Returns a [JsFunction] that captures its 'this' binding and calls [f]
    * with the value of this passed as the first argument.
    */
   factory JsFunction.withThis(Function f) {
-    return new JsFunction._fromJs(JS('', 'function(/*...arguments*/) {'
+    return new JsFunction._fromJs(JS(
+        '',
+        'function(/*...arguments*/) {'
         '  let args = [#(this)];'
         '  for (let arg of arguments) {'
         '    args.push(#(arg));'
         '  }'
         '  return #(#(...args));'
-        '}', _convertToDart, _convertToDart, _convertToJS, f));
+        '}',
+        _convertToDart,
+        _convertToDart,
+        _convertToJS,
+        f));
   }
 
   JsFunction._fromJs(jsObject) : super._fromJs(jsObject);
@@ -305,15 +310,17 @@ class JsFunction extends JsObject {
    * Invokes the JavaScript function with arguments [args]. If [thisArg] is
    * supplied it is the value of `this` for the invocation.
    */
-  dynamic apply(List args, {thisArg}) => _convertToDart(JS('', '#.apply(#, #)',
-      _jsObject, _convertToJS(thisArg),
+  dynamic apply(List args, {thisArg}) => _convertToDart(JS(
+      '',
+      '#.apply(#, #)',
+      _jsObject,
+      _convertToJS(thisArg),
       args == null ? null : new List.from(args.map(_convertToJS))));
 }
 
 // TODO(jmesserly): this is totally unnecessary in dev_compiler.
 /** A [List] that proxies a JavaScript array. */
 class JsArray<E> extends JsObject with ListMixin<E> {
-
   /**
    * Creates a new JavaScript array.
    */
@@ -360,7 +367,7 @@ class JsArray<E> extends JsObject with ListMixin<E> {
     return super[index] as E;
   }
 
-  void operator []=(Object index, E value) {
+  void operator []=(Object index, value) {
     // TODO(justinfagnani): fix the semantics for non-ints
     // dartbug.com/14605
     if (index is num && index == index.toInt()) {
@@ -421,7 +428,8 @@ class JsArray<E> extends JsObject with ListMixin<E> {
     int length = end - start;
     if (length == 0) return;
     if (skipCount < 0) throw new ArgumentError(skipCount);
-    var args = <Object>[start, length]..addAll(iterable.skip(skipCount).take(length));
+    var args = <Object>[start, length]
+      ..addAll(iterable.skip(skipCount).take(length));
     callMethod('splice', args);
   }
 
@@ -432,10 +440,11 @@ class JsArray<E> extends JsObject with ListMixin<E> {
 }
 
 // Cross frame objects should not be considered browser types.
-// We include the the instanceof Object test to filter out cross frame objects
+// We include the instanceof Object test to filter out cross frame objects
 // on FireFox. Surprisingly on FireFox the instanceof Window test succeeds for
 // cross frame windows while the instanceof Object test fails.
-bool _isBrowserType(o) => JS('bool',
+bool _isBrowserType(o) => JS(
+    'bool',
     '# instanceof Object && ('
     '# instanceof Blob || '
     '# instanceof Event || '
@@ -445,7 +454,16 @@ bool _isBrowserType(o) => JS('bool',
     '# instanceof Node || '
     // Int8Array.__proto__ is TypedArray.
     '(window.Int8Array && # instanceof Int8Array.__proto__) || '
-    '# instanceof Window)', o, o, o, o, o, o, o, o, o);
+    '# instanceof Window)',
+    o,
+    o,
+    o,
+    o,
+    o,
+    o,
+    o,
+    o,
+    o);
 
 class _DartObject {
   final _dartObj;
@@ -453,11 +471,7 @@ class _DartObject {
 }
 
 dynamic _convertToJS(dynamic o) {
-  if (o == null ||
-      o is String ||
-      o is num ||
-      o is bool ||
-      _isBrowserType(o)) {
+  if (o == null || o is String || o is num || o is bool || _isBrowserType(o)) {
     return o;
   } else if (o is DateTime) {
     return Primitives.lazyAsJsDate(o);
@@ -473,10 +487,15 @@ dynamic _convertToJS(dynamic o) {
 }
 
 dynamic _wrapDartFunction(f) {
-  var wrapper = JS('', 'function(/*...arguments*/) {'
+  var wrapper = JS(
+      '',
+      'function(/*...arguments*/) {'
       '  let args = Array.prototype.map.call(arguments, #);'
       '  return #(#(...args));'
-      '}', _convertToDart, _convertToJS, f);
+      '}',
+      _convertToDart,
+      _convertToJS,
+      f);
   JS('', '#.set(#, #)', _dartProxies, wrapper, f);
 
   return wrapper;
@@ -495,7 +514,7 @@ Object _convertToDart(o) {
     var ms = JS('num', '#.getTime()', o);
     return new DateTime.fromMillisecondsSinceEpoch(ms);
   } else if (o is _DartObject &&
-             JS('bool', 'dart.jsobject != dart.getReifiedType(#)', o)) {
+      JS('bool', 'dart.jsobject != dart.getReifiedType(#)', o)) {
     return o._dartObj;
   } else {
     return _wrapToDart(o);
@@ -541,7 +560,7 @@ Object _putIfAbsent(weakMap, o, getValue(o)) {
 /// JavaScript. We may remove the need to call this method completely in the
 /// future if Dart2Js is refactored so that its function calling conventions
 /// are more compatible with JavaScript.
-Function /*=F*/ allowInterop/*<F extends Function>*/(Function /*=F*/ f) => f;
+Function/*=F*/ allowInterop/*<F extends Function>*/(Function/*=F*/ f) => f;
 
 Expando<Function> _interopCaptureThisExpando = new Expando<Function>();
 
@@ -549,12 +568,13 @@ Expando<Function> _interopCaptureThisExpando = new Expando<Function>();
 /// binding and calls [f] with the value of this passed as the first argument.
 /// When called from Dart, [null] will be passed as the first argument.
 ///
-/// See the documention for [allowInterop]. This method should only be used with
-/// package:js Dart-JavaScript interop.
+/// See the documentation for [allowInterop]. This method should only be used
+/// with package:js Dart-JavaScript interop.
 Function allowInteropCaptureThis(Function f) {
   var ret = _interopCaptureThisExpando[f];
   if (ret == null) {
-    ret = JS('',
+    ret = JS(
+        '',
         'function(/*...arguments*/) {'
         '  let args = [this];'
         '  for (let arg of arguments) {'

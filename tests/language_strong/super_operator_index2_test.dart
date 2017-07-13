@@ -7,9 +7,12 @@
 import "package:expect/expect.dart";
 
 class A {
-  var map = new Map();
-  operator[]=(a, b) { map[a] = b; }
-  operator[](a) => map[a];
+  var map = new Map<int, int>();
+  operator []=(a, b) {
+    map[a] = b;
+  }
+
+  operator [](a) => map[a];
 }
 
 class B extends A {

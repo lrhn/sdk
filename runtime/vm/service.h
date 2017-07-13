@@ -27,6 +27,7 @@ class Isolate;
 class JSONStream;
 class Object;
 class RawInstance;
+class RawError;
 class ServiceEvent;
 class String;
 
@@ -81,14 +82,14 @@ class StreamInfo {
 class Service : public AllStatic {
  public:
   // Handles a message which is not directed to an isolate.
-  static void HandleRootMessage(const Array& message);
+  static RawError* HandleRootMessage(const Array& message);
 
   // Handles a message which is not directed to an isolate and also
   // expects the parameter keys and values to be actual dart objects.
-  static void HandleObjectRootMessage(const Array& message);
+  static RawError* HandleObjectRootMessage(const Array& message);
 
   // Handles a message which is directed to a particular isolate.
-  static void HandleIsolateMessage(Isolate* isolate, const Array& message);
+  static RawError* HandleIsolateMessage(Isolate* isolate, const Array& message);
 
   static void HandleEvent(ServiceEvent* event);
 
@@ -151,6 +152,7 @@ class Service : public AllStatic {
   static StreamInfo logging_stream;
   static StreamInfo extension_stream;
   static StreamInfo timeline_stream;
+  static StreamInfo editor_stream;
 
   static bool ListenStream(const char* stream_id);
   static void CancelStream(const char* stream_id);
@@ -169,9 +171,9 @@ class Service : public AllStatic {
   static void CheckForPause(Isolate* isolate, JSONStream* stream);
 
  private:
-  static void InvokeMethod(Isolate* isolate,
-                           const Array& message,
-                           bool parameters_are_dart_objects = false);
+  static RawError* InvokeMethod(Isolate* isolate,
+                                const Array& message,
+                                bool parameters_are_dart_objects = false);
 
   static void EmbedderHandleMessage(EmbedderServiceHandler* handler,
                                     JSONStream* js);
@@ -203,7 +205,7 @@ class Service : public AllStatic {
                         const char* kind,
                         JSONStream* event);
 
-  static void MaybePause(Isolate* isolate);
+  static RawError* MaybePause(Isolate* isolate, const Error& error);
 
   static EmbedderServiceHandler* isolate_service_handler_head_;
   static EmbedderServiceHandler* root_service_handler_head_;

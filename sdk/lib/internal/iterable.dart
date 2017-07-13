@@ -94,7 +94,7 @@ abstract class ListIterable<E> extends EfficientLengthIterable<E> {
     return false;
   }
 
-  E firstWhere(bool test(E element), { E orElse() }) {
+  E firstWhere(bool test(E element), {E orElse()}) {
     int length = this.length;
     for (int i = 0; i < length; i++) {
       E element = elementAt(i);
@@ -107,7 +107,7 @@ abstract class ListIterable<E> extends EfficientLengthIterable<E> {
     throw IterableElementError.noElement();
   }
 
-  E lastWhere(bool test(E element), { E orElse() }) {
+  E lastWhere(bool test(E element), {E orElse()}) {
     int length = this.length;
     for (int i = length - 1; i >= 0; i--) {
       E element = elementAt(i);
@@ -183,7 +183,6 @@ abstract class ListIterable<E> extends EfficientLengthIterable<E> {
       if (length != this.length) {
         throw new ConcurrentModificationError(this);
       }
-
     }
     return value;
   }
@@ -208,7 +207,7 @@ abstract class ListIterable<E> extends EfficientLengthIterable<E> {
 
   Iterable<E> takeWhile(bool test(E element)) => super.takeWhile(test);
 
-  List<E> toList({ bool growable: true }) {
+  List<E> toList({bool growable: true}) {
     List<E> result;
     if (growable) {
       result = new List<E>()..length = length;
@@ -231,7 +230,7 @@ abstract class ListIterable<E> extends EfficientLengthIterable<E> {
 }
 
 class SubListIterable<E> extends ListIterable<E> {
-  final Iterable<E> _iterable;  // Has efficient length and elementAt.
+  final Iterable<E> _iterable; // Has efficient length and elementAt.
   final int _start;
   /** If null, represents the length of the iterable. */
   final int _endOrLength;
@@ -301,8 +300,8 @@ class SubListIterable<E> extends ListIterable<E> {
     if (_endOrLength != null && _endOrLength < end) end = _endOrLength;
     int length = end - start;
     if (length < 0) length = 0;
-    List<E> result = growable ? (new List<E>()..length = length)
-                              : new List<E>(length);
+    List<E> result =
+        growable ? (new List<E>()..length = length) : new List<E>(length);
     for (int i = 0; i < length; i++) {
       result[i] = _iterable.elementAt(start + i);
       if (_iterable.length < end) throw new ConcurrentModificationError(this);
@@ -325,7 +324,9 @@ class ListIterator<E> implements Iterator<E> {
   E _current;
 
   ListIterator(Iterable<E> iterable)
-      : _iterable = iterable, _length = iterable.length, _index = 0;
+      : _iterable = iterable,
+        _length = iterable.length,
+        _index = 0;
 
   E get current => _current;
 
@@ -412,7 +413,6 @@ class MappedListIterable<S, T> extends ListIterable<T> {
   T elementAt(int index) => _f(_source.elementAt(index));
 }
 
-
 typedef bool _ElementPredicate<E>(E element);
 
 class WhereIterable<E> extends Iterable<E> {
@@ -429,7 +429,7 @@ class WhereIterable<E> extends Iterable<E> {
 
 class WhereIterator<E> extends Iterator<E> {
   final Iterator<E> _iterator;
-  final _ElementPredicate _f;
+  final _ElementPredicate<E> _f;
 
   WhereIterator(this._iterator, this._f);
 
@@ -509,7 +509,7 @@ class TakeIterable<E> extends Iterable<E> {
 }
 
 class EfficientLengthTakeIterable<E> extends TakeIterable<E>
-                                     implements EfficientLengthIterable<E> {
+    implements EfficientLengthIterable<E> {
   EfficientLengthTakeIterable(Iterable<E> iterable, int takeCount)
       : super._(iterable, takeCount);
 
@@ -519,7 +519,6 @@ class EfficientLengthTakeIterable<E> extends TakeIterable<E>
     return iterableLength;
   }
 }
-
 
 class TakeIterator<E> extends Iterator<E> {
   final Iterator<E> _iterator;
@@ -585,22 +584,13 @@ class SkipIterable<E> extends Iterable<E> {
     if (iterable is EfficientLengthIterable) {
       return new EfficientLengthSkipIterable<E>(iterable, count);
     }
-    return new SkipIterable<E>._(iterable, count);
+    return new SkipIterable<E>._(iterable, _checkCount(count));
   }
 
-  SkipIterable._(this._iterable, this._skipCount) {
-    if (_skipCount is! int) {
-      throw new ArgumentError.value(_skipCount, "count is not an integer");
-    }
-    RangeError.checkNotNegative(_skipCount, "count");
-  }
+  SkipIterable._(this._iterable, this._skipCount);
 
   Iterable<E> skip(int count) {
-    if (_skipCount is! int) {
-      throw new ArgumentError.value(_skipCount, "count is not an integer");
-    }
-    RangeError.checkNotNegative(_skipCount, "count");
-    return new SkipIterable<E>._(_iterable, _skipCount + count);
+    return new SkipIterable<E>._(_iterable, _skipCount + _checkCount(count));
   }
 
   Iterator<E> get iterator {
@@ -609,15 +599,32 @@ class SkipIterable<E> extends Iterable<E> {
 }
 
 class EfficientLengthSkipIterable<E> extends SkipIterable<E>
-                                     implements EfficientLengthIterable<E> {
-  EfficientLengthSkipIterable(Iterable<E> iterable, int skipCount)
-      : super._(iterable, skipCount);
+    implements EfficientLengthIterable<E> {
+  factory EfficientLengthSkipIterable(Iterable<E> iterable, int count) {
+    return new EfficientLengthSkipIterable<E>._(iterable, _checkCount(count));
+  }
+
+  EfficientLengthSkipIterable._(Iterable<E> iterable, int count)
+      : super._(iterable, count);
 
   int get length {
     int length = _iterable.length - _skipCount;
     if (length >= 0) return length;
     return 0;
   }
+
+  Iterable<E> skip(int count) {
+    return new EfficientLengthSkipIterable<E>._(
+        _iterable, _skipCount + _checkCount(count));
+  }
+}
+
+int _checkCount(int count) {
+  if (count is! int) {
+    throw new ArgumentError.value(count, "count", "is not an integer");
+  }
+  RangeError.checkNotNegative(count, "count");
+  return count;
 }
 
 class SkipIterator<E> extends Iterator<E> {
@@ -682,13 +689,21 @@ class EmptyIterable<E> extends EfficientLengthIterable<E> {
 
   int get length => 0;
 
-  E get first { throw IterableElementError.noElement(); }
+  E get first {
+    throw IterableElementError.noElement();
+  }
 
-  E get last { throw IterableElementError.noElement(); }
+  E get last {
+    throw IterableElementError.noElement();
+  }
 
-  E get single { throw IterableElementError.noElement(); }
+  E get single {
+    throw IterableElementError.noElement();
+  }
 
-  E elementAt(int index) { throw new RangeError.range(index, 0, 0, "index"); }
+  E elementAt(int index) {
+    throw new RangeError.range(index, 0, 0, "index");
+  }
 
   bool contains(Object element) => false;
 
@@ -696,17 +711,17 @@ class EmptyIterable<E> extends EfficientLengthIterable<E> {
 
   bool any(bool test(E element)) => false;
 
-  E firstWhere(bool test(E element), { E orElse() }) {
+  E firstWhere(bool test(E element), {E orElse()}) {
     if (orElse != null) return orElse();
     throw IterableElementError.noElement();
   }
 
-  E lastWhere(bool test(E element), { E orElse() }) {
+  E lastWhere(bool test(E element), {E orElse()}) {
     if (orElse != null) return orElse();
     throw IterableElementError.noElement();
   }
 
-  E singleWhere(bool test(E element), { E orElse() }) {
+  E singleWhere(bool test(E element), {E orElse()}) {
     if (orElse != null) return orElse();
     throw IterableElementError.noElement();
   }

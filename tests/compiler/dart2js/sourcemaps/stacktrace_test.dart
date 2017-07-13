@@ -3,12 +3,10 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:async_helper/async_helper.dart';
 import 'package:compiler/compiler_new.dart';
-import 'package:compiler/src/apiimpl.dart';
 import 'package:compiler/src/commandline_options.dart';
 import 'package:compiler/src/dart2js.dart' as entry;
 import 'package:expect/expect.dart';
@@ -549,8 +547,11 @@ const List<LineException> afterExceptions = const [
       '_wrapJsFunctionForAsync.<anonymous function>', 'async_patch.dart'),
   const LineException(
       '_awaitOnObject.<anonymous function>', 'async_patch.dart'),
+  const LineException('_asyncAwait.<anonymous function>', 'async_patch.dart'),
+  const LineException('_asyncStart.<anonymous function>', 'async_patch.dart'),
   const LineException('_RootZone.runUnary', 'zone.dart'),
   const LineException('_FutureListener.handleValue', 'future_impl.dart'),
+  const LineException('_Future._completeWithValue', 'future_impl.dart'),
   const LineException(
       '_Future._propagateToListeners.handleValueCallback', 'future_impl.dart'),
   const LineException('_Future._propagateToListeners', 'future_impl.dart'),

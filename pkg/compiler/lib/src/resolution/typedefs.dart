@@ -29,14 +29,8 @@ class TypedefResolverVisitor extends TypeDefinitionVisitor {
     scope = new TypeDeclarationScope(scope, element);
     resolveTypeVariableBounds(node.templateParameters);
 
-    FunctionSignature signature = SignatureResolver.analyze(
-        resolution,
-        scope,
-        node.typeParameters,
-        node.formals,
-        node.returnType,
-        element,
-        registry,
+    FunctionSignature signature = SignatureResolver.analyze(resolution, scope,
+        node.typeParameters, node.formals, node.returnType, element, registry,
         defaultValuesError: MessageKind.TYPEDEF_FORMAL_WITH_DEFAULT);
     element.functionSignature = signature;
 
@@ -55,7 +49,7 @@ class TypedefResolverVisitor extends TypeDefinitionVisitor {
 
 // TODO(johnniwinther): Replace with a traversal on the AST when the type
 // annotations in typedef alias are stored in a [TreeElements] mapping.
-class TypedefCyclicVisitor extends BaseDartTypeVisitor {
+class TypedefCyclicVisitor extends BaseResolutionDartTypeVisitor {
   final DiagnosticReporter reporter;
   final TypedefElementX element;
   bool hasCyclicReference = false;

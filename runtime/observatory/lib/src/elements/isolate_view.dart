@@ -61,7 +61,7 @@ class IsolateViewElement extends HtmlElement implements Renderable {
   M.ScriptRepository _scripts;
   M.FunctionRepository _functions;
   M.LibraryRepository _libraries;
-  M.InstanceRepository _instances;
+  M.ObjectRepository _objects;
   M.EvalRepository _eval;
   M.Function _function;
   M.ScriptRef _rootScript;
@@ -80,7 +80,7 @@ class IsolateViewElement extends HtmlElement implements Renderable {
       M.ScriptRepository scripts,
       M.FunctionRepository functions,
       M.LibraryRepository libraries,
-      M.InstanceRepository instances,
+      M.ObjectRepository objects,
       M.EvalRepository eval,
       {RenderingQueue queue}) {
     assert(vm != null);
@@ -90,7 +90,7 @@ class IsolateViewElement extends HtmlElement implements Renderable {
     assert(isolates != null);
     assert(scripts != null);
     assert(functions != null);
-    assert(instances != null);
+    assert(objects != null);
     assert(eval != null);
     assert(libraries != null);
     IsolateViewElement e = document.createElement(tag.name);
@@ -102,7 +102,7 @@ class IsolateViewElement extends HtmlElement implements Renderable {
     e._isolates = isolates;
     e._scripts = scripts;
     e._functions = functions;
-    e._instances = instances;
+    e._objects = objects;
     e._eval = eval;
     e._libraries = libraries;
     return e;
@@ -134,7 +134,7 @@ class IsolateViewElement extends HtmlElement implements Renderable {
   void render() {
     final uptime = new DateTime.now().difference(_isolate.startTime);
     final libraries = _isolate.libraries.toList();
-    final List<Thread> threads = _isolate.threads;
+    final List<M.Thread> threads = _isolate.threads;
     children = [
       navBar([
         new NavTopMenuElement(queue: _r.queue),
@@ -181,10 +181,11 @@ class IsolateViewElement extends HtmlElement implements Renderable {
                 ? [
                     new BRElement(),
                     new SourceInsetElement(_isolate, _function.location,
-                        _scripts, _instances, _events,
+                        _scripts, _objects, _events,
                         currentPos:
                             M.topFrame(isolate.pauseEvent).location.tokenPos,
-                        queue: _r.queue)..classes = ['header_inset']
+                        queue: _r.queue)
+                      ..classes = ['header_inset']
                   ]
                 : const [],
           new HRElement(),
@@ -302,13 +303,13 @@ class IsolateViewElement extends HtmlElement implements Renderable {
                 ..children = [
                   new DivElement()
                     ..classes = ['memberName']
-                    ..text = 'native memory usage high watermark'
-                    ..title = '''The maximum amount of native memory allocated
-                    by the isolate over it\'s life.''',
+                    ..text = 'zone capacity high watermark'
+                    ..title = '''The maximum amount of native zone memory
+                    allocated by the isolate over it\'s life.''',
                   new DivElement()
                     ..classes = ['memberValue']
-                    ..text = Utils.formatSize(_isolate.memoryHighWatermark)
-                    ..title = '${_isolate.memoryHighWatermark}B'
+                    ..text = Utils.formatSize(_isolate.zoneHighWatermark)
+                    ..title = '${_isolate.zoneHighWatermark}B'
                 ],
               new BRElement(),
               new DivElement()
@@ -340,20 +341,19 @@ class IsolateViewElement extends HtmlElement implements Renderable {
                     ..classes = ['memberValue']
                     ..children = [
                       new CurlyBlockElement(queue: _r.queue)
-                        ..content = threads
-                          .map(_populateThreadInfo)
+                        ..content = threads.map(_populateThreadInfo)
                     ]
                 ]
             ],
           new HRElement(),
-          new EvalBoxElement(_isolate, _isolate.rootLibrary, _instances, _eval,
+          new EvalBoxElement(_isolate, _isolate.rootLibrary, _objects, _eval,
               queue: _r.queue),
           new DivElement()
             ..children = _rootScript != null
                 ? [
                     new HRElement(),
                     new ScriptInsetElement(
-                        _isolate, _rootScript, _scripts, _instances, _events,
+                        _isolate, _rootScript, _scripts, _objects, _events,
                         queue: _r.queue)
                   ]
                 : const [],
@@ -363,13 +363,11 @@ class IsolateViewElement extends HtmlElement implements Renderable {
     ];
   }
 
-  DivElement _populateThreadInfo(Thread t) {
-    int index = 0;
+  DivElement _populateThreadInfo(M.Thread t) {
     return new DivElement()
       ..classes = ['indent']
       ..children = [
-        new SpanElement()
-          ..text = '${t.id} ',
+        new SpanElement()..text = '${t.id} ',
         new CurlyBlockElement(queue: _r.queue)
           ..content = [
             new DivElement()
@@ -377,55 +375,15 @@ class IsolateViewElement extends HtmlElement implements Renderable {
               ..text = 'kind ${t.kindString}',
             new DivElement()
               ..classes = ['indent']
-              ..title = '${t.memoryHighWatermark}B'
-              ..text =
-              'native memory usage high watermark ${Utils.formatSize(t.memoryHighWatermark)}',
+              ..title = '${t.zoneHighWatermark}B'
+              ..text = 'zone capacity high watermark '
+                  '${Utils.formatSize(t.zoneHighWatermark)}',
             new DivElement()
-              ..children = t.zones
-                .map((z) => new DivElement()
-                ..classes = ['indent']
-                ..children = [
-                  new DivElement()
-                    ..children = [
-                      new SpanElement()
-                        ..children = [
-                          new SpanElement()
-                            ..text = 'zone ${index++} ',
-                          new CurlyBlockElement(queue: _r.queue)
-                            ..content = [
-                              new DivElement()
-                                ..classes = ['memberList']
-                                ..children = [
-                                  new DivElement()
-                                    ..classes = ['memberItem']
-                                    ..children = [
-                                      new SpanElement()
-                                        ..classes = ['memberName']
-                                        ..text = 'used ',
-                                      new SpanElement()
-                                        ..classes = ['memberValue']
-                                        ..title = '${z.used}B'
-                                        ..text =
-                                        Utils.formatSize(z.used)
-                                    ],
-                                  new DivElement()
-                                    ..classes = ['memberItem']
-                                    ..children = [
-                                        new SpanElement()
-                                          ..classes = ['memberName']
-                                          ..text = 'capacity',
-                                        new SpanElement()
-                                          ..classes = ['memberValue']
-                                          ..title = '${z.capacity}B'
-                                          ..text =
-                                          Utils.formatSize(z.capacity)
-                                    ]
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-          )]
+              ..classes = ['indent']
+              ..title = '${t.zoneCapacity}B'
+              ..text = 'current zone capacity ' +
+                  '${Utils.formatSize(t.zoneCapacity)}',
+          ]
       ];
   }
 

@@ -2,11 +2,11 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.analysis.get_navigation;
-
-import 'package:analysis_server/plugin/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
 import 'package:analysis_server/src/domain_analysis.dart';
 import 'package:analyzer/file_system/file_system.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -15,7 +15,6 @@ import 'notification_navigation_test.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(GetNavigationTest);
-    defineReflectiveTests(GetNavigationTest_Driver);
   });
 }
 
@@ -25,6 +24,7 @@ class GetNavigationTest extends AbstractNavigationTest {
 
   @override
   void setUp() {
+    generateSummaryFiles = true;
     super.setUp();
     server.handlers = [
       new AnalysisDomainHandler(server),
@@ -44,9 +44,27 @@ main() {
     assertHasTarget('test = 0');
   }
 
-  test_fileDoesNotExist() {
+  test_fileDoesNotExist() async {
     String file = '$projectPath/doesNotExist.dart';
-    return _checkInvalid(file, -1, -1);
+    Request request = _createGetNavigationRequest(file, 0, 100);
+    Response response = await serverChannel.sendRequest(request);
+    expect(response.error, isNull);
+    expect(response.result['files'], isEmpty);
+    expect(response.result['targets'], isEmpty);
+    expect(response.result['regions'], isEmpty);
+  }
+
+  test_fileOutsideOfRoot() async {
+    testFile = '/outside.dart';
+    addTestFile('''
+main() {
+  var test = 0;
+  print(test);
+}
+''');
+    await _getNavigation(testFile, testCode.indexOf('test);'), 0);
+    assertHasRegion('test);');
+    assertHasTarget('test = 0');
   }
 
   test_importDirective() async {
@@ -215,13 +233,6 @@ main() {
     assertHasTarget('test = 0');
   }
 
-  _checkInvalid(String file, int offset, int length) async {
-    Request request = _createGetNavigationRequest(file, offset, length);
-    Response response = await serverChannel.sendRequest(request);
-    expect(response.error, isNotNull);
-    expect(response.error.code, RequestErrorCode.GET_NAVIGATION_INVALID_FILE);
-  }
-
   Request _createGetNavigationRequest(String file, int offset, int length) {
     return new AnalysisGetNavigationParams(file, offset, length)
         .toRequest(requestId);
@@ -235,28 +246,5 @@ main() {
     targetFiles = result.files;
     targets = result.targets;
     regions = result.regions;
-  }
-}
-
-@reflectiveTest
-class GetNavigationTest_Driver extends GetNavigationTest {
-  @override
-  void setUp() {
-    enableNewAnalysisDriver = true;
-    generateSummaryFiles = true;
-    super.setUp();
-  }
-
-  test_fileOutsideOfRoot() async {
-    testFile = '/outside.dart';
-    addTestFile('''
-main() {
-  var test = 0;
-  print(test);
-}
-''');
-    await _getNavigation(testFile, testCode.indexOf('test);'), 0);
-    assertHasRegion('test);');
-    assertHasTarget('test = 0');
   }
 }

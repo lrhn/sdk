@@ -15,7 +15,7 @@
 
 // An extra check since we are assuming the existence of /proc/cpuinfo below.
 #if !defined(USING_SIMULATOR) && !defined(__linux__) && !defined(ANDROID) &&   \
-    !TARGET_OS_IOS
+    !HOST_OS_IOS
 #error ARM cross-compile only supported on Linux
 #endif
 
@@ -1542,7 +1542,7 @@ void Assembler::MarkExceptionHandler(Label* label) {
 void Assembler::Drop(intptr_t stack_elements) {
   ASSERT(stack_elements >= 0);
   if (stack_elements > 0) {
-    AddImmediate(SP, SP, stack_elements * kWordSize);
+    AddImmediate(SP, stack_elements * kWordSize);
   }
 }
 
@@ -1594,7 +1594,7 @@ void Assembler::CheckCodePointer() {
   const intptr_t offset = CodeSize() + Instr::kPCReadOffset +
                           Instructions::HeaderSize() - kHeapObjectTag;
   mov(R0, Operand(PC));
-  AddImmediate(R0, R0, -offset);
+  AddImmediate(R0, -offset);
   ldr(IP, FieldAddress(CODE_REG, Code::saved_instructions_offset()));
   cmp(R0, Operand(IP));
   b(&instructions_ok, EQ);
@@ -1791,8 +1791,8 @@ void Assembler::StoreIntoObject(Register object,
   if (object != R0) {
     mov(R0, Operand(object));
   }
-  ldr(CODE_REG, Address(THR, Thread::update_store_buffer_code_offset()));
   ldr(LR, Address(THR, Thread::update_store_buffer_entry_point_offset()));
+  ldr(CODE_REG, Address(THR, Thread::update_store_buffer_code_offset()));
   blx(LR);
   PopList(regs);
   Bind(&done);
@@ -3016,11 +3016,6 @@ void Assembler::CopyFloat64x2Field(Register dst,
 }
 
 
-void Assembler::AddImmediate(Register rd, int32_t value, Condition cond) {
-  AddImmediate(rd, rd, value, cond);
-}
-
-
 void Assembler::AddImmediate(Register rd,
                              Register rn,
                              int32_t value,
@@ -3047,9 +3042,12 @@ void Assembler::AddImmediate(Register rd,
     } else if (Operand::CanHold(~(-value), &o)) {
       mvn(IP, o, cond);
       sub(rd, rn, Operand(IP), cond);
-    } else {
+    } else if (value > 0) {
       LoadDecodableImmediate(IP, value, cond);
       add(rd, rn, Operand(IP), cond);
+    } else {
+      LoadDecodableImmediate(IP, -value, cond);
+      sub(rd, rn, Operand(IP), cond);
     }
   }
 }
@@ -3190,7 +3188,9 @@ void Assembler::EnterFrame(RegList regs, intptr_t frame_size) {
     // Set FP to the saved previous FP.
     add(FP, SP, Operand(4 * NumRegsBelowFP(regs)));
   }
-  AddImmediate(SP, -frame_size);
+  if (frame_size != 0) {
+    AddImmediate(SP, -frame_size);
+  }
 }
 
 
@@ -3471,7 +3471,7 @@ void Assembler::TryAllocate(const Class& cls,
     ASSERT(instance_size >= kHeapObjectTag);
     AddImmediate(instance_reg, -instance_size + kHeapObjectTag);
 
-    uword tags = 0;
+    uint32_t tags = 0;
     tags = RawObject::SizeTag::update(instance_size, tags);
     ASSERT(cls.id() != kIllegalCid);
     tags = RawObject::ClassIdTag::update(cls.id(), tags);
@@ -3520,7 +3520,7 @@ void Assembler::TryAllocateArray(intptr_t cid,
 
     // Initialize the tags.
     // instance: new object start as a tagged pointer.
-    uword tags = 0;
+    uint32_t tags = 0;
     tags = RawObject::ClassIdTag::update(cid, tags);
     tags = RawObject::SizeTag::update(instance_size, tags);
     LoadImmediate(temp1, tags);

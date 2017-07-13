@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_ANDROID)
+#if defined(HOST_OS_ANDROID)
 
 #include "vm/os.h"
 
@@ -209,7 +209,7 @@ intptr_t OS::PreferredCodeAlignment() {
 #if defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_X64) ||                   \
     defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_DBC)
   const int kMinimumAlignment = 32;
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_ARM)
   const int kMinimumAlignment = 16;
 #else
 #error Unsupported architecture.
@@ -222,11 +222,6 @@ intptr_t OS::PreferredCodeAlignment() {
   ASSERT(alignment >= kMinimumAlignment);
   ASSERT(alignment <= OS::kMaxPreferredCodeAlignment);
   return alignment;
-}
-
-
-bool OS::AllowStackFrameIteratorFromAnotherThread() {
-  return false;
 }
 
 
@@ -273,6 +268,12 @@ void OS::SleepMicros(int64_t micros) {
 
 void OS::DebugBreak() {
   __builtin_trap();
+}
+
+
+uintptr_t DART_NOINLINE OS::GetProgramCounter() {
+  return reinterpret_cast<uintptr_t>(
+      __builtin_extract_return_addr(__builtin_return_address(0)));
 }
 
 
@@ -444,4 +445,4 @@ void OS::Exit(int code) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_ANDROID)
+#endif  // defined(HOST_OS_ANDROID)

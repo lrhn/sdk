@@ -9,7 +9,8 @@ import "package:async_helper/async_helper.dart";
 import 'type_test_helper.dart';
 import 'package:compiler/src/elements/resolution_types.dart';
 import "package:compiler/src/elements/elements.dart"
-    show Element, ClassElement, MemberSignature, Name, PublicName, Member;
+    show ClassElement, MemberSignature;
+import "package:compiler/src/elements/names.dart";
 import "package:compiler/src/resolution/class_members.dart"
     show MembersCreator, DeclaredMember, ErroneousMember, SyntheticMember;
 
@@ -193,7 +194,6 @@ void testClassMembers() {
           .then((env) {
         ResolutionInterfaceType bool_ = env['bool'];
         ResolutionInterfaceType String_ = env['String'];
-        ResolutionInterfaceType num_ = env['num'];
         ResolutionInterfaceType int_ = env['int'];
         ResolutionDynamicType dynamic_ = env['dynamic'];
         ResolutionVoidType void_ = env['void'];
@@ -453,7 +453,6 @@ void testInterfaceMembers() {
         ResolutionDynamicType dynamic_ = env['dynamic'];
         ResolutionVoidType void_ = env['void'];
         ResolutionInterfaceType num_ = env['num'];
-        ResolutionInterfaceType int_ = env['int'];
 
         ResolutionInterfaceType A = env['A'];
         ResolutionInterfaceType B = env['B'];
@@ -621,9 +620,6 @@ void testClassVsInterfaceMembers() {
     abstract class C extends A implements B {}
     """).then((env) {
         ResolutionDynamicType dynamic_ = env['dynamic'];
-        ResolutionVoidType void_ = env['void'];
-        ResolutionInterfaceType num_ = env['num'];
-        ResolutionInterfaceType int_ = env['int'];
 
         ResolutionInterfaceType A = env['A'];
         ResolutionInterfaceType B = env['B'];
@@ -675,9 +671,6 @@ void testMixinMembers() {
     abstract class C<U, V> extends Object with A<U> implements B<V> {}
     """).then((env) {
         ResolutionDynamicType dynamic_ = env['dynamic'];
-        ResolutionVoidType void_ = env['void'];
-        ResolutionInterfaceType num_ = env['num'];
-        ResolutionInterfaceType int_ = env['int'];
 
         ClassElement A = env.getElement('A');
         ClassElement B = env.getElement('B');
@@ -747,12 +740,8 @@ void testMixinMembersWithoutImplements() {
     abstract class C extends Object with B {}
     """).then((env) {
         ResolutionDynamicType dynamic_ = env['dynamic'];
-        ResolutionVoidType void_ = env['void'];
-        ResolutionInterfaceType num_ = env['num'];
-        ResolutionInterfaceType int_ = env['int'];
 
         ResolutionInterfaceType A = env['A'];
-        ResolutionInterfaceType B = env['B'];
         ResolutionInterfaceType C = env['C'];
 
         // Ensure that members have been computed on all classes.

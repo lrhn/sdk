@@ -80,7 +80,7 @@ class RuntimeEntry : public ValueObject {
 #ifndef PRODUCT
 #define TRACE_RUNTIME_CALL(format, name)                                       \
   if (FLAG_trace_runtime_calls) {                                              \
-    OS::Print("Runtime call: " format "\n", name);                             \
+    THR_Print("Runtime call: " format "\n", name);                             \
   }
 #else
 #define TRACE_RUNTIME_CALL(format, name)                                       \
@@ -130,7 +130,7 @@ class RuntimeEntry : public ValueObject {
 
 #define END_LEAF_RUNTIME_ENTRY }
 
-// TODO(rmacnak): Fix alignment issue on simarm and simmips and use
+// TODO(rmacnak): Fix alignment issue on simarm and use
 // DEFINE_LEAF_RUNTIME_ENTRY instead.
 #define DEFINE_RAW_LEAF_RUNTIME_ENTRY(name, argument_count, is_float, func)    \
   extern const RuntimeEntry k##name##RuntimeEntry(                             \
@@ -139,11 +139,6 @@ class RuntimeEntry : public ValueObject {
 #define DECLARE_LEAF_RUNTIME_ENTRY(type, name, ...)                            \
   extern const RuntimeEntry k##name##RuntimeEntry;                             \
   extern "C" type DLRT_##name(__VA_ARGS__);
-
-
-// Declare all runtime functions here.
-RUNTIME_ENTRY_LIST(DECLARE_RUNTIME_ENTRY)
-LEAF_RUNTIME_ENTRY_LIST(DECLARE_LEAF_RUNTIME_ENTRY)
 
 
 // Declare all runtime functions here.
@@ -183,6 +178,13 @@ RuntimeFunctionId RuntimeEntry::RuntimeFunctionIdFromAddress(uword address) {
 #undef CHECK_LEAF_RUNTIME_ADDRESS
   return kNoRuntimeFunctionId;
 }
+
+const char* DeoptReasonToCString(ICData::DeoptReasonId deopt_reason);
+
+void DeoptimizeAt(const Code& optimized_code, StackFrame* frame);
+void DeoptimizeFunctionsOnStack();
+
+double DartModulo(double a, double b);
 
 }  // namespace dart
 

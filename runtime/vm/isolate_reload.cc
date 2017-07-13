@@ -6,7 +6,7 @@
 
 #include "vm/become.h"
 #include "vm/bit_vector.h"
-#include "vm/code_generator.h"
+#include "vm/runtime_entry.h"
 #include "vm/compiler.h"
 #include "vm/dart_api_impl.h"
 #include "vm/hash_table.h"
@@ -473,7 +473,9 @@ IsolateReloadContext::IsolateReloadContext(Isolate* isolate, JSONStream* js)
 }
 
 
-IsolateReloadContext::~IsolateReloadContext() {}
+IsolateReloadContext::~IsolateReloadContext() {
+  ASSERT(saved_class_table_ == NULL);
+}
 
 
 void IsolateReloadContext::ReportError(const Error& error) {
@@ -634,13 +636,22 @@ void IsolateReloadContext::Reload(bool force_reload,
   // WEIRD CONTROL FLOW ENDS.
   TIR_Print("---- EXITED TAG HANDLER\n");
 
+  // Re-enable the background compiler. Do this before propagating any errors.
   BackgroundCompiler::Enable();
 
-  if (result.IsUnwindError() || result.IsUnhandledException()) {
-    // If the tag handler returns with an UnwindError or an UnhandledException
-    // error, propagate it and give up.
-    Exceptions::PropagateError(Error::Cast(result));
-    UNREACHABLE();
+  if (result.IsUnwindError()) {
+    if (thread->top_exit_frame_info() == 0) {
+      // We can only propagate errors when there are Dart frames on the stack.
+      // In this case there are no Dart frames on the stack and we set the
+      // thread's sticky error. This error will be returned to the message
+      // handler.
+      thread->set_sticky_error(Error::Cast(result));
+    } else {
+      // If the tag handler returns with an UnwindError error, propagate it and
+      // give up.
+      Exceptions::PropagateError(Error::Cast(result));
+      UNREACHABLE();
+    }
   }
 
   // Other errors (e.g. a parse error) are captured by the reload system.
@@ -763,7 +774,9 @@ void IsolateReloadContext::ReportOnJSON(JSONStream* stream) {
 
 void IsolateReloadContext::EnsuredUnoptimizedCodeForStack() {
   TIMELINE_SCOPE(EnsuredUnoptimizedCodeForStack);
-  StackFrameIterator it(StackFrameIterator::kDontValidateFrames);
+  StackFrameIterator it(StackFrameIterator::kDontValidateFrames,
+                        Thread::Current(),
+                        StackFrameIterator::kNoCrossThreadIteration);
 
   Function& func = Function::Handle();
   while (it.HasNextFrame()) {
@@ -1138,6 +1151,9 @@ void IsolateReloadContext::Commit() {
   if (HasInstanceMorphers()) {
     // Perform shape shifting of instances if necessary.
     MorphInstances();
+  } else {
+    free(saved_class_table_);
+    saved_class_table_ = NULL;
   }
 
 #ifdef DEBUG
@@ -1546,7 +1562,8 @@ void IsolateReloadContext::ResetUnoptimizedICsOnStack() {
 
   Code& code = Code::Handle(zone);
   Function& function = Function::Handle(zone);
-  DartFrameIterator iterator;
+  DartFrameIterator iterator(thread,
+                             StackFrameIterator::kNoCrossThreadIteration);
   StackFrame* frame = iterator.NextFrame();
   while (frame != NULL) {
     code = frame->LookupDartCode();

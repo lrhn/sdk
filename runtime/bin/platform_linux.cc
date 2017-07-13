@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_LINUX)
+#if defined(HOST_OS_LINUX)
 
 #include "bin/platform.h"
 
@@ -82,6 +82,15 @@ const char* Platform::LibraryExtension() {
 }
 
 
+const char* Platform::LocaleName() {
+  char* lang = getenv("LANG");
+  if (lang == NULL) {
+    return "en_US";
+  }
+  return lang;
+}
+
+
 bool Platform::LocalHostname(char* buffer, intptr_t buffer_length) {
   return gethostname(buffer, buffer_length) == 0;
 }
@@ -105,6 +114,11 @@ char** Platform::Environment(intptr_t* count) {
 }
 
 
+const char* Platform::GetExecutableName() {
+  return executable_name_;
+}
+
+
 const char* Platform::ResolveExecutablePath() {
   return File::LinkTarget("/proc/self/exe");
 }
@@ -117,4 +131,4 @@ void Platform::Exit(int exit_code) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_LINUX)
+#endif  // defined(HOST_OS_LINUX)

@@ -13,6 +13,7 @@ import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/error/error.dart';
 import 'package:analyzer/exception/exception.dart';
+import 'package:analyzer/src/dart/ast/ast.dart';
 import 'package:analyzer/src/dart/element/element.dart';
 import 'package:analyzer/src/dart/element/type.dart';
 import 'package:analyzer/src/error/codes.dart';
@@ -152,8 +153,8 @@ class ApiElementBuilder extends _BaseElementBuilder {
       element.factory = true;
     }
     element.functions = holder.functions;
-    element.labels = holder.labels;
-    element.localVariables = holder.localVariables;
+    element.encloseElements(holder.labels);
+    element.encloseElements(holder.localVariables);
     element.parameters = holder.parameters;
     element.isConst = node.constKeyword != null;
     element.isCycleFree = element.isConst;
@@ -228,35 +229,6 @@ class ApiElementBuilder extends _BaseElementBuilder {
   }
 
   @override
-  Object visitFieldFormalParameter(FieldFormalParameter node) {
-    if (node.parent is! DefaultFormalParameter) {
-      SimpleIdentifier parameterName = node.identifier;
-      FieldFormalParameterElementImpl parameter =
-          new FieldFormalParameterElementImpl.forNode(parameterName);
-      _setCodeRange(parameter, node);
-      _setFieldParameterField(node, parameter);
-      parameter.isConst = node.isConst;
-      parameter.isExplicitlyCovariant = node.covariantKeyword != null;
-      parameter.isFinal = node.isFinal;
-      parameter.parameterKind = node.kind;
-      _currentHolder.addParameter(parameter);
-      parameterName.staticElement = parameter;
-    }
-    //
-    // The children of this parameter include any parameters defined on the type
-    // of this parameter.
-    //
-    ElementHolder holder = new ElementHolder();
-    _visitChildren(holder, node);
-    ParameterElementImpl element = node.element;
-    element.metadata = _createElementAnnotations(node.metadata);
-    element.parameters = holder.parameters;
-    element.typeParameters = holder.typeParameters;
-    holder.validate();
-    return null;
-  }
-
-  @override
   Object visitFunctionDeclaration(FunctionDeclaration node) {
     FunctionExpression expression = node.functionExpression;
     if (expression != null) {
@@ -271,12 +243,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
         _setCodeRange(element, node);
         element.metadata = _createElementAnnotations(node.metadata);
         setElementDocumentationComment(element, node);
-        if (node.externalKeyword != null) {
+        if (node.externalKeyword != null || body is NativeFunctionBody) {
           element.external = true;
         }
         element.functions = holder.functions;
-        element.labels = holder.labels;
-        element.localVariables = holder.localVariables;
+        element.encloseElements(holder.labels);
+        element.encloseElements(holder.localVariables);
         element.parameters = holder.parameters;
         element.typeParameters = holder.typeParameters;
         if (body.isAsynchronous) {
@@ -312,12 +284,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
           _setCodeRange(getter, node);
           getter.metadata = _createElementAnnotations(node.metadata);
           setElementDocumentationComment(getter, node);
-          if (node.externalKeyword != null) {
+          if (node.externalKeyword != null || body is NativeFunctionBody) {
             getter.external = true;
           }
           getter.functions = holder.functions;
-          getter.labels = holder.labels;
-          getter.localVariables = holder.localVariables;
+          getter.encloseElements(holder.labels);
+          getter.encloseElements(holder.localVariables);
           if (body.isAsynchronous) {
             getter.asynchronous = true;
           }
@@ -340,12 +312,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
           _setCodeRange(setter, node);
           setter.metadata = _createElementAnnotations(node.metadata);
           setElementDocumentationComment(setter, node);
-          if (node.externalKeyword != null) {
+          if (node.externalKeyword != null || body is NativeFunctionBody) {
             setter.external = true;
           }
           setter.functions = holder.functions;
-          setter.labels = holder.labels;
-          setter.localVariables = holder.localVariables;
+          setter.encloseElements(holder.labels);
+          setter.encloseElements(holder.localVariables);
           setter.parameters = holder.parameters;
           if (body.isAsynchronous) {
             setter.asynchronous = true;
@@ -385,8 +357,8 @@ class ApiElementBuilder extends _BaseElementBuilder {
         new FunctionElementImpl.forOffset(node.beginToken.offset);
     _setCodeRange(element, node);
     element.functions = holder.functions;
-    element.labels = holder.labels;
-    element.localVariables = holder.localVariables;
+    element.encloseElements(holder.labels);
+    element.encloseElements(holder.localVariables);
     element.parameters = holder.parameters;
     element.typeParameters = holder.typeParameters;
     if (body.isAsynchronous) {
@@ -419,6 +391,27 @@ class ApiElementBuilder extends _BaseElementBuilder {
     element.typeParameters = typeParameters;
     _createTypeParameterTypes(typeParameters);
     element.type = new FunctionTypeImpl.forTypedef(element);
+    _currentHolder.addTypeAlias(element);
+    aliasName.staticElement = element;
+    holder.validate();
+    return null;
+  }
+
+  @override
+  Object visitGenericTypeAlias(GenericTypeAlias node) {
+    ElementHolder holder = new ElementHolder();
+    _visitChildren(holder, node);
+    SimpleIdentifier aliasName = node.name;
+    List<TypeParameterElement> typeParameters = holder.typeParameters;
+    GenericTypeAliasElementImpl element =
+        new GenericTypeAliasElementImpl.forNode(aliasName);
+    _setCodeRange(element, node);
+    element.metadata = _createElementAnnotations(node.metadata);
+    setElementDocumentationComment(element, node);
+    element.typeParameters = typeParameters;
+    _createTypeParameterTypes(typeParameters);
+    element.type = new FunctionTypeImpl.forTypedef(element);
+    element.function = node.functionType?.type?.element;
     _currentHolder.addTypeAlias(element);
     aliasName.staticElement = element;
     holder.validate();
@@ -462,12 +455,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
         element.metadata = _createElementAnnotations(node.metadata);
         setElementDocumentationComment(element, node);
         element.abstract = node.isAbstract;
-        if (node.externalKeyword != null) {
+        if (node.externalKeyword != null || body is NativeFunctionBody) {
           element.external = true;
         }
         element.functions = holder.functions;
-        element.labels = holder.labels;
-        element.localVariables = holder.localVariables;
+        element.encloseElements(holder.labels);
+        element.encloseElements(holder.localVariables);
         element.parameters = holder.parameters;
         element.isStatic = isStatic;
         element.typeParameters = holder.typeParameters;
@@ -500,12 +493,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
           _setCodeRange(getter, node);
           getter.metadata = _createElementAnnotations(node.metadata);
           setElementDocumentationComment(getter, node);
-          if (node.externalKeyword != null) {
+          if (node.externalKeyword != null || body is NativeFunctionBody) {
             getter.external = true;
           }
           getter.functions = holder.functions;
-          getter.labels = holder.labels;
-          getter.localVariables = holder.localVariables;
+          getter.encloseElements(holder.labels);
+          getter.encloseElements(holder.localVariables);
           if (body.isAsynchronous) {
             getter.asynchronous = true;
           }
@@ -528,12 +521,12 @@ class ApiElementBuilder extends _BaseElementBuilder {
           _setCodeRange(setter, node);
           setter.metadata = _createElementAnnotations(node.metadata);
           setElementDocumentationComment(setter, node);
-          if (node.externalKeyword != null) {
+          if (node.externalKeyword != null || body is NativeFunctionBody) {
             setter.external = true;
           }
           setter.functions = holder.functions;
-          setter.labels = holder.labels;
-          setter.localVariables = holder.localVariables;
+          setter.encloseElements(holder.labels);
+          setter.encloseElements(holder.localVariables);
           setter.parameters = holder.parameters;
           if (body.isAsynchronous) {
             setter.asynchronous = true;
@@ -1175,16 +1168,16 @@ class LocalElementBuilder extends _BaseElementBuilder {
     _setCodeRange(element, node);
     setElementDocumentationComment(element, node);
     element.metadata = _createElementAnnotations(node.metadata);
-    if (node.externalKeyword != null) {
+    FunctionBody body = expression.body;
+    if (node.externalKeyword != null || body is NativeFunctionBody) {
       element.external = true;
     }
     element.functions = holder.functions;
-    element.labels = holder.labels;
-    element.localVariables = holder.localVariables;
+    element.encloseElements(holder.labels);
+    element.encloseElements(holder.localVariables);
     element.parameters = holder.parameters;
     element.typeParameters = holder.typeParameters;
 
-    FunctionBody body = expression.body;
     if (body.isAsynchronous) {
       element.asynchronous = body.isAsynchronous;
     }
@@ -1224,8 +1217,8 @@ class LocalElementBuilder extends _BaseElementBuilder {
         new FunctionElementImpl.forOffset(node.beginToken.offset);
     _setCodeRange(element, node);
     element.functions = holder.functions;
-    element.labels = holder.labels;
-    element.localVariables = holder.localVariables;
+    element.encloseElements(holder.labels);
+    element.encloseElements(holder.localVariables);
     element.parameters = holder.parameters;
     element.typeParameters = holder.typeParameters;
 
@@ -1347,8 +1340,8 @@ abstract class _BaseElementBuilder extends RecursiveAstVisitor<Object> {
           new FunctionElementImpl.forOffset(defaultValue.beginToken.offset);
       initializer.hasImplicitReturnType = true;
       initializer.functions = holder.functions;
-      initializer.labels = holder.labels;
-      initializer.localVariables = holder.localVariables;
+      initializer.encloseElements(holder.labels);
+      initializer.encloseElements(holder.localVariables);
       initializer.parameters = holder.parameters;
       initializer.isSynthetic = true;
       initializer.type = new FunctionTypeImpl(initializer);
@@ -1371,8 +1364,8 @@ abstract class _BaseElementBuilder extends RecursiveAstVisitor<Object> {
           new FunctionElementImpl.forOffset(initializer.beginToken.offset);
       initializerElement.hasImplicitReturnType = true;
       initializerElement.functions = holder.functions;
-      initializerElement.labels = holder.labels;
-      initializerElement.localVariables = holder.localVariables;
+      initializerElement.encloseElements(holder.labels);
+      initializerElement.encloseElements(holder.localVariables);
       initializerElement.isSynthetic = true;
       initializerElement.type = new FunctionTypeImpl(initializerElement);
       variable.initializer = initializerElement;
@@ -1405,8 +1398,40 @@ abstract class _BaseElementBuilder extends RecursiveAstVisitor<Object> {
       parameter.hasImplicitType = true;
     }
     _currentHolder.addParameter(parameter);
-    parameterName.staticElement = parameter;
+    if (normalParameter is SimpleFormalParameterImpl) {
+      normalParameter.element = parameter;
+    }
+    parameterName?.staticElement = parameter;
     normalParameter.accept(this);
+    return null;
+  }
+
+  @override
+  Object visitFieldFormalParameter(FieldFormalParameter node) {
+    if (node.parent is! DefaultFormalParameter) {
+      SimpleIdentifier parameterName = node.identifier;
+      FieldFormalParameterElementImpl parameter =
+          new FieldFormalParameterElementImpl.forNode(parameterName);
+      _setCodeRange(parameter, node);
+      _setFieldParameterField(node, parameter);
+      parameter.isConst = node.isConst;
+      parameter.isExplicitlyCovariant = node.covariantKeyword != null;
+      parameter.isFinal = node.isFinal;
+      parameter.parameterKind = node.kind;
+      _currentHolder.addParameter(parameter);
+      parameterName.staticElement = parameter;
+    }
+    //
+    // The children of this parameter include any parameters defined on the type
+    // of this parameter.
+    //
+    ElementHolder holder = new ElementHolder();
+    _visitChildren(holder, node);
+    ParameterElementImpl element = node.element;
+    element.metadata = _createElementAnnotations(node.metadata);
+    element.parameters = holder.parameters;
+    element.typeParameters = holder.typeParameters;
+    holder.validate();
     return null;
   }
 
@@ -1440,11 +1465,27 @@ abstract class _BaseElementBuilder extends RecursiveAstVisitor<Object> {
   }
 
   @override
+  Object visitGenericFunctionType(GenericFunctionType node) {
+    ElementHolder holder = new ElementHolder();
+    _visitChildren(holder, node);
+    GenericFunctionTypeElementImpl element =
+        new GenericFunctionTypeElementImpl.forOffset(node.beginToken.offset);
+    _setCodeRange(element, node);
+    element.parameters = holder.parameters;
+    element.typeParameters = holder.typeParameters;
+    FunctionType type = new FunctionTypeImpl(element);
+    element.type = type;
+    (node as GenericFunctionTypeImpl).type = type;
+    holder.validate();
+    return null;
+  }
+
+  @override
   Object visitSimpleFormalParameter(SimpleFormalParameter node) {
+    ParameterElementImpl parameter;
     if (node.parent is! DefaultFormalParameter) {
       SimpleIdentifier parameterName = node.identifier;
-      ParameterElementImpl parameter =
-          new ParameterElementImpl.forNode(parameterName);
+      parameter = new ParameterElementImpl.forNode(parameterName);
       _setCodeRange(parameter, node);
       parameter.isConst = node.isConst;
       parameter.isExplicitlyCovariant = node.covariantKeyword != null;
@@ -1455,11 +1496,12 @@ abstract class _BaseElementBuilder extends RecursiveAstVisitor<Object> {
         parameter.hasImplicitType = true;
       }
       _currentHolder.addParameter(parameter);
-      parameterName.staticElement = parameter;
+      (node as SimpleFormalParameterImpl).element = parameter;
+      parameterName?.staticElement = parameter;
     }
     super.visitSimpleFormalParameter(node);
-    (node.element as ElementImpl).metadata =
-        _createElementAnnotations(node.metadata);
+    parameter ??= node.element;
+    parameter?.metadata = _createElementAnnotations(node.metadata);
     return null;
   }
 

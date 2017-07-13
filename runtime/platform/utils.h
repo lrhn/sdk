@@ -184,7 +184,46 @@ class Utils {
   }
 
 
-  // Utility functions for converting values from host endianess to
+  // Adds two int64_t values with wrapping around
+  // (two's complement arithmetic).
+  static inline int64_t AddWithWrapAround(int64_t a, int64_t b) {
+    // Avoid undefined behavior by doing arithmetic in the unsigned type.
+    return static_cast<int64_t>(static_cast<uint64_t>(a) +
+                                static_cast<uint64_t>(b));
+  }
+
+
+  // Subtracts two int64_t values with wrapping around
+  // (two's complement arithmetic).
+  static inline int64_t SubWithWrapAround(int64_t a, int64_t b) {
+    // Avoid undefined behavior by doing arithmetic in the unsigned type.
+    return static_cast<int64_t>(static_cast<uint64_t>(a) -
+                                static_cast<uint64_t>(b));
+  }
+
+
+  // Multiplies two int64_t values with wrapping around
+  // (two's complement arithmetic).
+  static inline int64_t MulWithWrapAround(int64_t a, int64_t b) {
+    // Avoid undefined behavior by doing arithmetic in the unsigned type.
+    return static_cast<int64_t>(static_cast<uint64_t>(a) *
+                                static_cast<uint64_t>(b));
+  }
+
+
+  // Shifts int64_t value left. Supports any non-negative number of bits and
+  // silently discards shifted out bits.
+  static inline int64_t ShiftLeftWithTruncation(int64_t a, int64_t b) {
+    ASSERT(b >= 0);
+    if (b >= kBitsPerInt64) {
+      return 0;
+    }
+    // Avoid undefined behavior by doing arithmetic in the unsigned type.
+    return static_cast<int64_t>(static_cast<uint64_t>(a) << b);
+  }
+
+
+  // Utility functions for converting values from host endianness to
   // big or little endian values.
   static uint16_t HostToBigEndian16(uint16_t host_value);
   static uint32_t HostToBigEndian32(uint32_t host_value);
@@ -208,15 +247,15 @@ class Utils {
 
 }  // namespace dart
 
-#if defined(TARGET_OS_ANDROID)
+#if defined(HOST_OS_ANDROID)
 #include "platform/utils_android.h"
-#elif defined(TARGET_OS_FUCHSIA)
+#elif defined(HOST_OS_FUCHSIA)
 #include "platform/utils_fuchsia.h"
-#elif defined(TARGET_OS_LINUX)
+#elif defined(HOST_OS_LINUX)
 #include "platform/utils_linux.h"
-#elif defined(TARGET_OS_MACOS)
+#elif defined(HOST_OS_MACOS)
 #include "platform/utils_macos.h"
-#elif defined(TARGET_OS_WINDOWS)
+#elif defined(HOST_OS_WINDOWS)
 #include "platform/utils_win.h"
 #else
 #error Unknown target os.

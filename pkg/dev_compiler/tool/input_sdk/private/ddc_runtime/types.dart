@@ -18,7 +18,7 @@ final _typeObject = JS('', 'Symbol("typeObject")');
 ///     then the "classes" module manages the association between the
 ///     instantiated class and the original class declaration
 ///     and the type arguments with which it was instantiated.  This
-///     assocation can be queried via the "classes" module".
+///     association can be queried via the "classes" module".
 ///
 ///   - All other types are represented as instances of class TypeRep,
 ///     defined in this module.
@@ -56,106 +56,103 @@ final _typeObject = JS('', 'Symbol("typeObject")');
 // TODO(jmesserly): we shouldn't implement Type here. It should be moved down
 // to AbstractFunctionType.
 class TypeRep implements Type {
-  TypeRep() {
-    _initialize;
-  }
   String get name => this.toString();
+
+  @JSExportName('is')
+  bool is_T(object) => instanceOf(object, this);
+
+  @JSExportName('as')
+  as_T(object) => cast(object, this);
+
+  @JSExportName('_check')
+  check_T(object) => check(object, this);
 }
 
 class Dynamic extends TypeRep {
   toString() => 'dynamic';
+
+  @JSExportName('is')
+  bool is_T(object) => true;
+
+  @JSExportName('as')
+  as_T(object) => object;
+
+  @JSExportName('_check')
+  check_T(object) => object;
 }
 
-class LazyJSType implements Type {
-  final _jsTypeCallback;
-  final _dartName;
+class LazyJSType extends TypeRep {
+  final Function() _rawJSType;
+  final String _dartName;
 
-  LazyJSType(this._jsTypeCallback, this._dartName);
+  LazyJSType(this._rawJSType, this._dartName);
 
-  get _rawJSType => JS('', '#()', _jsTypeCallback);
+  toString() => typeName(_rawJSType());
 
-  toString() => _jsTypeCallback != null ? typeName(_rawJSType) : _dartName;
+  rawJSTypeForCheck() {
+    var raw = _rawJSType();
+    if (raw != null) return raw;
+    _warn('Cannot find native JavaScript type ($_dartName) for type check');
+    return _dynamic;
+  }
+
+  @JSExportName('is')
+  bool is_T(obj) => instanceOf(obj, rawJSTypeForCheck());
+
+  @JSExportName('as')
+  as_T(obj) => cast(obj, rawJSTypeForCheck());
+
+  @JSExportName('_check')
+  check_T(obj) => check(obj, rawJSTypeForCheck());
+}
+
+/// An anonymous JS type
+///
+/// For the purposes of subtype checks, these match any JS type.
+class AnonymousJSType extends TypeRep {
+  final String _dartName;
+  AnonymousJSType(this._dartName);
+  toString() => _dartName;
+
+  @JSExportName('is')
+  bool is_T(obj) => _isJSType(getReifiedType(obj));
+
+  @JSExportName('as')
+  as_T(obj) => is_T(obj) ? obj : cast(obj, this);
+
+  @JSExportName('_check')
+  check_T(obj) => is_T(obj) ? obj : check(obj, this);
 }
 
 void _warn(arg) {
   JS('void', 'console.warn(#)', arg);
 }
 
-_isInstanceOfLazyJSType(o, LazyJSType t) {
-  if (t._jsTypeCallback != null) {
-    if (t._rawJSType == null) {
-      var expected = t._dartName;
-      var actual = typeName(getReifiedType(o));
-      _warn('Cannot find native JavaScript type ($expected) '
-          'to type check $actual');
-      return true;
-    }
-    return JS('bool', 'dart.is(#, #)', o, t._rawJSType);
+bool _isJSType(t) => JS('bool', '!#[dart._runtimeType]', t);
+
+var _lazyJSTypes = JS('', 'new Map()');
+var _anonymousJSTypes = JS('', 'new Map()');
+
+lazyJSType(Function() getJSTypeCallback, String name) {
+  var ret = JS('', '#.get(#)', _lazyJSTypes, name);
+  if (ret == null) {
+    ret = new LazyJSType(getJSTypeCallback, name);
+    JS('', '#.set(#, #)', _lazyJSTypes, name, ret);
   }
-  if (o == null) return false;
-  // Anonymous case: match any JS type.
-  return _isJSObject(o);
+  return ret;
 }
 
-_asInstanceOfLazyJSType(o, LazyJSType t) {
-  if (t._jsTypeCallback != null) {
-    if (t._rawJSType == null) {
-      var expected = t._dartName;
-      var actual = typeName(getReifiedType(o));
-      _warn('Cannot find native JavaScript type ($expected) '
-          'to type check $actual');
-      return o;
-    }
-    return JS('bool', 'dart.as(#, #)', o, t._rawJSType);
+anonymousJSType(String name) {
+  var ret = JS('', '#.get(#)', _anonymousJSTypes, name);
+  if (ret == null) {
+    ret = new AnonymousJSType(name);
+    JS('', '#.set(#, #)', _anonymousJSTypes, name, ret);
   }
-  // Anonymous case: allow any JS type.
-  if (o == null) return null;
-  if (!_isJSObject(o)) _throwCastError(o, t, true);
-  return o;
+  return ret;
 }
-
-bool _isJSObject(o) => JS('bool', '!dart.getReifiedType(o)[dart._runtimeType]');
 
 @JSExportName('dynamic')
 final _dynamic = new Dynamic();
-
-final _initialize = _initialize2();
-
-_initialize2() => JS(
-    '',
-    '''(() => {
-  // JavaScript API forwards to runtime library.
-  $TypeRep.prototype.is = function is_T(object) {
-    return dart.is(object, this);
-  };
-  $TypeRep.prototype.as = function as_T(object) {
-    return dart.as(object, this);
-  };
-  $TypeRep.prototype._check = function check_T(object) {
-    return dart.check(object, this);
-  };
-
-  // Fast path for type `dynamic`.
-  $Dynamic.prototype.is = function is_Dynamic(object) {
-    return true;
-  };
-  $Dynamic.prototype.as = function as_Dynamic(object) {
-    return object;
-  };
-  $Dynamic.prototype._check = function check_Dynamic(object) {
-    return object;
-  };
-
-  $LazyJSType.prototype.is = function is_T(object) {
-    return $_isInstanceOfLazyJSType(object, this);
-  };
-  $LazyJSType.prototype.as = function as_T(object) {
-    return $_asInstanceOfLazyJSType(object, this);
-  };
-  $LazyJSType.prototype._check = function check_T(object) {
-    return $_asInstanceOfLazyJSType(object, this);
-  };
-})()''');
 
 class Void extends TypeRep {
   toString() => 'void';
@@ -182,61 +179,8 @@ class WrappedType extends Type {
   toString() => typeName(_wrappedType);
 }
 
-abstract class AbstractFunctionType extends TypeRep {
-  String _stringValue = null;
-  get args;
-  get optionals;
-  get metadata;
-  get named;
-  get returnType;
-
-  AbstractFunctionType() {}
-
-  toString() {
-    return name;
-  }
-
-  get name {
-    if (_stringValue != null) return _stringValue;
-
-    var buffer = '(';
-    for (var i = 0; JS('bool', '# < #.length', i, args); ++i) {
-      if (i > 0) {
-        buffer += ', ';
-      }
-      buffer += typeName(JS('', '#[#]', args, i));
-    }
-    if (JS('bool', '#.length > 0', optionals)) {
-      if (JS('bool', '#.length > 0', args)) buffer += ', ';
-      buffer += '[';
-      for (var i = 0; JS('bool', '# < #.length', i, optionals); ++i) {
-        if (i > 0) {
-          buffer += ', ';
-        }
-        buffer += typeName(JS('', '#[#]', optionals, i));
-      }
-      buffer += ']';
-    } else if (JS('bool', 'Object.keys(#).length > 0', named)) {
-      if (JS('bool', '#.length > 0', args)) buffer += ', ';
-      buffer += '{';
-      var names = getOwnPropertyNames(named);
-      JS('', '#.sort()', names);
-      for (var i = 0; JS('', '# < #.length', i, names); ++i) {
-        if (i > 0) {
-          buffer += ', ';
-        }
-        var typeNameString = typeName(JS('', '#[#[#]]', named, names, i));
-        buffer += '${JS('', '#[#]', names, i)}: $typeNameString';
-      }
-      buffer += '}';
-    }
-
-    var returnTypeName = typeName(returnType);
-    buffer += ') -> $returnTypeName';
-    _stringValue = buffer;
-    return buffer;
-  }
-}
+// Marker class for generic functions, typedefs, and non-generic functions.
+abstract class AbstractFunctionType extends TypeRep {}
 
 /// Memo table for named argument groups. A named argument packet
 /// {name1 : type1, ..., namen : typen} corresponds to the path
@@ -297,7 +241,7 @@ _normalizeParameter(a) => JS(
   return ($a == $dynamic) ? $bottom : $a;
 })()''');
 
-_canonicalizeArray(definite, array, map) => JS(
+List _canonicalizeArray(definite, array, map) => JS(
     '',
     '''(() => {
   let arr = ($definite)
@@ -348,17 +292,19 @@ _createSmall(count, definite, returnType, required) => JS(
  }
  let result = map.get($returnType);
  if (result !== void 0) return result;
- result = new $FunctionType($returnType, args, [], {});
+ result = new $FunctionType.new($returnType, args, [], {});
  map.set($returnType, result);
  return result;
 })()''');
 
 class FunctionType extends AbstractFunctionType {
   final returnType;
-  dynamic args;
-  dynamic optionals;
+  List args;
+  List optionals;
   final named;
-  dynamic metadata;
+  // TODO(vsm): This is just parameter metadata for now.
+  List metadata = [];
+  String _stringValue;
 
   /**
    * Construct a function type. There are two arrow constructors,
@@ -377,13 +323,13 @@ class FunctionType extends AbstractFunctionType {
    * that all instances will share.
    *
    */
-  static create(definite, returnType, args, extra) {
+  static create(definite, returnType, List args, extra) {
     // Note that if extra is ever passed as an empty array
     // or an empty map, we can end up with semantically
     // identical function types that don't canonicalize
     // to the same object since we won't fall into this
     // fast path.
-    if (JS('bool', '# === void 0', extra) && JS('', '#.length < 3', args)) {
+    if (JS('bool', '# === void 0', extra) && JS('bool', '#.length < 3', args)) {
       return _createSmall(JS('', '#.length', args), definite, returnType, args);
     }
     args = _canonicalizeArray(definite, args, _fnTypeArrayArgMap);
@@ -405,13 +351,13 @@ class FunctionType extends AbstractFunctionType {
     return _memoizeArray(_fnTypeTypeMap, keys, create);
   }
 
-  _process(array, metadata) {
+  List _process(List array) {
     var result = [];
     for (var i = 0; JS('bool', '# < #.length', i, array); ++i) {
       var arg = JS('', '#[#]', array, i);
       if (JS('bool', '# instanceof Array', arg)) {
-        metadata.add(JS('', '#.slice(1)', arg));
-        result.add(JS('', '#[0]', arg));
+        JS('', '#.push(#.slice(1))', metadata, arg);
+        JS('', '#.push(#[0])', result, arg);
       } else {
         JS('', '#.push([])', metadata);
         JS('', '#.push(#)', result, arg);
@@ -421,97 +367,291 @@ class FunctionType extends AbstractFunctionType {
   }
 
   FunctionType(this.returnType, this.args, this.optionals, this.named) {
-    // TODO(vsm): This is just parameter metadata for now.
-    metadata = [];
-    this.args = _process(this.args, metadata);
-    this.optionals = _process(this.optionals, metadata);
+    this.args = _process(this.args);
+    this.optionals = _process(this.optionals);
     // TODO(vsm): Add named arguments.
+  }
+
+  toString() => name;
+
+  get name {
+    if (_stringValue != null) return _stringValue;
+
+    var buffer = '(';
+    for (var i = 0; JS('bool', '# < #.length', i, args); ++i) {
+      if (i > 0) {
+        buffer += ', ';
+      }
+      buffer += typeName(JS('', '#[#]', args, i));
+    }
+    if (JS('bool', '#.length > 0', optionals)) {
+      if (JS('bool', '#.length > 0', args)) buffer += ', ';
+      buffer += '[';
+      for (var i = 0; JS('bool', '# < #.length', i, optionals); ++i) {
+        if (i > 0) {
+          buffer += ', ';
+        }
+        buffer += typeName(JS('', '#[#]', optionals, i));
+      }
+      buffer += ']';
+    } else if (JS('bool', 'Object.keys(#).length > 0', named)) {
+      if (JS('bool', '#.length > 0', args)) buffer += ', ';
+      buffer += '{';
+      var names = getOwnPropertyNames(named);
+      JS('', '#.sort()', names);
+      for (var i = 0; JS('bool', '# < #.length', i, names); ++i) {
+        if (i > 0) {
+          buffer += ', ';
+        }
+        var typeNameString = typeName(JS('', '#[#[#]]', named, names, i));
+        buffer += '${JS('', '#[#]', names, i)}: $typeNameString';
+      }
+      buffer += '}';
+    }
+
+    var returnTypeName = typeName(returnType);
+    buffer += ') -> $returnTypeName';
+    _stringValue = buffer;
+    return buffer;
   }
 }
 
-// TODO(jacobr): we can't define this typedef due to execution order issues.
-//typedef AbstractFunctionType FunctionTypeClosure();
-
 class Typedef extends AbstractFunctionType {
   dynamic _name;
-  dynamic /*FunctionTypeClosure*/ _closure;
+  AbstractFunctionType Function() _closure;
   AbstractFunctionType _functionType;
 
   Typedef(this._name, this._closure) {}
 
-  get name {
-    return _name;
-  }
+  toString() =>
+      JS('String', '# + "(" + #.toString() + ")"', _name, functionType);
+  get name => _name;
 
   AbstractFunctionType get functionType {
-    if (_functionType == null) {
-      _functionType = JS('', '#()', _closure);
-    }
-    return _functionType;
-  }
-
-  get returnType {
-    return functionType.returnType;
-  }
-
-  List get args {
-    return functionType.args;
-  }
-
-  List get optionals {
-    return functionType.optionals;
-  }
-
-  get named {
-    return functionType.named;
-  }
-
-  List get metadata {
-    return functionType.metadata;
+    var ft = _functionType;
+    return ft == null ? _functionType = _closure() : ft;
   }
 }
 
-typedef(name, /*FunctionTypeClosure*/ closure) {
-  return new Typedef(name, closure);
+/// A type variable, used by [GenericFunctionType] to represent a type formal.
+class TypeVariable extends TypeRep {
+  final String name;
+
+  TypeVariable(this.name);
+
+  toString() => name;
 }
 
-final _typeFormalCount = JS('', 'Symbol("_typeFormalCount")');
+class GenericFunctionType extends AbstractFunctionType {
+  final bool definite;
+  final _instantiateTypeParts;
+  final int formalCount;
+  final _instantiateTypeBounds;
+  List<TypeVariable> _typeFormals;
 
-_functionType(definite, returnType, args, extra) => JS(
-    '',
-    '''(() => {
-  // TODO(jmesserly): this is a bit of a retrofit, to easily fit
-  // generic functions into all of the existing ways we generate function
-  // signatures. Given `(T) => [T, [T]]` we'll return a function that does
-  // `(T) => _functionType(definite, T, [T])` ... we could do this in the
-  // compiler instead, at a slight cost to code size.
-  if ($args === void 0 && $extra === void 0) {
-    const fnTypeParts = $returnType;
-    // A closure that computes the remaining arguments.
-    // Return a function that makes the type.
-    function makeGenericFnType(...types) {
-      let parts = fnTypeParts.apply(null, types);
-      return $FunctionType.create($definite, parts[0], parts[1], parts[2]);
+  GenericFunctionType(
+      this.definite, instantiateTypeParts, this._instantiateTypeBounds)
+      : _instantiateTypeParts = instantiateTypeParts,
+        formalCount = JS('int', '#.length', instantiateTypeParts);
+
+  List<TypeVariable> get typeFormals {
+    if (_typeFormals != null) return _typeFormals;
+
+    // Extract parameter names from the function parameters.
+    //
+    // This is not robust in general for user-defined JS functions, but it
+    // should handle the functions generated by our compiler.
+    //
+    // TODO(jmesserly): names of TypeVariables are only used for display
+    // purposes, such as when an error happens or if someone calls
+    // `Type.toString()`. So we could recover them lazily rather than eagerly.
+    // Alternatively we could synthesize new names.
+    var str = JS('String', '#.toString()', _instantiateTypeParts);
+    var hasParens = str[0] == '(';
+    var end = str.indexOf(hasParens ? ')' : '=>');
+    if (hasParens) {
+      _typeFormals = str
+          .substring(1, end)
+          .split(',')
+          .map((n) => new TypeVariable(n.trim()))
+          .toList();
+    } else {
+      _typeFormals = [new TypeVariable(str.substring(0, end).trim())];
     }
-    makeGenericFnType[$_typeFormalCount] = fnTypeParts.length;
-    return makeGenericFnType;
+    return _typeFormals;
   }
-  return $FunctionType.create($definite, $returnType, $args, $extra);
-})()''');
 
-///
-/// Create a "fuzzy" function type.  If any arguments are dynamic
-/// they will be replaced with bottom.
-///
-functionType(returnType, args, extra) =>
-    _functionType(false, returnType, args, extra);
+  checkBounds(List typeArgs) {
+    var bounds = instantiateTypeBounds(typeArgs);
+    var typeFormals = this.typeFormals;
+    for (var i = 0; i < typeArgs.length; i++) {
+      var type = typeArgs[i];
+      var bound = bounds[i];
+      if (!JS('bool', '#', isSubtype(type, bound))) {
+        throwStrongModeError('type `$type` does not extend `$bound`'
+            ' of `${typeFormals[i]}`.');
+      }
+    }
+  }
 
+  instantiate(typeArgs) {
+    var parts = JS('', '#.apply(null, #)', _instantiateTypeParts, typeArgs);
+    return JS('', '#.create(#, #[0], #[1], #[2])', FunctionType, definite,
+        parts, parts, parts);
+  }
+
+  List instantiateTypeBounds(List typeArgs) {
+    var boundsFn = _instantiateTypeBounds;
+    if (boundsFn == null) {
+      // The Dart 1 spec says omitted type parameters have an upper bound of
+      // Object. However strong mode assumes `dynamic` for all purposes
+      // (such as instantiate to bounds) so we use that here.
+      return new List.filled(formalCount, _dynamic);
+    }
+    // If bounds are recursive, we need to apply type formals and return them.
+    return JS('List', '#.apply(null, #)', boundsFn, typeArgs);
+  }
+
+  toString() {
+    String s = "<";
+    var typeFormals = this.typeFormals;
+    var typeBounds = instantiateTypeBounds(typeFormals);
+    for (int i = 0, n = typeFormals.length; i < n; i++) {
+      if (i != 0) s += ", ";
+      s += JS('String', '#[#].name', typeFormals, i);
+      var typeBound = typeBounds[i];
+      if (!identical(typeBound, _dynamic)) {
+        s += " extends $typeBound";
+      }
+    }
+    s += ">" + instantiate(typeFormals).toString();
+    return s;
+  }
+
+  /// Given a [DartType] [type], if [type] is an uninstantiated
+  /// parameterized type then instantiate the parameters to their
+  /// bounds and return those type arguments.
+  ///
+  /// See the issue for the algorithm description:
+  /// <https://github.com/dart-lang/sdk/issues/27526#issuecomment-260021397>
+  List instantiateDefaultBounds() {
+    var typeFormals = this.typeFormals;
+
+    // All type formals
+    var all = new HashMap<Object, int>.identity();
+    // ground types, by index.
+    //
+    // For each index, this will be a ground type for the corresponding type
+    // formal if known, or it will be the original TypeVariable if we are still
+    // solving for it. This array is passed to `instantiateToBounds` as we are
+    // progressively solving for type variables.
+    var defaults = new List<Object>(typeFormals.length);
+    // not ground
+    var partials = new Map<TypeVariable, Object>.identity();
+
+    var typeBounds = this.instantiateTypeBounds(typeFormals);
+    for (var i = 0; i < typeFormals.length; i++) {
+      var typeFormal = typeFormals[i];
+      var bound = typeBounds[i];
+      all[typeFormal] = i;
+      if (identical(bound, _dynamic)) {
+        defaults[i] = bound;
+      } else {
+        defaults[i] = typeFormal;
+        partials[typeFormal] = bound;
+      }
+    }
+
+    bool hasFreeFormal(Object t) {
+      if (partials.containsKey(t)) return true;
+
+      // Generic classes and typedefs.
+      var typeArgs = getGenericArgs(t);
+      if (typeArgs != null) return typeArgs.any(hasFreeFormal);
+
+      if (t is GenericFunctionType) {
+        return hasFreeFormal(t.instantiate(t.typeFormals));
+      }
+
+      if (t is FunctionType) {
+        return hasFreeFormal(t.returnType) || t.args.any(hasFreeFormal);
+      }
+
+      return false;
+    }
+
+    var hasProgress = true;
+    while (hasProgress) {
+      hasProgress = false;
+      for (var typeFormal in partials.keys) {
+        var partialBound = partials[typeFormal];
+        if (!hasFreeFormal(partialBound)) {
+          int index = all[typeFormal];
+          defaults[index] = instantiateTypeBounds(defaults)[index];
+          partials.remove(typeFormal);
+          hasProgress = true;
+          break;
+        }
+      }
+    }
+
+    // If we stopped making progress, and not all types are ground,
+    // then the whole type is malbounded and an error should be reported
+    // if errors are requested, and a partially completed type should
+    // be returned.
+    if (partials.isNotEmpty) {
+      throwStrongModeError('Instantiate to bounds failed for type with '
+          'recursive generic bounds: ${typeName(this)}. '
+          'Try passing explicit type arguments.');
+    }
+
+    return defaults;
+  }
+}
+
+typedef(name, AbstractFunctionType Function() closure) =>
+    new Typedef(name, closure);
+
+/// Create a definite function type.
 ///
-/// Create a definite function type. No substitution of dynamic for
-/// bottom occurs.
+/// No substitution of dynamic for bottom occurs.
+fnType(returnType, List args, extra) =>
+    FunctionType.create(true, returnType, args, extra);
+
+/// Create a "fuzzy" function type.
 ///
-definiteFunctionType(returnType, args, extra) =>
-    _functionType(true, returnType, args, extra);
+/// If any arguments are dynamic they will be replaced with bottom.
+fnTypeFuzzy(returnType, List args, extra) =>
+    FunctionType.create(false, returnType, args, extra);
+
+/// Creates a definite generic function type.
+///
+/// A function type consists of two things: an instantiate function, and an
+/// function that returns a list of upper bound constraints for each
+/// the type formals. Both functions accept the type parameters, allowing us
+/// to substitute values. The upper bound constraints can be omitted if all
+/// of the type parameters use the default upper bound.
+///
+/// For example given the type <T extends Iterable<T>>(T) -> T, we can declare
+/// this type with `gFnType(T => [T, [T]], T => [Iterable$(T)])`.\
+gFnType(instantiateFn, typeBounds) =>
+    new GenericFunctionType(true, instantiateFn, typeBounds);
+
+gFnTypeFuzzy(instantiateFn, typeBounds) =>
+    new GenericFunctionType(false, instantiateFn, typeBounds);
+
+/// TODO(vsm): Remove when mirrors is deprecated.
+/// This is a temporary workaround to support dart:mirrors, which doesn't
+/// understand generic methods.
+getFunctionTypeMirror(AbstractFunctionType type) {
+  if (type is GenericFunctionType) {
+    var typeArgs = new List.filled(type.formalCount, dynamic);
+    return type.instantiate(typeArgs);
+  }
+  return type;
+}
+
+bool isType(obj) => JS('', '# === #', _getRuntimeType(obj), Type);
 
 String typeName(type) => JS(
     '',
@@ -520,9 +660,6 @@ String typeName(type) => JS(
   if ($type === null) return "null type";
   // Non-instance types
   if ($type instanceof $TypeRep) {
-    if ($type instanceof $Typedef) {
-      return $type.name + "(" + $type.functionType.toString() + ")";
-    }
     return $type.toString();
   }
 
@@ -561,23 +698,10 @@ String typeName(type) => JS(
   return "JSObject<" + $type.name + ">";
 })()''');
 
-/// Get the underlying function type, potentially from the call method
-/// for a class type.
-getImplicitFunctionType(type) {
-  if (isFunctionType(type)) return type;
-  return getMethodType(type, 'call');
-}
-
-bool isFunctionType(type) => JS('bool', '# instanceof # || # === #', type,
+/// Returns `true` if we have a non-generic function type representation or the
+/// type for `Function`, which is a supertype of all functions in Dart.
+bool _isFunctionType(type) => JS('bool', '# instanceof # || # === #', type,
     AbstractFunctionType, type, Function);
-
-isLazyJSSubtype(LazyJSType t1, LazyJSType t2, isCovariant) {
-  if (t1 == t2) return true;
-
-  // All anonymous JS types are subtypes of each other.
-  if (t1._jsTypeCallback == null || t2._jsTypeCallback == null) return true;
-  return isClassSubType(t1._rawJSType, t2._rawJSType, isCovariant);
-}
 
 /// Returns true if [ft1] <: [ft2].
 /// Returns false if [ft1] </: [ft2] in both spec and strong mode
@@ -663,46 +787,43 @@ isFunctionSubtype(ft1, ft2, isCovariant) => JS(
   return true;
 })()''');
 
-/// TODO(leafp): This duplicates code in operations.dart.
-/// I haven't found a way to factor it out that makes the
-/// code generator happy though.
-_subtypeMemo(f) => JS(
-    '',
-    '''(() => {
-  let memo = new Map();
-  return (t1, t2) => {
-    let map = memo.get(t1);
-    let result;
-    if (map) {
-      result = map.get(t2);
-      if (result !== void 0) return result;
-    } else {
-      memo.set(t1, map = new Map());
-    }
-    result = $f(t1, t2);
-    map.set(t2, result);
-    return result;
-  };
-})()''');
-
 /// Returns true if [t1] <: [t2].
 /// Returns false if [t1] </: [t2] in both spec and strong mode
 /// Returns undefined if [t1] </: [t2] in strong mode, but spec
 ///  mode may differ
-final isSubtype = JS(
-    '', '$_subtypeMemo((t1, t2) => (t1 === t2) || $_isSubtype(t1, t2, true))');
+bool isSubtype(t1, t2) {
+  // TODO(leafp): This duplicates code in operations.dart.
+  // I haven't found a way to factor it out that makes the
+  // code generator happy though.
+  var map = JS('', '#.get(#)', _memo, t1);
+  bool result;
+  if (JS('bool', '# !== void 0', map)) {
+    result = JS('bool', '#.get(#)', map, t2);
+    if (JS('bool', '# !== void 0', result)) return result;
+  } else {
+    JS('', '#.set(#, # = new Map())', _memo, t1, map);
+  }
+  result = JS('', '# === # || #(#, #, true)', t1, t2, _isSubtype, t1, t2);
+  JS('', '#.set(#, #)', map, t2, result);
+  return result;
+}
+
+final _memo = JS('', 'new Map()');
 
 _isBottom(type) => JS('bool', '# == # || # == #', type, bottom, type, Null);
 
 _isTop(type) {
-  if (JS('bool', '# === #', getGenericClass(type), getGenericClass(FutureOr))) {
+  if (_isFutureOr(type)) {
     return _isTop(JS('', '#[0]', getGenericArgs(type)));
   }
-  return JS('bool', '# == # || # == # || # == #',
-      type, Object, type, dynamic, type, _void);
+  return JS('bool', '# == # || # == # || # == #', type, Object, type, dynamic,
+      type, _void);
 }
 
-_isSubtype(t1, t2, isCovariant) => JS(
+bool _isFutureOr(type) =>
+    JS('bool', '# === #', getGenericClass(type), getGenericClass(FutureOr));
+
+bool _isSubtype(t1, t2, isCovariant) => JS(
     '',
     '''(() => {
   if ($t1 === $t2) return true;
@@ -719,6 +840,34 @@ _isSubtype(t1, t2, isCovariant) => JS(
     return false;
   }
 
+  // Handle FutureOr<T> union type.
+  if ($_isFutureOr($t1)) {
+    let t1TypeArg = $getGenericArgs($t1)[0];
+    if ($_isFutureOr($t2)) {
+      let t2TypeArg = $getGenericArgs($t2)[0];
+      // FutureOr<A> <: FutureOr<B> iff A <: B
+      return $_isSubtype(t1TypeArg, t2TypeArg, $isCovariant);
+    }
+
+    // given t1 is Future<A> | A, then:
+    // (Future<A> | A) <: t2 iff Future<A> <: t2 and A <: t2.
+    let t1Future = ${getGenericClass(Future)}(t1TypeArg);
+    return $_isSubtype(t1Future, $t2, $isCovariant) &&
+        $_isSubtype(t1TypeArg, $t2, $isCovariant);
+  }
+
+  if ($_isFutureOr($t2)) {
+    // given t2 is Future<A> | A, then:
+    // t1 <: (Future<A> | A) iff t1 <: Future<A> or t1 <: A
+    let t2TypeArg = $getGenericArgs($t2)[0];
+    var t2Future = ${getGenericClass(Future)}(t2TypeArg);
+    let s1 = $_isSubtype($t1, t2Future, $isCovariant);
+    let s2 = $_isSubtype($t1, t2TypeArg, $isCovariant);
+    if (s1 === true || s2 === true) return true;
+    if (s1 === null || s2 === null) return null;
+    return false;
+  }
+
   // "Traditional" name-based subtype check.  Avoid passing
   // function types to the class subtype checks, since we don't
   // currently distinguish between generic typedefs and classes.
@@ -728,21 +877,74 @@ _isSubtype(t1, t2, isCovariant) => JS(
     if (result === true || result === null) return result;
   }
 
+  if ($t2 instanceof $AnonymousJSType) {
+    // All JS types are subtypes of anonymous JS types.
+    return $_isJSType($t1);
+  }
+  if ($t2 instanceof $LazyJSType) {
+    return $_isSubtype($t1, $t2.rawJSTypeForCheck(), isCovariant);
+  }
+
   // Function subtyping.
 
   // Handle Objects with call methods.  Those are functions
   // even if they do not *nominally* subtype core.Function.
-  t1 = $getImplicitFunctionType(t1);
-  if (!t1) return false;
+  if (!$_isFunctionType($t1)) {
+    $t1 = $getMethodType($t1, 'call');
+    if ($t1 == null) return false;
+  }
 
-  if ($isFunctionType($t1) && $isFunctionType($t2)) {
+  // Unwrap typedefs.
+  if ($t1 instanceof $Typedef) $t1 = $t1.functionType;
+  if ($t2 instanceof $Typedef) $t2 = $t2.functionType;
+
+  // Handle generic functions.
+  if ($t1 instanceof $GenericFunctionType) {
+    if (!($t2 instanceof $GenericFunctionType)) return false;
+
+    // Given generic functions g1 and g2, g1 <: g2 iff:
+    //
+    //     g1<TFresh> <: g2<TFresh>
+    //
+    // where TFresh is a list of fresh type variables that both g1 and g2 will
+    // be instantiated with.
+    if ($t1.formalCount !== $t2.formalCount) return false;
+
+    // Using either function's type formals will work as long as they're both
+    // instantiated with the same ones. The instantiate operation is guaranteed
+    // to avoid capture because it does not depend on its TypeVariable objects,
+    // rather it uses JS function parameters to ensure correct binding.
+    let fresh = $t2.typeFormals;
+
+    // Check the bounds of the type parameters of g1 and g2.
+    // given a type parameter `T1 extends U1` from g1, and a type parameter
+    // `T2 extends U2` from g2, we must ensure that:
+    //
+    //      U2 <: U1
+    //
+    // (Note the reversal of direction -- type formal bounds are contravariant,
+    // similar to the function's formal parameter types).
+    //
+    let t1Bounds = $t1.instantiateTypeBounds(fresh);
+    let t2Bounds = $t2.instantiateTypeBounds(fresh);
+    // TODO(jmesserly): we could optimize for the common case of no bounds.
+    for (let i = 0; i < $t1.formalCount; i++) {
+      if (!$_isSubtype(t2Bounds[i], t1Bounds[i], !$isCovariant)) {
+        return false;
+      }
+    }
+
+    return $isFunctionSubtype(
+        $t1.instantiate(fresh), $t2.instantiate(fresh), $isCovariant);
+  }
+
+  if ($t2 instanceof $GenericFunctionType) return false;
+
+  // Handle non-generic functions.
+  if ($_isFunctionType($t1) && $_isFunctionType($t2)) {
     return $isFunctionSubtype($t1, $t2, $isCovariant);
   }
-  
-  if ($t1 instanceof $LazyJSType && $t2 instanceof $LazyJSType) {
-    return $isLazyJSSubtype($t1, $t2, $isCovariant);
-  }
-  
+
   return false;
 })()''');
 
@@ -786,22 +988,6 @@ isClassSubType(t1, t2, isCovariant) => JS(
       }
     }
     return true;
-  }
-
-  // Handle FutureOr<T>.
-  // It's not really a class type, but it's convenient to handle here.
-  if (raw1 === ${getGenericClass(FutureOr)}) {
-    // given t1 is Future<A> | A, then:
-    // (Future<A> | A) <: t2 iff Future<A> <: t2 and A <: t2.
-    let t1TypeArg = $getGenericArgs($t1)[0];
-    let t1Future = ${getGenericClass(Future)}(t1TypeArg);
-    return $isSubtype(t1Future, $t2) && $isSubtype(t1TypeArg, $t2);
-  } else if (raw2 === ${getGenericClass(FutureOr)}) {
-    // given t2 is Future<A> | A, then:
-    // t1 <: (Future<A> | A) iff t1 <: Future<A> or t1 <: A
-    let t2TypeArg = $getGenericArgs($t2)[0];
-    let t2Future = ${getGenericClass(Future)}(t2TypeArg);
-    return $isSubtype($t1, t2Future) || $isSubtype($t1, t2TypeArg);
   }
 
   let indefinite = false;
@@ -850,7 +1036,10 @@ isGroundType(type) => JS(
     '''(() => {
   // TODO(vsm): Cache this if we start using it at runtime.
 
-  if ($type instanceof $AbstractFunctionType) {
+  // TODO(jmesserly): implement for generic function types if we start using?
+  if ($type instanceof $Typedef) $type = $type.functionType;
+
+  if ($type instanceof $FunctionType) {
     if (!$_isTop($type.returnType)) return false;
     for (let i = 0; i < $type.args.length; ++i) {
       if (!$_isBottom($type.args[i])) return false;

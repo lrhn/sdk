@@ -405,7 +405,9 @@ static void StackFrame_accessFrame(Dart_NativeArguments args) {
   Timer timer(true, "LookupDartCode benchmark");
   timer.Start();
   for (int i = 0; i < kNumIterations; i++) {
-    StackFrameIterator frames(StackFrameIterator::kDontValidateFrames);
+    StackFrameIterator frames(StackFrameIterator::kDontValidateFrames,
+                              Thread::Current(),
+                              StackFrameIterator::kNoCrossThreadIteration);
     StackFrame* frame = frames.NextFrame();
     while (frame != NULL) {
       if (frame->IsStubFrame()) {
@@ -519,13 +521,13 @@ BENCHMARK_SIZE(CoreSnapshotSize) {
   Api::CheckAndFinalizePendingClasses(thread);
 
   // Write snapshot with object content.
-  FullSnapshotWriter writer(Snapshot::kCore, &vm_snapshot_data_buffer,
+  FullSnapshotWriter writer(Snapshot::kFull, &vm_snapshot_data_buffer,
                             &isolate_snapshot_data_buffer, &malloc_allocator,
                             NULL, NULL /* image_writer */);
   writer.WriteFullSnapshot();
   const Snapshot* snapshot =
       Snapshot::SetupFromBuffer(isolate_snapshot_data_buffer);
-  ASSERT(snapshot->kind() == Snapshot::kCore);
+  ASSERT(snapshot->kind() == Snapshot::kFull);
   benchmark->set_score(snapshot->length());
 
   free(vm_snapshot_data_buffer);
@@ -557,13 +559,13 @@ BENCHMARK_SIZE(StandaloneSnapshotSize) {
   Api::CheckAndFinalizePendingClasses(thread);
 
   // Write snapshot with object content.
-  FullSnapshotWriter writer(Snapshot::kCore, &vm_snapshot_data_buffer,
+  FullSnapshotWriter writer(Snapshot::kFull, &vm_snapshot_data_buffer,
                             &isolate_snapshot_data_buffer, &malloc_allocator,
                             NULL, NULL /* image_writer */);
   writer.WriteFullSnapshot();
   const Snapshot* snapshot =
       Snapshot::SetupFromBuffer(isolate_snapshot_data_buffer);
-  ASSERT(snapshot->kind() == Snapshot::kCore);
+  ASSERT(snapshot->kind() == Snapshot::kFull);
   benchmark->set_score(snapshot->length());
 
   free(vm_snapshot_data_buffer);

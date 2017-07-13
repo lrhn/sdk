@@ -109,7 +109,8 @@ void equalElementsTest() {
 }
 
 void genericTypeTest() {
-  var map = new SplayTreeMap<int, String>.fromIterable([1, 2, 3], value: (x) => '$x');
+  var map =
+      new SplayTreeMap<int, String>.fromIterable([1, 2, 3], value: (x) => '$x');
   Expect.isTrue(map is Map<int, String>);
   Expect.isTrue(map is SplayTreeMap<int, String>);
 
@@ -120,9 +121,7 @@ void genericTypeTest() {
 
 // Test in checked mode with explicitly given types.
 void typedTest() {
-  bool isCheckedMode = false;
-  assert((isCheckedMode = true));
-  if (!isCheckedMode) return;
+  if (!typeAssertionsEnabled) return;
 
   // Assign functions to untyped function variables.
   Function key = (int v) => "$v";
@@ -130,38 +129,33 @@ void typedTest() {
   Function id = (int i) => i;
 
   Expect.throws(() {
-    new SplayTreeMap<String,bool>.fromIterable(<int>[1, 2, 3],
-      key: key
-      // No "value" map, defaults to identity, which returns int, not bool.
-    );
+    new SplayTreeMap<String, bool>.fromIterable(<int>[1, 2, 3], key: key
+        // No "value" map, defaults to identity, which returns int, not bool.
+        );
   });
 
   Expect.throws(() {
-    new SplayTreeMap<String,bool>.fromIterable(<int>[1, 2, 3],
-      // No "key" map, defaults to identity, which returns int, not String.
-      value: value
-    );
+    new SplayTreeMap<String, bool>.fromIterable(<int>[1, 2, 3],
+        // No "key" map, defaults to identity, which returns int, not String.
+        value: value);
   });
 
   Expect.throws(() {
-    new SplayTreeMap<String,bool>.fromIterable(<int>[1, 2, 3],
-      key: id,     // wrong type.
-      value: value
-    );
+    new SplayTreeMap<String, bool>.fromIterable(<int>[1, 2, 3],
+        key: id, //     wrong type.
+        value: value);
   });
 
   Expect.throws(() {
-    new SplayTreeMap<String,bool>.fromIterable(<int>[1, 2, 3],
-      key: key,
-      value: id    // wrong type.
-    );
+    new SplayTreeMap<String, bool>.fromIterable(<int>[1, 2, 3],
+        key: key, value: id //    wrong type.
+        );
   });
 
   // But it works with explicit types when used correctly.
-  SplayTreeMap<String, bool> map =
-      new SplayTreeMap<String, bool>.fromIterable(<int>[1, 2, 3],
-                                                  key: key,
-                                                  value: value);
+  SplayTreeMap<String, bool> map = new SplayTreeMap<String, bool>.fromIterable(
+      <int>[1, 2, 3],
+      key: key, value: value);
   Iterable<String> keys = map.keys;
   Iterable<bool> values = map.values;
   List<String> keyList = keys.toList();

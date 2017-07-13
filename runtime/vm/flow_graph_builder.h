@@ -98,6 +98,7 @@ class FlowGraphBuilder : public ValueObject {
   // id of the OSR entry or Compiler::kNoOSRDeoptId if not compiling for OSR.
   FlowGraphBuilder(const ParsedFunction& parsed_function,
                    const ZoneGrowableArray<const ICData*>& ic_data_array,
+                   ZoneGrowableArray<intptr_t>* context_level_array,
                    InlineExitCollector* exit_collector,
                    intptr_t osr_id);
 
@@ -113,6 +114,8 @@ class FlowGraphBuilder : public ValueObject {
 
   intptr_t AllocateBlockId() { return ++last_used_block_id_; }
   void SetInitialBlockId(intptr_t id) { last_used_block_id_ = id; }
+
+  intptr_t GetNextDeoptId() const;
 
   intptr_t context_level() const;
 
@@ -172,6 +175,14 @@ class FlowGraphBuilder : public ValueObject {
   Isolate* isolate() const { return parsed_function().isolate(); }
   Zone* zone() const { return parsed_function().zone(); }
 
+  void AppendAwaitTokenPosition(TokenPosition token_pos);
+
+  ZoneGrowableArray<TokenPosition>* await_token_positions() const {
+    return await_token_positions_;
+  }
+
+  static bool SimpleInstanceOfType(const AbstractType& type);
+
  private:
   friend class NestedStatement;  // Explicit access to nesting_stack_.
   friend class Intrinsifier;
@@ -185,6 +196,8 @@ class FlowGraphBuilder : public ValueObject {
 
   const ParsedFunction& parsed_function_;
   const ZoneGrowableArray<const ICData*>& ic_data_array_;
+  // Contains (deopt_id, context_level) pairs.
+  ZoneGrowableArray<intptr_t>* context_level_array_;
 
   const intptr_t num_copied_params_;
   const intptr_t num_non_copied_params_;
@@ -212,6 +225,7 @@ class FlowGraphBuilder : public ValueObject {
 
   intptr_t jump_count_;
   ZoneGrowableArray<JoinEntryInstr*>* await_joins_;
+  ZoneGrowableArray<TokenPosition>* await_token_positions_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(FlowGraphBuilder);
 };
@@ -307,6 +321,8 @@ class EffectGraphVisitor : public AstNodeVisitor {
                                           StoreBarrierType emit_store_barrier);
 
   // Helpers for translating parts of the AST.
+  void BuildPushTypeArguments(const ArgumentListNode& node,
+                              ZoneGrowableArray<PushArgumentInstr*>* values);
   void BuildPushArguments(const ArgumentListNode& node,
                           ZoneGrowableArray<PushArgumentInstr*>* values);
 
@@ -316,15 +332,13 @@ class EffectGraphVisitor : public AstNodeVisitor {
   Value* BuildInstantiatedTypeArguments(TokenPosition token_pos,
                                         const TypeArguments& type_arguments);
 
-  void BuildTypecheckPushArguments(
-      TokenPosition token_pos,
-      PushArgumentInstr** push_instantiator_type_arguments);
-  void BuildTypecheckArguments(TokenPosition token_pos,
-                               Value** instantiator_type_arguments);
   Value* BuildInstantiator(TokenPosition token_pos);
-  Value* BuildInstantiatorTypeArguments(TokenPosition token_pos,
-                                        const Class& instantiator_class,
-                                        Value* instantiator);
+  Value* BuildInstantiatorTypeArguments(TokenPosition token_pos);
+  Value* BuildFunctionTypeArguments(TokenPosition token_pos);
+  PushArgumentInstr* PushInstantiatorTypeArguments(const AbstractType& type,
+                                                   TokenPosition token_pos);
+  PushArgumentInstr* PushFunctionTypeArguments(const AbstractType& type,
+                                               TokenPosition token_pos);
 
   // Perform a type check on the given value.
   AssertAssignableInstr* BuildAssertAssignable(TokenPosition token_pos,
@@ -408,6 +422,7 @@ class EffectGraphVisitor : public AstNodeVisitor {
   void BuildClosureCall(ClosureCallNode* node, bool result_needed);
 
   Value* BuildNullValue(TokenPosition token_pos);
+  Value* BuildEmptyTypeArguments(TokenPosition token_pos);
 
   // Returns true if the run-time type check can be eliminated.
   bool CanSkipTypeCheck(TokenPosition token_pos,

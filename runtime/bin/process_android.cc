@@ -5,7 +5,7 @@
 #if !defined(DART_IO_DISABLED)
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_ANDROID)
+#if defined(HOST_OS_ANDROID)
 
 #include "bin/process.h"
 
@@ -20,8 +20,10 @@
 
 #include "bin/dartutils.h"
 #include "bin/fdutils.h"
+#include "bin/file.h"
 #include "bin/lockers.h"
 #include "bin/log.h"
+#include "bin/reference_counting.h"
 #include "bin/thread.h"
 
 #include "platform/signal_blocker.h"
@@ -517,12 +519,12 @@ class ProcessStarter {
               execvp(path_, const_cast<char* const*>(program_arguments_)));
           ReportChildError();
         } else {
-          // Exit the intermeiate process.
+          // Exit the intermediate process.
           exit(0);
         }
       }
     } else {
-      // Exit the intermeiate process.
+      // Exit the intermediate process.
       exit(0);
     }
   }
@@ -887,6 +889,40 @@ intptr_t Process::CurrentProcessId() {
 }
 
 
+int64_t Process::CurrentRSS() {
+  // The second value in /proc/self/statm is the current RSS in pages.
+  File* statm = File::Open("/proc/self/statm", File::kRead);
+  if (statm == NULL) {
+    return -1;
+  }
+  RefCntReleaseScope<File> releaser(statm);
+  const intptr_t statm_length = 1 * KB;
+  void* buffer = reinterpret_cast<void*>(Dart_ScopeAllocate(statm_length));
+  const intptr_t statm_read = statm->Read(buffer, statm_length);
+  if (statm_read <= 0) {
+    return -1;
+  }
+  int64_t current_rss_pages = 0;
+  int matches = sscanf(reinterpret_cast<char*>(buffer), "%*s%" Pd64 "",
+                       &current_rss_pages);
+  if (matches != 1) {
+    return -1;
+  }
+  return current_rss_pages * getpagesize();
+}
+
+
+int64_t Process::MaxRSS() {
+  struct rusage usage;
+  usage.ru_maxrss = 0;
+  int r = getrusage(RUSAGE_SELF, &usage);
+  if (r < 0) {
+    return -1;
+  }
+  return usage.ru_maxrss * KB;
+}
+
+
 static Mutex* signal_mutex = new Mutex();
 static SignalInfo* signal_handlers = NULL;
 static const int kSignalsCount = 7;
@@ -965,7 +1001,10 @@ intptr_t Process::SetSignalHandler(intptr_t signal) {
 }
 
 
-void Process::ClearSignalHandler(intptr_t signal) {
+void Process::ClearSignalHandler(intptr_t signal, Dart_Port port) {
+  // Either the port is illegal or there is no current isolate, but not both.
+  ASSERT((port != ILLEGAL_PORT) || (Dart_CurrentIsolate() == NULL));
+  ASSERT((port == ILLEGAL_PORT) || (Dart_CurrentIsolate() != NULL));
   ThreadSignalBlocker blocker(kSignalsCount, kSignals);
   MutexLocker lock(signal_mutex);
   SignalInfo* handler = signal_handlers;
@@ -973,7 +1012,7 @@ void Process::ClearSignalHandler(intptr_t signal) {
   while (handler != NULL) {
     bool remove = false;
     if (handler->signal() == signal) {
-      if (handler->port() == Dart_GetMainPortId()) {
+      if ((port == ILLEGAL_PORT) || (handler->port() == port)) {
         if (signal_handlers == handler) {
           signal_handlers = handler->next();
         }
@@ -1000,6 +1039,6 @@ void Process::ClearSignalHandler(intptr_t signal) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_ANDROID)
+#endif  // defined(HOST_OS_ANDROID)
 
 #endif  // !defined(DART_IO_DISABLED)

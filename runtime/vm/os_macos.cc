@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_MACOS)
 
 #include "vm/os.h"
 
@@ -15,7 +15,7 @@
 #include <sys/time.h>        // NOLINT
 #include <sys/resource.h>    // NOLINT
 #include <unistd.h>          // NOLINT
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
 #include <sys/sysctl.h>  // NOLINT
 #include <syslog.h>      // NOLINT
 #endif
@@ -27,7 +27,7 @@
 namespace dart {
 
 const char* OS::Name() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   return "ios";
 #else
   return "macos";
@@ -90,13 +90,13 @@ int64_t OS::GetCurrentTimeMicros() {
 }
 
 
-#if !TARGET_OS_IOS
+#if !HOST_OS_IOS
 static mach_timebase_info_data_t timebase_info;
 #endif
 
 
 int64_t OS::GetCurrentMonotonicTicks() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   // On iOS mach_absolute_time stops while the device is sleeping. Instead use
   // now - KERN_BOOTTIME to get a time difference that is not impacted by clock
   // changes. KERN_BOOTTIME will be updated by the system whenever the system
@@ -121,27 +121,27 @@ int64_t OS::GetCurrentMonotonicTicks() {
   result *= timebase_info.numer;
   result /= timebase_info.denom;
   return result;
-#endif  // TARGET_OS_IOS
+#endif  // HOST_OS_IOS
 }
 
 
 int64_t OS::GetCurrentMonotonicFrequency() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   return kMicrosecondsPerSecond;
 #else
   return kNanosecondsPerSecond;
-#endif  // TARGET_OS_IOS
+#endif  // HOST_OS_IOS
 }
 
 
 int64_t OS::GetCurrentMonotonicMicros() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   ASSERT(GetCurrentMonotonicFrequency() == kMicrosecondsPerSecond);
   return GetCurrentMonotonicTicks();
 #else
   ASSERT(GetCurrentMonotonicFrequency() == kNanosecondsPerSecond);
   return GetCurrentMonotonicTicks() / kNanosecondsPerMicrosecond;
-#endif  // TARGET_OS_IOS
+#endif  // HOST_OS_IOS
 }
 
 
@@ -167,7 +167,7 @@ int64_t OS::GetCurrentThreadCPUMicros() {
 
 
 intptr_t OS::ActivationFrameAlignment() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
 #if TARGET_ARCH_ARM
   // Even if we generate code that maintains a stronger alignment, we cannot
   // assert the stronger stack alignment because C++ code will not maintain it.
@@ -183,11 +183,11 @@ intptr_t OS::ActivationFrameAlignment() {
 #else
 #error Unimplemented
 #endif
-#else   // TARGET_OS_IOS
+#else   // HOST_OS_IOS
   // OS X activation frames must be 16 byte-aligned; see "Mac OS X ABI
   // Function Call Guide".
   return 16;
-#endif  // TARGET_OS_IOS
+#endif  // HOST_OS_IOS
 }
 
 
@@ -195,7 +195,7 @@ intptr_t OS::PreferredCodeAlignment() {
 #if defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_X64) ||                   \
     defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_DBC)
   const int kMinimumAlignment = 32;
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_ARM)
   const int kMinimumAlignment = 16;
 #else
 #error Unsupported architecture.
@@ -208,11 +208,6 @@ intptr_t OS::PreferredCodeAlignment() {
   ASSERT(alignment >= kMinimumAlignment);
   ASSERT(alignment <= OS::kMaxPreferredCodeAlignment);
   return alignment;
-}
-
-
-bool OS::AllowStackFrameIteratorFromAnotherThread() {
-  return false;
 }
 
 
@@ -266,6 +261,12 @@ void OS::DebugBreak() {
 }
 
 
+uintptr_t DART_NOINLINE OS::GetProgramCounter() {
+  return reinterpret_cast<uintptr_t>(
+      __builtin_extract_return_addr(__builtin_return_address(0)));
+}
+
+
 char* OS::StrNDup(const char* s, intptr_t n) {
 // strndup has only been added to Mac OS X in 10.7. We are supplying
 // our own copy here if needed.
@@ -308,7 +309,7 @@ intptr_t OS::StrNLen(const char* s, intptr_t n) {
 
 
 void OS::Print(const char* format, ...) {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   va_list args;
   va_start(args, format);
   vsyslog(LOG_INFO, format, args);
@@ -401,7 +402,7 @@ void OS::RegisterCodeObservers() {}
 
 
 void OS::PrintErr(const char* format, ...) {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   va_list args;
   va_start(args, format);
   vsyslog(LOG_ERR, format, args);
@@ -422,6 +423,21 @@ void OS::InitOnce() {
   static bool init_once_called = false;
   ASSERT(init_once_called == false);
   init_once_called = true;
+
+  // See https://github.com/dart-lang/sdk/issues/29539
+  // This is a workaround for a macos bug, we eagerly call localtime_r so that
+  // libnotify is initialized early before any fork happens.
+  struct timeval tv;
+  if (gettimeofday(&tv, NULL) < 0) {
+    FATAL1("gettimeofday returned an error (%s)\n", strerror(errno));
+    return;
+  }
+  tm decomposed;
+  struct tm* error_code = localtime_r(&(tv.tv_sec), &decomposed);
+  if (error_code == NULL) {
+    FATAL1("localtime_r returned an error (%s)\n", strerror(errno));
+    return;
+  }
 }
 
 
@@ -439,4 +455,4 @@ void OS::Exit(int code) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_MACOS)
+#endif  // defined(HOST_OS_MACOS)

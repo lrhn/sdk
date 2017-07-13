@@ -234,11 +234,6 @@ class CompilationUnitElementHandle extends ElementHandle
   CompilationUnit computeNode() => actualElement.computeNode();
 
   @override
-  Element getElementAt(int offset) {
-    return actualElement.getElementAt(offset);
-  }
-
-  @override
   ClassElement getEnum(String enumName) => actualElement.getEnum(enumName);
 
   @override
@@ -412,8 +407,7 @@ abstract class ElementHandle implements Element {
       object is Element && object.location == _location;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      actualElement.accept(visitor);
+  T accept<T>(ElementVisitor<T> visitor) => actualElement.accept(visitor);
 
   @override
   String computeDocumentationComment() => documentationComment;
@@ -422,8 +416,7 @@ abstract class ElementHandle implements Element {
   AstNode computeNode() => actualElement.computeNode();
 
   @override
-  Element/*=E*/ getAncestor/*<E extends Element >*/(
-          Predicate<Element> predicate) =>
+  E getAncestor<E extends Element>(Predicate<Element> predicate) =>
       actualElement.getAncestor(predicate);
 
   @override
@@ -510,12 +503,6 @@ abstract class ExecutableElementHandle extends ElementHandle
 
   @override
   bool get isSynchronous => actualElement.isSynchronous;
-
-  @override
-  List<LabelElement> get labels => actualElement.labels;
-
-  @override
-  List<LocalVariableElement> get localVariables => actualElement.localVariables;
 
   @override
   List<ParameterElement> get parameters => actualElement.parameters;
@@ -649,6 +636,45 @@ class FunctionTypeAliasElementHandle extends ElementHandle
   @override
   CompilationUnitElement get enclosingElement =>
       super.enclosingElement as CompilationUnitElement;
+
+  @override
+  ElementKind get kind => ElementKind.FUNCTION_TYPE_ALIAS;
+
+  @override
+  List<ParameterElement> get parameters => actualElement.parameters;
+
+  @override
+  DartType get returnType => actualElement.returnType;
+
+  @override
+  FunctionType get type => actualElement.type;
+
+  @override
+  List<TypeParameterElement> get typeParameters => actualElement.typeParameters;
+
+  @override
+  FunctionTypeAlias computeNode() => actualElement.computeNode();
+}
+
+/**
+ * A handle to a [GenericTypeAliasElement].
+ */
+class GenericTypeAliasElementHandle extends ElementHandle
+    implements GenericTypeAliasElement {
+  GenericTypeAliasElementHandle(
+      ElementResynthesizer resynthesizer, ElementLocation location)
+      : super(resynthesizer, location);
+
+  @override
+  GenericTypeAliasElement get actualElement =>
+      super.actualElement as GenericTypeAliasElement;
+
+  @override
+  CompilationUnitElement get enclosingElement =>
+      super.enclosingElement as CompilationUnitElement;
+
+  @override
+  GenericFunctionTypeElement get function => actualElement.function;
 
   @override
   ElementKind get kind => ElementKind.FUNCTION_TYPE_ALIAS;

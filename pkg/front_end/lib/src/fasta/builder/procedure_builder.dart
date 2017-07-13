@@ -7,21 +7,18 @@ library fasta.procedure_builder;
 // Note: we're deliberately using AsyncMarker and ProcedureKind from kernel
 // outside the kernel-specific builders. This is simpler than creating
 // additional enums.
-import 'package:kernel/ast.dart' show
-    AsyncMarker,
-    ProcedureKind;
+import 'package:kernel/ast.dart' show AsyncMarker, ProcedureKind;
 
-import 'builder.dart' show
-    Builder,
-    FormalParameterBuilder,
-    LibraryBuilder,
-    MemberBuilder,
-    MetadataBuilder,
-    TypeBuilder,
-    TypeVariableBuilder;
-
-import 'scope.dart' show
-    Scope;
+import 'builder.dart'
+    show
+        Builder,
+        FormalParameterBuilder,
+        LibraryBuilder,
+        MemberBuilder,
+        MetadataBuilder,
+        Scope,
+        TypeBuilder,
+        TypeVariableBuilder;
 
 abstract class ProcedureBuilder<T extends TypeBuilder> extends MemberBuilder {
   final List<MetadataBuilder> metadata;
@@ -36,10 +33,18 @@ abstract class ProcedureBuilder<T extends TypeBuilder> extends MemberBuilder {
 
   final List<FormalParameterBuilder> formals;
 
-  ProcedureBuilder(this.metadata, this.modifiers, this.returnType, this.name,
-      this.typeVariables, this.formals, LibraryBuilder compilationUnit,
+  ProcedureBuilder(
+      this.metadata,
+      this.modifiers,
+      this.returnType,
+      this.name,
+      this.typeVariables,
+      this.formals,
+      LibraryBuilder compilationUnit,
       int charOffset)
       : super(compilationUnit, charOffset);
+
+  String get debugName => "ProcedureBuilder";
 
   AsyncMarker get asyncModifier;
 
@@ -65,11 +70,35 @@ abstract class ProcedureBuilder<T extends TypeBuilder> extends MemberBuilder {
     if (formals == null) return parent;
     Map<String, Builder> local = <String, Builder>{};
     for (FormalParameterBuilder formal in formals) {
-      if (!formal.hasThis) {
+      if (!isConstructor || !formal.hasThis) {
         local[formal.name] = formal;
       }
     }
-    return new Scope(local, parent, isModifiable: false);
+    return new Scope(local, null, parent, isModifiable: false);
+  }
+
+  Scope computeFormalParameterInitializerScope(Scope parent) {
+    // From
+    // [dartLangSpec.tex](../../../../../../docs/language/dartLangSpec.tex) at
+    // revision 94b23d3b125e9d246e07a2b43b61740759a0dace:
+    //
+    // When the formal parameter list of a non-redirecting generative
+    // constructor contains any initializing formals, a new scope is
+    // introduced, the _formal parameter initializer scope_, which is the
+    // current scope of the initializer list of the constructor, and which is
+    // enclosed in the scope where the constructor is declared.  Each
+    // initializing formal in the formal parameter list introduces a final
+    // local variable into the formal parameter initializer scope, but not into
+    // the formal parameter scope; every other formal parameter introduces a
+    // local variable into both the formal parameter scope and the formal
+    // parameter initializer scope.
+
+    if (formals == null) return parent;
+    Map<String, Builder> local = <String, Builder>{};
+    for (FormalParameterBuilder formal in formals) {
+      local[formal.name] = formal.forFormalParameterInitializerScope();
+    }
+    return new Scope(local, null, parent, isModifiable: false);
   }
 
   /// This scope doesn't correspond to any scope specified in the Dart
@@ -81,6 +110,13 @@ abstract class ProcedureBuilder<T extends TypeBuilder> extends MemberBuilder {
     for (TypeVariableBuilder variable in typeVariables) {
       local[variable.name] = variable;
     }
-    return new Scope(local, parent, isModifiable: false);
+    return new Scope(local, null, parent, isModifiable: false);
+  }
+
+  FormalParameterBuilder getFormal(String name) {
+    for (FormalParameterBuilder formal in formals) {
+      if (formal.name == name) return formal;
+    }
+    return null;
   }
 }

@@ -22,6 +22,7 @@ import 'package:compiler/src/elements/elements.dart'
 import 'package:compiler/src/io/source_file.dart' show SourceFile;
 import 'package:compiler/src/io/source_information.dart'
     show computeElementNameForSourceMaps;
+import 'package:kernel/ast.dart' show Location;
 
 validateSourceMap(Uri targetUri,
     {Uri mainUri, Position mainPosition, CompilerImpl compiler}) {
@@ -109,7 +110,8 @@ checkNames(
     });
   }
 
-  compiler.libraryLoader.libraries.forEach((LibraryElement library) {
+  compiler.libraryLoader.libraries.forEach((_library) {
+    LibraryElement library = _library;
     mapCompilationUnits(library);
     if (library.patch != null) {
       mapCompilationUnits(library.patch);
@@ -120,7 +122,6 @@ checkNames(
     for (TargetEntry entry in line.entries) {
       if (entry.sourceNameId != null) {
         Uri uri = mapUri.resolve(sourceMap.urls[entry.sourceUrlId]);
-        Position targetPosition = new Position(line.line, entry.column);
         Position sourcePosition =
             new Position(entry.sourceLine, entry.sourceColumn);
         String name = sourceMap.names[entry.sourceNameId];
@@ -132,8 +133,9 @@ checkNames(
         SourceFile sourceFile = compilationUnit.script.file;
 
         Position positionFromOffset(int offset) {
-          int line = sourceFile.getLine(offset);
-          int column = sourceFile.getColumn(line, offset);
+          Location location = sourceFile.getLocation(offset);
+          int line = location.line - 1;
+          int column = location.column - 1;
           return new Position(line, column);
         }
 
@@ -141,8 +143,8 @@ checkNames(
           if (!element.hasNode) return null;
 
           var begin = element.node.getBeginToken().charOffset;
-          var end = element.node.getEndToken();
-          end = end.charOffset + end.charCount;
+          var endToken = element.node.getEndToken();
+          int end = endToken.charOffset + endToken.charCount;
           return new Interval(
               positionFromOffset(begin), positionFromOffset(end));
         }
@@ -159,7 +161,7 @@ checkNames(
 
           if (element is MemberElement) {
             MemberElement member = element;
-            member.nestedClosures.forEach((closure) {
+            member.nestedClosures.forEach((dynamic closure) {
               var localFunction = closure.expression;
               Interval interval = intervalFromElement(localFunction);
               if (interval != null &&
@@ -172,7 +174,8 @@ checkNames(
           return element;
         }
 
-        void match(AstElement element) {
+        void match(Element _element) {
+          AstElement element = _element;
           Interval interval = intervalFromElement(element);
           if (interval != null && interval.contains(sourcePosition)) {
             AstElement innerElement = findInnermost(element);
@@ -205,7 +208,7 @@ checkNames(
           }
         }
 
-        compilationUnit.forEachLocalMember((AstElement element) {
+        compilationUnit.forEachLocalMember((Element element) {
           if (element.isClass) {
             ClassElement classElement = element;
             classElement.forEachLocalMember(match);

@@ -3,7 +3,6 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import "package:expect/expect.dart";
-import 'options_helper.dart';
 import 'parser_helper.dart';
 
 void main() {
@@ -14,13 +13,13 @@ void testSkipExpression() {
   PartialParser parser = new PartialParser(new Listener());
   Token token = scan('a < b;');
   token = parser.skipExpression(token);
-  Expect.equals(';', token.value);
+  Expect.equals(';', token.lexeme);
 
   token = scan('[a < b]').next;
   token = parser.skipExpression(token);
-  Expect.equals(']', token.value);
+  Expect.equals(']', token.lexeme);
 
   token = scan('a < b,');
   token = parser.skipExpression(token);
-  Expect.equals(',', token.value);
+  Expect.equals(',', token.lexeme);
 }

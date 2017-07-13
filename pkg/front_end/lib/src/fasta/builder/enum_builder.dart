@@ -4,11 +4,9 @@
 
 library fasta.enum_builder;
 
-import 'builder.dart' show
-    ClassBuilder,
-    TypeBuilder;
+import 'builder.dart' show ClassBuilder, TypeBuilder;
 
 abstract class EnumBuilder<T extends TypeBuilder, R>
     implements ClassBuilder<T, R> {
-  List<String> get constants;
+  List<Object> get constantNamesAndOffsets;
 }

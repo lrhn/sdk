@@ -76,10 +76,6 @@ class OS {
   // the platform doesn't care. Guaranteed to be a power of two.
   static intptr_t PreferredCodeAlignment();
 
-  // Returns true if StackFrameIterator can be used from an isolate that isn't
-  // the calling thread's current isolate.
-  static bool AllowStackFrameIteratorFromAnotherThread();
-
   // Returns number of available processor cores.
   static int NumberOfAvailableProcessors();
 
@@ -94,6 +90,9 @@ class OS {
 
   // Debug break.
   static void DebugBreak();
+
+  // Returns the current program counter.
+  static uintptr_t GetProgramCounter();
 
   // Not all platform support strndup.
   static char* StrNDup(const char* s, intptr_t n);

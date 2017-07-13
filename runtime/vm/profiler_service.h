@@ -29,6 +29,7 @@ class ProfileCodeTable;
 class RawCode;
 class RawFunction;
 class SampleFilter;
+class ProcessedSample;
 class ProcessedSampleBuffer;
 
 class ProfileFunctionSourcePosition {
@@ -170,7 +171,10 @@ class ProfileCode : public ZoneAllocated {
   uword end() const { return end_; }
   void set_end(uword end) { end_ = end; }
 
-  void AdjustExtent(uword start, uword end);
+  void ExpandLower(uword start);
+  void ExpandUpper(uword end);
+  void TruncateLower(uword start);
+  void TruncateUpper(uword end);
 
   bool Contains(uword pc) const { return (pc >= start_) && (pc < end_); }
 
@@ -238,6 +242,48 @@ class ProfileCode : public ZoneAllocated {
 };
 
 
+class ProfileCodeTable : public ZoneAllocated {
+ public:
+  ProfileCodeTable() : table_(8) {}
+
+  intptr_t length() const { return table_.length(); }
+
+  ProfileCode* At(intptr_t index) const {
+    ASSERT(index >= 0);
+    ASSERT(index < length());
+    return table_[index];
+  }
+
+  // Find the table index to the ProfileCode containing pc.
+  // Returns < 0 if not found.
+  intptr_t FindCodeIndexForPC(uword pc) const;
+
+  ProfileCode* FindCodeForPC(uword pc) const {
+    intptr_t index = FindCodeIndexForPC(pc);
+    if (index < 0) {
+      return NULL;
+    }
+    return At(index);
+  }
+
+  // Insert |new_code| into the table. Returns the table index where |new_code|
+  // was inserted. Will merge with an overlapping ProfileCode if one is present.
+  intptr_t InsertCode(ProfileCode* new_code);
+
+ private:
+  void FindNeighbors(uword pc,
+                     intptr_t* lo,
+                     intptr_t* hi,
+                     ProfileCode** lo_code,
+                     ProfileCode** hi_code) const;
+
+  void VerifyOrder();
+  void VerifyOverlap();
+
+  ZoneGrowableArray<ProfileCode*> table_;
+};
+
+
 // Stack traces are organized in a trie. This holds information about one node
 // in the trie. A node in a tree represents a stack frame and a path in the tree
 // represents a stack trace. Each unique stack trace appears in the tree once
@@ -257,7 +303,18 @@ class ProfileTrieNode : public ZoneAllocated {
 
   intptr_t count() const { return count_; }
 
-  void Tick() { count_++; }
+  void Tick(ProcessedSample* sample, bool exclusive = false);
+
+  void IncrementAllocation(intptr_t allocation, bool exclusive) {
+    ASSERT(allocation >= 0);
+    if (exclusive) {
+      exclusive_allocations_ += allocation;
+    }
+    inclusive_allocations_ += allocation;
+  }
+
+  intptr_t inclusive_allocations() const { return inclusive_allocations_; }
+  intptr_t exclusive_allocations() const { return exclusive_allocations_; }
 
   intptr_t NumChildren() const { return children_.length(); }
 
@@ -284,6 +341,8 @@ class ProfileTrieNode : public ZoneAllocated {
 
   intptr_t table_index_;
   intptr_t count_;
+  intptr_t exclusive_allocations_;
+  intptr_t inclusive_allocations_;
   ZoneGrowableArray<ProfileTrieNode*> children_;
   intptr_t frame_id_;
 
@@ -316,6 +375,7 @@ class Profile : public ValueObject {
   // Build a filtered model using |filter| with the specified |tag_order|.
   void Build(Thread* thread,
              SampleFilter* filter,
+             SampleBuffer* sample_buffer,
              TagOrder tag_order,
              intptr_t extra_tags = 0);
 
@@ -378,6 +438,10 @@ class ProfileTrieWalker : public ValueObject {
   intptr_t CurrentInclusiveTicks();
   // Return the current node's peer's exclusive tick count.
   intptr_t CurrentExclusiveTicks();
+  // Return the current node's inclusive allocation count.
+  intptr_t CurrentInclusiveAllocations();
+  // Return the current node's exclusive allocation count.
+  intptr_t CurrentExclusiveAllocations();
   // Return the current node's tick count.
   intptr_t CurrentNodeTickCount();
   // Return the number siblings (including yourself).
@@ -419,6 +483,11 @@ class ProfilerService : public AllStatic {
                                   int64_t time_origin_micros,
                                   int64_t time_extent_micros);
 
+  static void PrintNativeAllocationJSON(JSONStream* stream,
+                                        Profile::TagOrder tag_order,
+                                        int64_t time_origin_micros,
+                                        int64_t time_extent_micros);
+
   static void PrintTimelineJSON(JSONStream* stream,
                                 Profile::TagOrder tag_order,
                                 int64_t time_origin_micros,
@@ -432,6 +501,7 @@ class ProfilerService : public AllStatic {
                             Profile::TagOrder tag_order,
                             intptr_t extra_tags,
                             SampleFilter* filter,
+                            SampleBuffer* sample_buffer,
                             bool as_timline);
 };
 

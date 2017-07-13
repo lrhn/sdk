@@ -69,6 +69,16 @@ UnlinkedConstructorInitializer serializeConstructorInitializer(
  */
 abstract class AbstractConstExprSerializer {
   /**
+   * Whether an expression that should be a constant is being serialized.
+   *
+   * For constants we need to store more than we need just for type inference,
+   * because we need to be able to restore these AST to evaluate actual values
+   * of constants. So, we need to store constructor arguments, elements for
+   * list and map literals even if these literals are typed.
+   */
+  final bool forConst;
+
+  /**
    * See [UnlinkedExprBuilder.isValidConst].
    */
   bool isValidConst = true;
@@ -108,6 +118,8 @@ abstract class AbstractConstExprSerializer {
    * See [UnlinkedExprBuilder.references].
    */
   final List<EntityRefBuilder> references = <EntityRefBuilder>[];
+
+  AbstractConstExprSerializer(this.forConst);
 
   /**
    * Return `true` if the given [name] is a parameter reference.
@@ -274,6 +286,7 @@ abstract class AbstractConstExprSerializer {
   }
 
   void _pushInt(int value) {
+    value ??= 0;
     assert(value >= 0);
     if (value >= 0x100000000) {
       int numOfComponents = 0;
@@ -369,7 +382,8 @@ abstract class AbstractConstExprSerializer {
     } else if (expr is AssignmentExpression) {
       _serializeAssignment(expr);
     } else if (expr is CascadeExpression) {
-      _serializeCascadeExpression(expr);
+      isValidConst = false;
+      _serialize(expr.target);
     } else if (expr is FunctionExpression) {
       isValidConst = false;
       List<int> indices = serializeFunctionExpression(expr);
@@ -412,21 +426,26 @@ abstract class AbstractConstExprSerializer {
   }
 
   void _serializeArguments(ArgumentList argumentList) {
-    List<Expression> arguments = argumentList.arguments;
-    // Serialize the arguments.
-    List<String> argumentNames = <String>[];
-    arguments.forEach((arg) {
-      if (arg is NamedExpression) {
-        argumentNames.add(arg.name.label.name);
-        _serialize(arg.expression);
-      } else {
-        _serialize(arg);
-      }
-    });
-    // Add numbers of named and positional arguments, and the op-code.
-    ints.add(argumentNames.length);
-    strings.addAll(argumentNames);
-    ints.add(arguments.length - argumentNames.length);
+    if (forConst) {
+      List<Expression> arguments = argumentList.arguments;
+      // Serialize the arguments.
+      List<String> argumentNames = <String>[];
+      arguments.forEach((arg) {
+        if (arg is NamedExpression) {
+          argumentNames.add(arg.name.label.name);
+          _serialize(arg.expression);
+        } else {
+          _serialize(arg);
+        }
+      });
+      // Add numbers of named and positional arguments, and the op-code.
+      ints.add(argumentNames.length);
+      strings.addAll(argumentNames);
+      ints.add(arguments.length - argumentNames.length);
+    } else {
+      ints.add(0);
+      ints.add(0);
+    }
   }
 
   void _serializeAssignment(AssignmentExpression expr) {
@@ -519,19 +538,14 @@ abstract class AbstractConstExprSerializer {
     }
   }
 
-  void _serializeCascadeExpression(CascadeExpression expr) {
-    _serialize(expr.target);
-    for (Expression section in expr.cascadeSections) {
-      operations.add(UnlinkedExprOperation.cascadeSectionBegin);
-      _serialize(section);
-      operations.add(UnlinkedExprOperation.cascadeSectionEnd);
-    }
-  }
-
   void _serializeListLiteral(ListLiteral expr) {
-    List<Expression> elements = expr.elements;
-    elements.forEach(_serialize);
-    ints.add(elements.length);
+    if (forConst || expr.typeArguments == null) {
+      List<Expression> elements = expr.elements;
+      elements.forEach(_serialize);
+      ints.add(elements.length);
+    } else {
+      ints.add(0);
+    }
     if (expr.typeArguments != null &&
         expr.typeArguments.arguments.length == 1) {
       references.add(serializeTypeName(expr.typeArguments.arguments[0]));
@@ -542,11 +556,15 @@ abstract class AbstractConstExprSerializer {
   }
 
   void _serializeMapLiteral(MapLiteral expr) {
-    for (MapLiteralEntry entry in expr.entries) {
-      _serialize(entry.key);
-      _serialize(entry.value);
+    if (forConst || expr.typeArguments == null) {
+      for (MapLiteralEntry entry in expr.entries) {
+        _serialize(entry.key);
+        _serialize(entry.value);
+      }
+      ints.add(expr.entries.length);
+    } else {
+      ints.add(0);
     }
-    ints.add(expr.entries.length);
     if (expr.typeArguments != null &&
         expr.typeArguments.arguments.length == 2) {
       references.add(serializeTypeName(expr.typeArguments.arguments[0]));
@@ -632,7 +650,9 @@ abstract class AbstractConstExprSerializer {
       references.add(ref);
       operations.add(UnlinkedExprOperation.pushReference);
     } else {
-      _serialize(expr.target);
+      if (!expr.isCascaded) {
+        _serialize(expr.target);
+      }
       strings.add(expr.propertyName.name);
       operations.add(UnlinkedExprOperation.extractProperty);
     }

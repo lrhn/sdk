@@ -4,31 +4,59 @@
 
 library fasta.kernel_formal_parameter_builder;
 
-import 'package:kernel/ast.dart' show
-    DynamicType,
-    VariableDeclaration;
+import 'package:front_end/src/fasta/kernel/kernel_shadow_ast.dart'
+    show KernelVariableDeclaration;
 
-import 'kernel_builder.dart' show
-    FormalParameterBuilder,
-    KernelLibraryBuilder,
-    KernelTypeBuilder,
-    MetadataBuilder;
+import '../modifier.dart' show finalMask;
+
+import 'kernel_builder.dart'
+    show
+        FormalParameterBuilder,
+        KernelLibraryBuilder,
+        KernelTypeBuilder,
+        MetadataBuilder;
+
+import 'package:front_end/src/fasta/source/source_library_builder.dart'
+    show SourceLibraryBuilder;
 
 class KernelFormalParameterBuilder
     extends FormalParameterBuilder<KernelTypeBuilder> {
-  VariableDeclaration declaration;
+  KernelVariableDeclaration declaration;
+  final int charOffset;
 
-  KernelFormalParameterBuilder(List<MetadataBuilder> metadata,
-      int modifiers, KernelTypeBuilder type, String name,
-      bool hasThis, KernelLibraryBuilder compilationUnit, int charOffset)
-      : super (metadata, modifiers, type, name, hasThis, compilationUnit,
-          charOffset);
+  KernelFormalParameterBuilder(
+      List<MetadataBuilder> metadata,
+      int modifiers,
+      KernelTypeBuilder type,
+      String name,
+      bool hasThis,
+      KernelLibraryBuilder compilationUnit,
+      this.charOffset)
+      : super(metadata, modifiers, type, name, hasThis, compilationUnit,
+            charOffset);
 
-  VariableDeclaration build() {
-    return declaration ??= new VariableDeclaration(
-        name, type: type?.build() ?? const DynamicType(), isFinal: isFinal,
-        isConst: isConst);
+  KernelVariableDeclaration get target => declaration;
+
+  KernelVariableDeclaration build(SourceLibraryBuilder library) {
+    if (declaration == null) {
+      declaration = new KernelVariableDeclaration(name, 0,
+          type: type?.build(library), isFinal: isFinal, isConst: isConst)
+        ..fileOffset = charOffset;
+      if (type == null && hasThis) {
+        library.loader.typeInferenceEngine
+            .recordInitializingFormal(declaration);
+      }
+    }
+    return declaration;
   }
 
-  VariableDeclaration get target => declaration;
+  @override
+  FormalParameterBuilder forFormalParameterInitializerScope() {
+    assert(declaration != null);
+    return !hasThis
+        ? this
+        : (new KernelFormalParameterBuilder(metadata, modifiers | finalMask,
+            type, name, hasThis, parent, charOffset)
+          ..declaration = declaration);
+  }
 }

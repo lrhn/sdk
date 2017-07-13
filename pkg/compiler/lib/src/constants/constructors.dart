@@ -24,12 +24,12 @@ abstract class ConstantConstructor {
   /// Computes the type of the instance created in a const constructor
   /// invocation with type [newType].
   InterfaceType computeInstanceType(
-      Environment environment, InterfaceType newType);
+      EvaluationEnvironment environment, InterfaceType newType);
 
   /// Computes the constant expressions of the fields of the created instance
   /// in a const constructor invocation with [arguments].
   Map<FieldEntity, ConstantExpression> computeInstanceFields(
-      Environment environment,
+      EvaluationEnvironment environment,
       List<ConstantExpression> arguments,
       CallStructure callStructure);
 
@@ -39,15 +39,19 @@ abstract class ConstantConstructor {
 abstract class ConstantConstructorVisitor<R, A> {
   const ConstantConstructorVisitor();
 
-  R visit(ConstantConstructor constantConstructor, A context) {
+  R visit(
+      covariant ConstantConstructor constantConstructor, covariant A context) {
     return constantConstructor.accept(this, context);
   }
 
-  R visitGenerative(GenerativeConstantConstructor constructor, A arg);
+  R visitGenerative(
+      covariant GenerativeConstantConstructor constructor, covariant A arg);
   R visitRedirectingGenerative(
-      RedirectingGenerativeConstantConstructor constructor, A arg);
+      covariant RedirectingGenerativeConstantConstructor constructor,
+      covariant A arg);
   R visitRedirectingFactory(
-      RedirectingFactoryConstantConstructor constructor, A arg);
+      covariant RedirectingFactoryConstantConstructor constructor,
+      covariant A arg);
 }
 
 /// A generative constant constructor.
@@ -63,12 +67,12 @@ class GenerativeConstantConstructor implements ConstantConstructor {
   ConstantConstructorKind get kind => ConstantConstructorKind.GENERATIVE;
 
   InterfaceType computeInstanceType(
-      Environment environment, InterfaceType newType) {
+      EvaluationEnvironment environment, InterfaceType newType) {
     return environment.substByContext(type, newType);
   }
 
   Map<FieldEntity, ConstantExpression> computeInstanceFields(
-      Environment environment,
+      EvaluationEnvironment environment,
       List<ConstantExpression> arguments,
       CallStructure callStructure) {
     NormalizedArguments args =
@@ -131,7 +135,7 @@ class GenerativeConstantConstructor implements ConstantConstructor {
   /// [constructorInvocation]. If [constructorInvocation] is `null`, an empty
   /// map is created.
   static Map<FieldEntity, ConstantExpression> applyFields(
-      Environment environment,
+      EvaluationEnvironment environment,
       NormalizedArguments args,
       ConstructedConstantExpression constructorInvocation) {
     Map<FieldEntity, ConstantExpression> appliedFieldMap =
@@ -160,13 +164,13 @@ class RedirectingGenerativeConstantConstructor implements ConstantConstructor {
   }
 
   InterfaceType computeInstanceType(
-      Environment environment, InterfaceType newType) {
+      EvaluationEnvironment environment, InterfaceType newType) {
     return environment.substByContext(
         thisConstructorInvocation.computeInstanceType(environment), newType);
   }
 
   Map<FieldEntity, ConstantExpression> computeInstanceFields(
-      Environment environment,
+      EvaluationEnvironment environment,
       List<ConstantExpression> arguments,
       CallStructure callStructure) {
     NormalizedArguments args =
@@ -217,13 +221,13 @@ class RedirectingFactoryConstantConstructor implements ConstantConstructor {
   }
 
   InterfaceType computeInstanceType(
-      Environment environment, InterfaceType newType) {
+      EvaluationEnvironment environment, InterfaceType newType) {
     return environment.substByContext(
         targetConstructorInvocation.computeInstanceType(environment), newType);
   }
 
   Map<FieldEntity, ConstantExpression> computeInstanceFields(
-      Environment environment,
+      EvaluationEnvironment environment,
       List<ConstantExpression> arguments,
       CallStructure callStructure) {
     ConstantConstructor constantConstructor =

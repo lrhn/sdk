@@ -109,9 +109,9 @@ class SourceLocationCollection {
 }
 
 abstract class CssColorScheme {
-  String singleLocationToCssColor(var id);
+  String singleLocationToCssColor(int id);
 
-  String multiLocationToCssColor(List ids);
+  String multiLocationToCssColor(List<int> ids);
 
   bool get showLocationAsSpan;
 }
@@ -123,12 +123,13 @@ class CustomColorScheme implements CssColorScheme {
 
   CustomColorScheme(
       {this.showLocationAsSpan: false,
-      String this.single(var id),
-      String this.multi(List ids)});
+      String this.single(int id),
+      String this.multi(List<int> ids)});
 
-  String singleLocationToCssColor(var id) => single != null ? single(id) : null;
+  String singleLocationToCssColor(int id) => single != null ? single(id) : null;
 
-  String multiLocationToCssColor(List ids) => multi != null ? multi(ids) : null;
+  String multiLocationToCssColor(List<int> ids) =>
+      multi != null ? multi(ids) : null;
 }
 
 class PatternCssColorScheme implements CssColorScheme {
@@ -225,11 +226,11 @@ class CodeProcessor {
 class ElementScheme {
   const ElementScheme();
 
-  String getName(var id, Set ids) => null;
-  String getHref(var id, Set ids) => null;
-  String onClick(var id, Set ids) => null;
-  String onMouseOver(var id, Set ids) => null;
-  String onMouseOut(var id, Set ids) => null;
+  String getName(int id, Set<int> ids) => null;
+  String getHref(int id, Set<int> ids) => null;
+  String onClick(int id, Set<int> ids) => null;
+  String onMouseOver(int id, Set<int> ids) => null;
+  String onMouseOut(int id, Set<int> ids) => null;
 }
 
 class HighlightLinkScheme implements ElementScheme {
@@ -427,8 +428,6 @@ $jsTrace
 /// Computes the HTML information for the [info].
 SourceMapHtmlInfo createHtmlInfo(
     SourceLocationCollection collection, SourceMapInfo info) {
-  js.Node node = info.node;
-  String code = info.code;
   String name = info.name;
   SourceLocationCollection subcollection =
       new SourceLocationCollection(collection);
@@ -487,7 +486,7 @@ String computeDartHtmlPart(String name, SourceFileManager sourceFileManager,
     Map<int, List<SourceLocation>> uriMap =
         sourceLocationMap.putIfAbsent(sourceLocation.sourceUri, () => {});
     List<SourceLocation> lineList =
-        uriMap.putIfAbsent(sourceLocation.line, () => []);
+        uriMap.putIfAbsent(sourceLocation.line - 1, () => []);
     lineList.add(sourceLocation);
   });
   sourceLocationMap.forEach((Uri uri, Map<int, List<SourceLocation>> uriMap) {
@@ -515,7 +514,7 @@ String computeDartHtmlPart(String name, SourceFileManager sourceFileManager,
             line++) {
           if (line >= 0) {
             dartCodeBuffer.write(lineNumber(line, width: lineNoWidth));
-            dartCodeBuffer.write(sourceFile.getLineText(line));
+            dartCodeBuffer.write(sourceFile.kernelSource.getTextLine(line + 1));
           }
         }
         dartCodeBuffer.write(codeBuffer);
@@ -524,7 +523,7 @@ String computeDartHtmlPart(String name, SourceFileManager sourceFileManager,
             line++) {
           if (line < sourceFile.lines) {
             dartCodeBuffer.write(lineNumber(line, width: lineNoWidth));
-            dartCodeBuffer.write(sourceFile.getLineText(line));
+            dartCodeBuffer.write(sourceFile.kernelSource.getTextLine(line + 1));
           }
         }
         dartCodeBuffer.write('</pre>\n');
@@ -544,18 +543,18 @@ String computeDartHtmlPart(String name, SourceFileManager sourceFileManager,
       } else {
         for (int line = lastLineIndex + 1; line < lineIndex; line++) {
           codeBuffer.write(lineNumber(line, width: lineNoWidth));
-          codeBuffer.write(sourceFile.getLineText(line));
+          codeBuffer.write(sourceFile.kernelSource.getTextLine(line + 1));
         }
       }
-      String line = sourceFile.getLineText(lineIndex);
+      String line = sourceFile.kernelSource.getTextLine(lineIndex + 1);
       locations.sort((a, b) => a.offset.compareTo(b.offset));
       for (int i = 0; i < locations.length; i++) {
         SourceLocation sourceLocation = locations[i];
         int index = collection.getIndex(sourceLocation);
-        int start = sourceLocation.column;
+        int start = sourceLocation.column - 1;
         int end = line.length;
         if (i + 1 < locations.length) {
-          end = locations[i + 1].column;
+          end = locations[i + 1].column - 1;
         }
         if (i == 0) {
           codeBuffer.write(lineNumber(lineIndex, width: lineNoWidth));

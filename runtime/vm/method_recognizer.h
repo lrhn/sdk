@@ -133,6 +133,8 @@ namespace dart {
     0x5e83ecad)                                                                \
   V(::, _classRangeCheck, ClassRangeCheck, Bool, 0x16a2fc83)                   \
   V(::, _classRangeCheckNegative, ClassRangeCheckNegated, Bool, 0x46898c74)    \
+  V(::, _classRangeAssert, ClassRangeAssert, Dynamic, 0x3ccbdf6e)              \
+  V(::, _classIdEqualsAssert, ClassIdEqualsAssert, Dynamic, 0x4dc80932)        \
 
 
 // List of intrinsics:
@@ -166,7 +168,7 @@ namespace dart {
   V(_List, []=, ObjectArraySetIndexed, Dynamic, 0x51691f4c)                    \
   V(_GrowableList, .withData, GrowableArray_Allocate, GrowableObjectArray,     \
     0x3468a26f)                                                                \
-  V(_GrowableList, add, GrowableArray_add, Dynamic, 0x19eaa9aa)                \
+  V(_GrowableList, add, GrowableArray_add, Dynamic, 0x1ce3b4f8)                \
   V(_RegExp, _ExecuteMatch, RegExp_ExecuteMatch, Dynamic, 0x380184b1)          \
   V(_RegExp, _ExecuteMatchSticky, RegExp_ExecuteMatchSticky, Dynamic,          \
     0x79b8f955)                                                                \
@@ -186,6 +188,8 @@ namespace dart {
     0x604ec475)                                                                \
   V(_OneByteString, ==, OneByteString_equality, Bool, 0x4719e83f)              \
   V(_TwoByteString, ==, TwoByteString_equality, Bool, 0x4719e83f)              \
+  V(::, _getHash, Object_getHash, Smi, 0x2827856d)                             \
+  V(::, _setHash, Object_setHash, Object, 0x302d1fe8)                          \
 
 
 #define CORE_INTEGER_LIB_INTRINSIC_LIST(V)                                     \
@@ -230,9 +234,9 @@ namespace dart {
   V(_Random, _nextState, Random_nextState, Dynamic, 0x268dec36)                \
 
 #define GRAPH_MATH_LIB_INTRINSIC_LIST(V)                                       \
-  V(::, sin, MathSin, Double, 0x3f3a010c)                                      \
-  V(::, cos, MathCos, Double, 0x195a1d7e)                                      \
-  V(::, tan, MathTan, Double, 0x0f8b9eaa)                                      \
+  V(::, sin, MathSin, Double, 0x6b7bd98c)                                      \
+  V(::, cos, MathCos, Double, 0x459bf5fe)                                      \
+  V(::, tan, MathTan, Double, 0x3bcd772a)                                      \
   V(::, asin, MathAsin, Double, 0x2ecc2fcd)                                    \
   V(::, acos, MathAcos, Double, 0x08cf2212)                                    \
   V(::, atan, MathAtan, Double, 0x1e2731d5)                                    \
@@ -376,7 +380,7 @@ namespace dart {
   V(_TypedList, get:length, TypedDataLength, 0x20915079)                       \
   V(_GrowableList, get:length, GrowableArrayLength, 0x18dd1255)                \
   V(_GrowableList, get:_capacity, GrowableArrayCapacity, 0x2e044a01)           \
-  V(_GrowableList, add, GrowableListAdd, 0x19eaa9aa)                           \
+  V(_GrowableList, add, GrowableListAdd, 0x1ce3b4f8)                           \
   V(_GrowableList, removeLast, GrowableListRemoveLast, 0x3daaaca4)             \
   V(_StringBase, get:length, StringBaseLength, 0x2a2c8f72)                     \
   V(ListIterator, moveNext, ListIteratorMoveNext, 0x7ead154d)                  \
@@ -421,6 +425,8 @@ namespace dart {
   V(::, pow, MathPow, 0x5f119fa5)                                              \
   V(::, _classRangeCheck, ClassRangeCheck, 0x16a2fc83)                         \
   V(::, _classRangeCheckNegative, ClassRangeCheckNegated, 0x46898c74)          \
+  V(::, _classRangeAssert, ClassRangeAssert, 0x3ccbdf6e)                       \
+  V(::, _classIdEqualsAssert, ClassIdEqualsAssert, 0x4dc80932)                 \
   V(Lists, copy, ListsCopy, 0x714584f8)                                        \
   V(_Bigint, get:_neg, Bigint_getNeg, 0x356019c4)                              \
   V(_Bigint, get:_used, Bigint_getUsed, 0x33ba5131)                            \
@@ -442,10 +448,10 @@ namespace dart {
   V(::, acos, MathAcos, 0x08cf2212)                                            \
   V(::, atan, MathAtan, 0x1e2731d5)                                            \
   V(::, atan2, MathAtan2, 0x39f1fa41)                                          \
-  V(::, cos, MathCos, 0x195a1d7e)                                              \
-  V(::, sin, MathSin, 0x3f3a010c)                                              \
+  V(::, cos, MathCos, 0x459bf5fe)                                              \
+  V(::, sin, MathSin, 0x6b7bd98c)                                              \
   V(::, sqrt, MathSqrt, 0x70482cf3)                                            \
-  V(::, tan, MathTan, 0x0f8b9eaa)                                              \
+  V(::, tan, MathTan, 0x3bcd772a)                                              \
   V(_Bigint, _lsh, Bigint_lsh, 0x40d9f1cc)                                     \
   V(_Bigint, _rsh, Bigint_rsh, 0x703f1a40)                                     \
   V(_Bigint, _absAdd, Bigint_absAdd, 0x50fb1e47)                               \
@@ -554,7 +560,7 @@ class MethodRecognizer : public AllStatic {
   V(_GrowableListWithData, _GrowableList, .withData, kGrowableObjectArrayCid,  \
     0x3468a26f)                                                                \
   V(_GrowableListFactory, _GrowableList, ., kGrowableObjectArrayCid,           \
-    0x3bd724aa)                                                                \
+    0x7c4346ab)                                                                \
   V(_Int8ArrayFactory, Int8List, ., kTypedDataInt8ArrayCid, 0x165876c2)        \
   V(_Uint8ArrayFactory, Uint8List, ., kTypedDataUint8ArrayCid, 0x52988118)     \
   V(_Uint8ClampedArrayFactory, Uint8ClampedList, .,                            \

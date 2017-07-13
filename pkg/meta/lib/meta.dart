@@ -18,6 +18,36 @@
 /// in the language tour.
 library meta;
 
+/// Used to annotate a function `f`. Indicates that `f` always throws an
+/// exception. Any functions that override `f`, in class inheritence, are also
+/// expected to conform to this contract.
+///
+/// Tools, such as the analyzer, can use this to understand whether a block of
+/// code "exits". For example:
+///
+/// ```dart
+/// @alwaysThrows toss() { throw 'Thrown'; }
+///
+/// int fn(bool b) {
+///   if (b) {
+///     return 0;
+///   } else {
+///     toss();
+///     print("Hello.");
+///   }
+/// }
+/// ```
+///
+/// Without the annotation on `toss`, it would look as though `fn` doesn't
+/// always return a value. The annotation shows that `fn` does always exit. In
+/// addition, the annotation reveals that any statements following a call to
+/// `toss` (like the `print` call) are dead code.
+///
+/// Tools, such as the analyzer, can also expect this contract to be enforced;
+/// that is, tools may emit warnings if a function with this annotation
+/// _doesn't_ always throw.
+const _AlwaysThrows alwaysThrows = const _AlwaysThrows();
+
 /// Used to annotate a parameter of an instance method that overrides another
 /// method.
 ///
@@ -25,6 +55,28 @@ library meta;
 /// its superclass. The actual argument will be checked at runtime to ensure it
 /// is a subtype of the overridden parameter type.
 const _Checked checked = const _Checked();
+
+/// Used to annotate a library, or any declaration that is part of the public
+/// interface of a library (such as top-level members, class members, and
+/// function parameters) to indicate that the annotated API is experimental and
+/// may be removed or changed at any-time without updating the version of the
+/// containing package, despite the fact that it would otherwise be a breaking
+/// change.
+///
+/// If the annotation is applied to a library then it is equivalent to applying
+/// the annotation to all of the top-level members of the library. Applying the
+/// annotation to a class does *not* apply the annotation to subclasses, but
+/// does apply the annotation to members of the class.
+///
+/// Tools, such as the analyzer, can provide feedback if
+///
+/// * the annotation is associated with a declaration that is not part of the
+///   public interface of a library (such as a local variable or a declaration
+///   that is private) or a directive other than the first directive in the
+///   library, or
+/// * the declaration is referenced by a package that has not explicitly
+///   indicated its intention to use experimental APIs (details TBD).
+const _Experimental experimental = const _Experimental();
 
 /// Used to annotate an instance or static method `m`. Indicates that `m` must
 /// either be abstract or must return a newly allocated object or `null`. In
@@ -138,8 +190,7 @@ const _VisibleForOverriding visibleForOverriding =
 /// Tools, such as the analyzer, can provide feedback if
 ///
 /// * the annotation is associated with a declaration not in the `lib` folder
-///   of a package;
-///   or
+///   of a package, or
 /// * the declaration is referenced outside of its the defining library or a
 ///   library which is in the `test` folder of the defining package.
 const _VisibleForTesting visibleForTesting = const _VisibleForTesting();
@@ -174,8 +225,16 @@ class Required {
   const Required([this.reason]);
 }
 
+class _AlwaysThrows {
+  const _AlwaysThrows();
+}
+
 class _Checked {
   const _Checked();
+}
+
+class _Experimental {
+  const _Experimental();
 }
 
 class _Factory {

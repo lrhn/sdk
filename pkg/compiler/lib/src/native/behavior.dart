@@ -3,21 +3,17 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import '../common.dart';
-import '../common/backend_api.dart' show BackendClasses, ForeignResolver;
+import '../common/backend_api.dart' show ForeignResolver;
 import '../common/resolution.dart' show ParsingContext, Resolution;
 import '../compiler.dart' show Compiler;
-import '../compile_time_constants.dart' show ConstantEnvironment;
-import '../constants/expressions.dart';
 import '../constants/values.dart';
-import '../core_types.dart' show CommonElements;
+import '../common_elements.dart' show CommonElements;
 import '../elements/elements.dart';
 import '../elements/entities.dart';
 import '../elements/resolution_types.dart';
 import '../elements/types.dart';
 import '../js/js.dart' as js;
-import '../js_backend/js_backend.dart';
-import '../js_backend/backend_helpers.dart';
-import '../options.dart';
+import '../js_backend/native_data.dart' show NativeBasicData;
 import '../tree/tree.dart';
 import '../universe/side_effects.dart' show SideEffects;
 import '../util/util.dart';
@@ -135,11 +131,11 @@ class NativeThrowBehavior {
  * `null` may be returned.
  */
 class NativeBehavior {
-  /// [ResolutionDartType]s or [SpecialType]s returned or yielded by the native
+  /// [DartType]s or [SpecialType]s returned or yielded by the native
   /// element.
   final List typesReturned = [];
 
-  /// [ResolutionDartType]s or [SpecialType]s instantiated by the native
+  /// [DartType]s or [SpecialType]s instantiated by the native
   /// element.
   final List typesInstantiated = [];
 
@@ -527,14 +523,14 @@ class NativeBehavior {
       return new NativeBehavior();
     }
 
-    var specArgument = argNodes.head;
+    dynamic specArgument = argNodes.head;
     if (specArgument is! StringNode || specArgument.isInterpolation) {
       reporter.reportErrorMessage(
           specArgument, MessageKind.WRONG_ARGUMENT_FOR_JS_FIRST);
       return new NativeBehavior();
     }
 
-    var codeArgument = argNodes.tail.head;
+    dynamic codeArgument = argNodes.tail.head;
     if (codeArgument is! StringNode || codeArgument.isInterpolation) {
       reporter.reportErrorMessage(
           codeArgument, MessageKind.WRONG_ARGUMENT_FOR_JS_SECOND);
@@ -769,39 +765,44 @@ class NativeBehavior {
   }
 
   static NativeBehavior ofMethodElement(
-      FunctionElement element, Compiler compiler) {
+      MethodElement element, Compiler compiler,
+      {bool isJsInterop}) {
     ResolutionFunctionType type = element.computeType(compiler.resolution);
-    List<ConstantExpression> metadata = <ConstantExpression>[];
+    List<ConstantValue> metadata = <ConstantValue>[];
     for (MetadataAnnotation annotation in element.implementation.metadata) {
       annotation.ensureResolved(compiler.resolution);
-      metadata.add(annotation.constant);
+      metadata.add(compiler.constants.getConstantValue(annotation.constant));
     }
 
-    BehaviorBuilder builder = new ResolverBehaviorBuilder(compiler);
+    BehaviorBuilder builder = new ResolverBehaviorBuilder(
+        compiler, compiler.frontendStrategy.nativeBasicData);
     return builder.buildMethodBehavior(
         type, metadata, lookupFromElement(compiler.resolution, element),
-        isJsInterop: compiler.backend.isJsInterop(element));
+        isJsInterop: isJsInterop);
   }
 
   static NativeBehavior ofFieldElementLoad(
-      MemberElement element, Compiler compiler) {
+      MemberElement element, Compiler compiler,
+      {bool isJsInterop}) {
     Resolution resolution = compiler.resolution;
     ResolutionDartType type = element.computeType(resolution);
-    List<ConstantExpression> metadata = <ConstantExpression>[];
+    List<ConstantValue> metadata = <ConstantValue>[];
     for (MetadataAnnotation annotation in element.implementation.metadata) {
       annotation.ensureResolved(compiler.resolution);
-      metadata.add(annotation.constant);
+      metadata.add(compiler.constants.getConstantValue(annotation.constant));
     }
 
-    BehaviorBuilder builder = new ResolverBehaviorBuilder(compiler);
+    BehaviorBuilder builder = new ResolverBehaviorBuilder(
+        compiler, compiler.frontendStrategy.nativeBasicData);
     return builder.buildFieldLoadBehavior(
         type, metadata, lookupFromElement(resolution, element),
-        isJsInterop: compiler.backend.isJsInterop(element));
+        isJsInterop: isJsInterop);
   }
 
   static NativeBehavior ofFieldElementStore(
       MemberElement field, Compiler compiler) {
-    BehaviorBuilder builder = new ResolverBehaviorBuilder(compiler);
+    BehaviorBuilder builder = new ResolverBehaviorBuilder(
+        compiler, compiler.frontendStrategy.nativeBasicData);
     ResolutionDartType type = field.computeType(compiler.resolution);
     return builder.buildFieldStoreBehavior(type);
   }
@@ -847,10 +848,8 @@ class NativeBehavior {
 
 abstract class BehaviorBuilder {
   CommonElements get commonElements;
-  BackendClasses get backendClasses;
-  BackendHelpers get helpers;
   DiagnosticReporter get reporter;
-  ConstantEnvironment get constants;
+  NativeBasicData get nativeBasicData;
   bool get trustJSInteropTypeAnnotations;
 
   Resolution get resolution => null;
@@ -858,13 +857,13 @@ abstract class BehaviorBuilder {
   NativeBehavior _behavior;
 
   void _overrideWithAnnotations(
-      Iterable<ConstantExpression> metadata, TypeLookup lookupType) {
+      Iterable<ConstantValue> metadata, TypeLookup lookupType) {
     if (metadata.isEmpty) return;
 
     List creates =
-        _collect(metadata, helpers.annotationCreatesClass, lookupType);
+        _collect(metadata, commonElements.annotationCreatesClass, lookupType);
     List returns =
-        _collect(metadata, helpers.annotationReturnsClass, lookupType);
+        _collect(metadata, commonElements.annotationReturnsClass, lookupType);
 
     if (creates != null) {
       _behavior.typesInstantiated
@@ -883,11 +882,10 @@ abstract class BehaviorBuilder {
    * [annotationClass].
    * Returns `null` if no constraints.
    */
-  List _collect(Iterable<ConstantExpression> metadata,
-      ClassEntity annotationClass, TypeLookup lookupType) {
+  List _collect(Iterable<ConstantValue> metadata, ClassEntity annotationClass,
+      TypeLookup lookupType) {
     var types = null;
-    for (ConstantExpression constant in metadata) {
-      ConstantValue value = constants.getConstantValue(constant);
+    for (ConstantValue value in metadata) {
       if (!value.isConstructedObject) continue;
       ConstructedConstantValue constructedObject = value;
       if (constructedObject.type.element != annotationClass) continue;
@@ -896,10 +894,10 @@ abstract class BehaviorBuilder {
       // TODO(sra): Better validation of the constant.
       if (fields.length != 1 || !fields.single.isString) {
         reporter.internalError(CURRENT_ELEMENT_SPANNABLE,
-            'Annotations needs one string: ${constant.toStructuredText()}');
+            'Annotations needs one string: ${value.toStructuredText()}');
       }
       StringConstantValue specStringConstant = fields.single;
-      String specString = specStringConstant.toDartString().slowToString();
+      String specString = specStringConstant.primitiveValue;
       for (final typeString in specString.split('|')) {
         var type = NativeBehavior._parseType(typeString, lookupType);
         if (types == null) types = [];
@@ -909,7 +907,7 @@ abstract class BehaviorBuilder {
     return types;
   }
 
-  /// Models the behavior of having intances of [type] escape from Dart code
+  /// Models the behavior of having instances of [type] escape from Dart code
   /// into native code.
   void _escape(DartType type) {
     if (type is ResolutionDartType) {
@@ -949,7 +947,7 @@ abstract class BehaviorBuilder {
         _behavior.typesInstantiated.add(type);
       } else {
         if (type is InterfaceType &&
-            backendClasses.isNativeClass(type.element)) {
+            nativeBasicData.isNativeClass(type.element)) {
           // Any declared native or interop type (isNative implies isJsInterop)
           // is assumed to be allocated.
           _behavior.typesInstantiated.add(type);
@@ -964,7 +962,7 @@ abstract class BehaviorBuilder {
           // annotations. This means that to some degree we still use the return
           // type to decide whether to include native types, even if we don't
           // trust the type annotation.
-          ClassElement cls = helpers.jsJavaScriptObjectClass;
+          ClassElement cls = commonElements.jsJavaScriptObjectClass;
           cls.ensureResolved(resolution);
           _behavior.typesInstantiated.add(cls.thisType);
         } else {
@@ -977,8 +975,8 @@ abstract class BehaviorBuilder {
     }
   }
 
-  NativeBehavior buildFieldLoadBehavior(DartType type,
-      Iterable<ConstantExpression> metadata, TypeLookup lookupType,
+  NativeBehavior buildFieldLoadBehavior(
+      DartType type, Iterable<ConstantValue> metadata, TypeLookup lookupType,
       {bool isJsInterop}) {
     _behavior = new NativeBehavior();
     // TODO(sigmund,sra): consider doing something better for numeric types.
@@ -1001,7 +999,7 @@ abstract class BehaviorBuilder {
   }
 
   NativeBehavior buildMethodBehavior(FunctionType type,
-      List<ConstantExpression> metadata, TypeLookup lookupType,
+      Iterable<ConstantValue> metadata, TypeLookup lookupType,
       {bool isJsInterop}) {
     _behavior = new NativeBehavior();
     DartType returnType = type.returnType;
@@ -1037,30 +1035,19 @@ abstract class BehaviorBuilder {
 
 class ResolverBehaviorBuilder extends BehaviorBuilder {
   final Compiler compiler;
+  final NativeBasicData nativeBasicData;
 
-  ResolverBehaviorBuilder(this.compiler);
+  ResolverBehaviorBuilder(this.compiler, this.nativeBasicData);
 
   @override
-  CommonElements get commonElements => compiler.commonElements;
+  CommonElements get commonElements => resolution.commonElements;
 
   @override
   bool get trustJSInteropTypeAnnotations =>
       compiler.options.trustJSInteropTypeAnnotations;
 
   @override
-  ConstantEnvironment get constants => compiler.constants;
-
-  @override
   DiagnosticReporter get reporter => compiler.reporter;
-
-  @override
-  BackendHelpers get helpers {
-    JavaScriptBackend backend = compiler.backend;
-    return backend.helpers;
-  }
-
-  @override
-  BackendClasses get backendClasses => compiler.backend.backendClasses;
 
   @override
   Resolution get resolution => compiler.resolution;

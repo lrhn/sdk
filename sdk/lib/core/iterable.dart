@@ -75,7 +75,7 @@ part of dart.core;
  *
  * Since an iterable may be iterated more than once, it's not recommended to
  * have detectable side-effects in the iterator.
- * For methods like [map] and [while], the returned iterable will execute the
+ * For methods like [map] and [where], the returned iterable will execute the
  * argument function on every iteration, so those functions should also not
  * have side effects.
  */
@@ -207,7 +207,7 @@ abstract class Iterable<E> {
    *
    * Some types of iterable may have a different equality used for its elements.
    * For example, a [Set] may have a custom equality
-   * (see [Set.identical]) that its `contains` uses.
+   * (see [Set.identity]) that its `contains` uses.
    * Likewise the `Iterable` returned by a [Map.keys] call
    * should use the same equality that the `Map` uses for keys.
    */
@@ -291,9 +291,9 @@ abstract class Iterable<E> {
    * Checks every element in iteration order, and returns `false` if
    * any of them make [test] return `false`, otherwise returns `true`.
    */
-  bool every(bool f(E element)) {
+  bool every(bool test(E element)) {
     for (E element in this) {
-      if (!f(element)) return false;
+      if (!test(element)) return false;
     }
     return true;
   }
@@ -330,9 +330,9 @@ abstract class Iterable<E> {
    * Checks every element in iteration order, and returns `true` if
    * any of them make [test] return `true`, otherwise returns false.
    */
-  bool any(bool f(E element)) {
+  bool any(bool test(E element)) {
     for (E element in this) {
-      if (f(element)) return true;
+      if (test(element)) return true;
     }
     return false;
   }

@@ -5,6 +5,9 @@
 // Regression test for Issue 16321.
 // (Type errors in metadata crashed the VM in checked mode).
 
+library lib;
+
+@MirrorsUsed(targets: "lib")
 import "dart:mirrors";
 
 class TypedBox {
@@ -12,7 +15,7 @@ class TypedBox {
   const TypedBox(this.contents);
 }
 
-@TypedBox('foo')  /// 01: static type warning, checked mode compile-time error
+@TypedBox('foo') // //# 01: static type warning, checked mode compile-time error
 @TypedBox(const ['foo'])
 class C {}
 

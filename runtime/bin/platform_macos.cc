@@ -3,13 +3,15 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_MACOS)
 
 #include "bin/platform.h"
 
-#if !TARGET_OS_IOS
+#include <CoreFoundation/CoreFoundation.h>
+
+#if !HOST_OS_IOS
 #include <crt_externs.h>  // NOLINT
-#endif                    // !TARGET_OS_IOS
+#endif                    // !HOST_OS_IOS
 #include <mach-o/dyld.h>
 #include <signal.h>      // NOLINT
 #include <string.h>      // NOLINT
@@ -80,7 +82,7 @@ int Platform::NumberOfProcessors() {
 
 
 const char* Platform::OperatingSystem() {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   return "ios";
 #else
   return "macos";
@@ -98,13 +100,66 @@ const char* Platform::LibraryExtension() {
 }
 
 
+static const char* GetLocaleName() {
+  CFLocaleRef locale = CFLocaleCopyCurrent();
+  CFStringRef locale_string = CFLocaleGetIdentifier(locale);
+  CFIndex len = CFStringGetLength(locale_string);
+  CFIndex max_len =
+      CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+  char* result = reinterpret_cast<char*>(Dart_ScopeAllocate(max_len));
+  ASSERT(result != NULL);
+  bool success =
+      CFStringGetCString(locale_string, result, max_len, kCFStringEncodingUTF8);
+  CFRelease(locale);
+  if (!success) {
+    return NULL;
+  }
+  return result;
+}
+
+
+static const char* GetPreferredLanguageName() {
+  CFArrayRef languages = CFLocaleCopyPreferredLanguages();
+  CFIndex languages_length = CFArrayGetCount(languages);
+  if (languages_length < 1) {
+    CFRelease(languages);
+    return NULL;
+  }
+  CFTypeRef item =
+      reinterpret_cast<CFTypeRef>(CFArrayGetValueAtIndex(languages, 0));
+  CFTypeID item_type = CFGetTypeID(item);
+  ASSERT(item_type == CFStringGetTypeID());
+  CFStringRef language = reinterpret_cast<CFStringRef>(item);
+  CFIndex len = CFStringGetLength(language);
+  CFIndex max_len =
+      CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+  char* result = reinterpret_cast<char*>(Dart_ScopeAllocate(max_len));
+  ASSERT(result != NULL);
+  bool success =
+      CFStringGetCString(language, result, max_len, kCFStringEncodingUTF8);
+  CFRelease(languages);
+  if (!success) {
+    return NULL;
+  }
+  return result;
+}
+
+
+const char* Platform::LocaleName() {
+  // First see if there is a preferred language. If not, return the
+  // current locale name.
+  const char* preferred_language = GetPreferredLanguageName();
+  return (preferred_language != NULL) ? preferred_language : GetLocaleName();
+}
+
+
 bool Platform::LocalHostname(char* buffer, intptr_t buffer_length) {
   return gethostname(buffer, buffer_length) == 0;
 }
 
 
 char** Platform::Environment(intptr_t* count) {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   // TODO(zra,chinmaygarde): On iOS, environment variables are seldom used. Wire
   // this up if someone needs it. In the meantime, we return an empty array.
   char** result;
@@ -137,6 +192,11 @@ char** Platform::Environment(intptr_t* count) {
 }
 
 
+const char* Platform::GetExecutableName() {
+  return executable_name_;
+}
+
+
 const char* Platform::ResolveExecutablePath() {
   // Get the required length of the buffer.
   uint32_t path_size = 0;
@@ -161,4 +221,4 @@ void Platform::Exit(int exit_code) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_MACOS)
+#endif  // defined(HOST_OS_MACOS)

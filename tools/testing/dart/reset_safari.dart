@@ -2,23 +2,15 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-
 /// Helper program for killing and resetting all Safari settings to a known
 /// state that works well for testing dart2js output in Safari.
 ///
 /// Warning: this will delete all your Safari settings and bookmarks.
 library testing.reset_safari;
 
-import 'dart:async' show
-    Future,
-    Timer;
+import 'dart:async' show Future, Timer;
 
-import 'dart:io' show
-    Directory,
-    File,
-    Platform,
-    Process,
-    ProcessResult;
+import 'dart:io' show Directory, File, Platform, Process;
 
 const String defaultSafariBundleLocation = "/Applications/Safari.app/";
 
@@ -35,11 +27,11 @@ const String safari = "com.apple.Safari";
 const String defaultsLocation = "/usr/bin/defaults";
 
 final List<String> safariSettings = <String>[
-    "Library/Caches/$safari",
-    "Library/Safari",
-    "Library/Saved Application State/$safari.savedState",
-    "Library/Caches/Metadata/Safari",
-    "Library/Preferences/$safari.plist",
+  "Library/Caches/$safari",
+  "Library/Safari",
+  "Library/Saved Application State/$safari.savedState",
+  "Library/Caches/Metadata/Safari",
+  "Library/Preferences/$safari.plist",
 ];
 
 const Duration defaultPollDelay = const Duration(milliseconds: 1);
@@ -107,10 +99,8 @@ final String knownSafariPreference = '''
 
 Future<Null> get pollDelay => new Future.delayed(defaultPollDelay);
 
-String signalArgument(
-    String defaultSignal,
-    {bool force: false,
-     bool testOnly: false}) {
+String signalArgument(String defaultSignal,
+    {bool force: false, bool testOnly: false}) {
   if (force && testOnly) {
     throw new ArgumentError("[force] and [testOnly] can't both be true.");
   }
@@ -119,51 +109,46 @@ String signalArgument(
   return defaultSignal;
 }
 
-Future<int> kill(
-    List<String> pids,
-    {bool force: false,
-     bool testOnly: false}) async {
-  List<String> arguments =
-      <String>[signalArgument("-TERM", force: force, testOnly: testOnly)]
-      ..addAll(pids);
-  ProcessResult result = await Process.run(killLocation, arguments);
+Future<int> kill(List<String> pids,
+    {bool force: false, bool testOnly: false}) async {
+  var arguments = [signalArgument("-TERM", force: force, testOnly: testOnly)]
+    ..addAll(pids);
+  var result = await Process.run(killLocation, arguments);
   return result.exitCode;
 }
 
-Future<int> pkill(
-    String pattern,
-    {bool force: false,
-     bool testOnly: false}) async {
-  List<String> arguments = <String>[
-      signalArgument("-HUP", force: force, testOnly: testOnly),
-      pattern];
-  ProcessResult result = await Process.run(pkillLocation, arguments);
+Future<int> pkill(String pattern,
+    {bool force: false, bool testOnly: false}) async {
+  var arguments = [
+    signalArgument("-HUP", force: force, testOnly: testOnly),
+    pattern
+  ];
+  var result = await Process.run(pkillLocation, arguments);
   return result.exitCode;
 }
 
 Uri validatedBundleName(Uri bundle) {
   if (bundle == null) return Uri.base.resolve(defaultSafariBundleLocation);
   if (!bundle.path.endsWith("/")) {
-    throw new ArgumentError(
-        "Bundle ('$bundle') must end with a slash ('/').");
+    throw new ArgumentError("Bundle ('$bundle') must end with a slash ('/').");
   }
   return bundle;
 }
 
 Future<Null> killSafari({Uri bundle}) async {
   bundle = validatedBundleName(bundle);
-  Uri safariBinary = bundle.resolve(relativeSafariLocation);
-  ProcessResult result = await Process.run(
-      lsofLocation, ["-t", safariBinary.toFilePath()]);
+  var safariBinary = bundle.resolve(relativeSafariLocation);
+  var result =
+      await Process.run(lsofLocation, ["-t", safariBinary.toFilePath()]);
   if (result.exitCode == 0) {
-    String stdout = result.stdout;
-    List<String> pids = new List<String>.from(
-        stdout.split("\n").where((String line) => !line.isEmpty));
-    Timer timer = new Timer(const Duration(seconds: 10), () {
+    var stdout = result.stdout as String;
+    var pids =
+        stdout.split("\n").where((String line) => !line.isEmpty).toList();
+    var timer = new Timer(const Duration(seconds: 10), () {
       print("Kill -9 Safari $pids");
       kill(pids, force: true);
     });
-    int exitCode = await kill(pids);
+    var exitCode = await kill(pids);
     while (exitCode == 0) {
       await pollDelay;
       print("Polling Safari $pids");
@@ -171,11 +156,11 @@ Future<Null> killSafari({Uri bundle}) async {
     }
     timer.cancel();
   }
-  Timer timer = new Timer(const Duration(seconds: 10), () {
+  var timer = new Timer(const Duration(seconds: 10), () {
     print("Kill -9 $safari");
     pkill(safari, force: true);
   });
-  int exitCode = await pkill(safari);
+  var exitCode = await pkill(safari);
   while (exitCode == 0) {
     await pollDelay;
     print("Polling $safari");
@@ -185,12 +170,12 @@ Future<Null> killSafari({Uri bundle}) async {
 }
 
 Future<Null> deleteIfExists(Uri uri) async {
-  Directory directory = new Directory.fromUri(uri);
+  var directory = new Directory.fromUri(uri);
   if (await directory.exists()) {
     print("Deleting directory '$uri'.");
     await directory.delete(recursive: true);
   } else {
-    File file = new File.fromUri(uri);
+    var file = new File.fromUri(uri);
     if (await file.exists()) {
       print("Deleting file '$uri'.");
       await file.delete();
@@ -201,16 +186,16 @@ Future<Null> deleteIfExists(Uri uri) async {
 }
 
 Future<Null> resetSafariSettings() async {
-  String home = Platform.environment["HOME"];
+  var home = Platform.environment["HOME"];
   if (!home.endsWith("/")) {
     home = "$home/";
   }
-  Uri homeDirectory = Uri.base.resolve(home);
+  var homeDirectory = Uri.base.resolve(home);
   for (String setting in safariSettings) {
     await deleteIfExists(homeDirectory.resolve(setting));
   }
-  ProcessResult result = await Process.run(
-      defaultsLocation, <String>["write", safari, knownSafariPreference]);
+  var result = await Process
+      .run(defaultsLocation, <String>["write", safari, knownSafariPreference]);
   if (result.exitCode != 0) {
     throw "Unable to reset Safari settings: ${result.stdout}${result.stderr}";
   }

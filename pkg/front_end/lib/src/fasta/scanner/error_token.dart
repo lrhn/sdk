@@ -4,22 +4,24 @@
 
 library dart_scanner.error_token;
 
-// TODO(ahe): ErrorKind doesn't belong in dart_parser. Move to compiler_util or
-// this package?
-import '../parser/error_kind.dart' show
-    ErrorKind;
+import '../../scanner/token.dart' show BeginToken, TokenType, TokenWithComment;
 
-import '../scanner.dart' show
-    BeginGroupToken,
-    Token,
-    unicodeReplacementCharacter;
+import '../fasta_codes.dart'
+    show
+        Code,
+        codeAsciiControlCharacter,
+        codeEncoding,
+        codeExpectedHexDigit,
+        codeMissingExponent,
+        codeNonAsciiIdentifier,
+        codeNonAsciiWhitespace,
+        codeUnexpectedDollarInString,
+        codeUnmatchedToken,
+        codeUnterminatedComment,
+        codeUnterminatedString,
+        codeUnterminatedToken;
 
-import 'precedence.dart' show
-    BAD_INPUT_INFO,
-    PrecedenceInfo;
-
-export '../parser/error_kind.dart' show
-    ErrorKind;
+import '../scanner.dart' show Token, unicodeReplacementCharacter;
 
 ErrorToken buildUnexpectedCharacterToken(int character, int charOffset) {
   if (character < 0x1f) {
@@ -29,8 +31,8 @@ ErrorToken buildUnexpectedCharacterToken(int character, int charOffset) {
     case unicodeReplacementCharacter:
       return new EncodingErrorToken(charOffset);
 
-      /// See [General Punctuation]
-      /// (http://www.unicode.org/charts/PDF/U2000.pdf).
+    /// See [General Punctuation]
+    /// (http://www.unicode.org/charts/PDF/U2000.pdf).
     case 0x00A0: // No-break space.
     case 0x1680: // Ogham space mark.
     case 0x180E: // Mongolian vowel separator.
@@ -61,22 +63,21 @@ ErrorToken buildUnexpectedCharacterToken(int character, int charOffset) {
 
 /// Common superclass for all error tokens.
 ///
-/// It's considered an implementation error to access [value] of an
+/// It's considered an implementation error to access [lexeme] of an
 /// [ErrorToken].
-abstract class ErrorToken extends Token {
-  ErrorToken(int charOffset) : super(charOffset);
+abstract class ErrorToken extends TokenWithComment {
+  ErrorToken(int offset) : super(TokenType.BAD_INPUT, offset, null);
 
-  PrecedenceInfo get info => BAD_INPUT_INFO;
+  /// This is a token that wraps around an error message. Return 1
+  /// instead of the size of the length of the error message.
+  @override
+  int get length => 1;
 
-  String get value => throw assertionMessage;
-
-  String get stringValue => null;
-
-  bool isIdentifier() => false;
+  String get lexeme => throw assertionMessage;
 
   String get assertionMessage;
 
-  ErrorKind get errorCode;
+  Code get errorCode;
 
   int get character => null;
 
@@ -84,7 +85,12 @@ abstract class ErrorToken extends Token {
 
   int get endOffset => null;
 
-  BeginGroupToken get begin => null;
+  BeginToken get begin => null;
+
+  @override
+  Token copy() {
+    throw 'unsupported operation';
+  }
 }
 
 /// Represents an encoding error.
@@ -95,7 +101,7 @@ class EncodingErrorToken extends ErrorToken {
 
   String get assertionMessage => "Unable to decode bytes as UTF-8.";
 
-  ErrorKind get errorCode => ErrorKind.Encoding;
+  Code get errorCode => codeEncoding;
 }
 
 /// Represents a non-ASCII character outside a string or comment.
@@ -111,14 +117,13 @@ class NonAsciiIdentifierToken extends ErrorToken {
     String hex = character.toRadixString(16);
     String padding = "0000".substring(hex.length);
     hex = "$padding$hex";
-    return
-        "The non-ASCII character '$c' (U+$hex) can't be used in identifiers,"
+    return "The non-ASCII character '$c' (U+$hex) can't be used in identifiers,"
         " only in strings and comments.\n"
         "Try using an US-ASCII letter, a digit, '_' (an underscore),"
         " or '\$' (a dollar sign).";
   }
 
-  ErrorKind get errorCode => ErrorKind.NonAsciiIdentifier;
+  Code get errorCode => codeNonAsciiIdentifier;
 }
 
 /// Represents a non-ASCII whitespace outside a string or comment.
@@ -135,7 +140,7 @@ class NonAsciiWhitespaceToken extends ErrorToken {
         "and comments.";
   }
 
-  ErrorKind get errorCode => ErrorKind.NonAsciiWhitespace;
+  Code get errorCode => codeNonAsciiWhitespace;
 }
 
 /// Represents an ASCII control character outside a string or comment.
@@ -153,7 +158,7 @@ class AsciiControlCharacterToken extends ErrorToken {
         "comments.";
   }
 
-  ErrorKind get errorCode => ErrorKind.AsciiControlCharacter;
+  Code get errorCode => codeAsciiControlCharacter;
 }
 
 /// Represents an unterminated string.
@@ -170,10 +175,10 @@ class UnterminatedToken extends ErrorToken {
 
   int get charCount => endOffset - charOffset;
 
-  ErrorKind get errorCode {
+  Code get errorCode {
     switch (start) {
       case '1e':
-        return ErrorKind.MissingExponent;
+        return codeMissingExponent;
 
       case '"':
       case "'":
@@ -183,19 +188,19 @@ class UnterminatedToken extends ErrorToken {
       case "r'":
       case 'r"""':
       case "r'''":
-        return ErrorKind.UnterminatedString;
+        return codeUnterminatedString;
 
       case '0x':
-        return ErrorKind.ExpectedHexDigit;
+        return codeExpectedHexDigit;
 
       case r'$':
-        return ErrorKind.UnexpectedDollarInString;
+        return codeUnexpectedDollarInString;
 
       case '/*':
-        return ErrorKind.UnterminatedComment;
+        return codeUnterminatedComment;
 
       default:
-        return ErrorKind.UnterminatedToken;
+        return codeUnterminatedToken;
     }
   }
 }
@@ -205,15 +210,15 @@ class UnterminatedToken extends ErrorToken {
 /// In this case, brace means any of `(`, `{`, `[`, and `<`, parenthesis, curly
 /// brace, square brace, and angle brace, respectively.
 class UnmatchedToken extends ErrorToken {
-  final BeginGroupToken begin;
+  final BeginToken begin;
 
-  UnmatchedToken(BeginGroupToken begin)
+  UnmatchedToken(BeginToken begin)
       : this.begin = begin,
         super(begin.charOffset);
 
-  String toString() => "UnmatchedToken(${begin.value})";
+  String toString() => "UnmatchedToken(${begin.lexeme})";
 
   String get assertionMessage => "'$begin' isn't closed.";
 
-  ErrorKind get errorCode => ErrorKind.UnmatchedToken;
+  Code get errorCode => codeUnmatchedToken;
 }

@@ -5,7 +5,7 @@
 #if !defined(DART_IO_DISABLED)
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_LINUX)
+#if defined(HOST_OS_LINUX)
 
 #include "bin/file_system_watcher.h"
 
@@ -110,7 +110,8 @@ Dart_Handle FileSystemWatcher::ReadEvents(intptr_t id, intptr_t path_id) {
   const intptr_t kEventSize = sizeof(struct inotify_event);
   const intptr_t kBufferSize = kEventSize + NAME_MAX + 1;
   uint8_t buffer[kBufferSize];
-  intptr_t bytes = Socket::Read(id, buffer, kBufferSize);
+  intptr_t bytes =
+      SocketBase::Read(id, buffer, kBufferSize, SocketBase::kAsync);
   if (bytes < 0) {
     return DartUtils::NewDartOSError();
   }
@@ -147,6 +148,6 @@ Dart_Handle FileSystemWatcher::ReadEvents(intptr_t id, intptr_t path_id) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_LINUX)
+#endif  // defined(HOST_OS_LINUX)
 
 #endif  // !defined(DART_IO_DISABLED)

@@ -61,16 +61,23 @@ class TargetRepositoryMock implements M.TargetRepository {
   }
 
   M.Target find(String networkAddress) {
-    return null;
+    return const TargetMock();
   }
 
-  TargetRepositoryMock({M.Target current, Iterable<M.Target> list : const [],
+  @override
+  bool isConnectedVMTarget(M.Target target) {
+    return false;
+  }
+
+  TargetRepositoryMock(
+      {M.Target current,
+      Iterable<M.Target> list: const [],
       TargetRepositoryMockStringCallback add,
       TargetRepositoryMockTargetCallback setCurrent,
       TargetRepositoryMockTargetCallback delete})
-    : _current = current,
-      _list = list,
-      _add = add,
-      _setCurrent = setCurrent,
-      _delete = delete;
+      : _current = current,
+        _list = list,
+        _add = add,
+        _setCurrent = setCurrent,
+        _delete = delete;
 }

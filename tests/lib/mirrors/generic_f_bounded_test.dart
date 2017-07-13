@@ -4,6 +4,7 @@
 
 library test.generic_f_bounded;
 
+@MirrorsUsed(targets: "test.generic_f_bounded")
 import 'dart:mirrors';
 
 import 'package:expect/expect.dart';
@@ -11,8 +12,11 @@ import 'package:expect/expect.dart';
 import 'generics_helper.dart';
 
 class Magnitude<T> {}
+
 class Real extends Magnitude<Real> {}
+
 class Sorter<R extends Magnitude<R>> {}
+
 class RealSorter extends Sorter<Real> {}
 
 main() {
@@ -52,7 +56,7 @@ main() {
   typeArguments(realDecl, []);
   typeArguments(sorterDecl, []);
   typeArguments(realSorterDecl, []);
-  typeArguments(magnitudeOfReal, [realDecl]); /// 01: ok
-  typeArguments(sorterOfReal, [realDecl]); /// 01: ok
+  typeArguments(magnitudeOfReal, [realDecl]); //# 01: ok
+  typeArguments(sorterOfReal, [realDecl]); //# 01: ok
   typeArguments(magnitudeOfR, [rFromSorter]);
 }

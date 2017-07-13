@@ -7,6 +7,7 @@
 
 #include "platform/assert.h"
 #include "vm/atomic.h"
+#include "vm/exceptions.h"
 #include "vm/globals.h"
 #include "vm/snapshot.h"
 #include "vm/token.h"
@@ -264,21 +265,15 @@ class RawObject {
     kCanonicalBit = 1,
     kVMHeapObjectBit = 2,
     kRememberedBit = 3,
-    kReservedTagPos = 4,  // kReservedBit{100K,1M,10M}
-#if defined(ARCH_IS_32_BIT)
+    kReservedTagPos = 4,  // kReservedBit{10K,100K,1M,10M}
     kReservedTagSize = 4,
     kSizeTagPos = kReservedTagPos + kReservedTagSize,  // = 8
     kSizeTagSize = 8,
     kClassIdTagPos = kSizeTagPos + kSizeTagSize,  // = 16
     kClassIdTagSize = 16,
-#elif defined(ARCH_IS_64_BIT)
-    kReservedTagSize = 12,
-    kSizeTagPos = kReservedTagPos + kReservedTagSize,  // = 16
-    kSizeTagSize = 16,
-    kClassIdTagPos = kSizeTagPos + kSizeTagSize,  // = 32
-    kClassIdTagSize = 32,
-#else
-#error Unexpected architecture word size
+#if defined(HASH_IN_OBJECT_HEADER)
+    kHashTagPos = kClassIdTagPos + kClassIdTagSize,  // = 32
+    kHashTagSize = 16,
 #endif
   };
 
@@ -305,7 +300,7 @@ class RawObject {
    private:
     // The actual unscaled bit field used within the tag field.
     class SizeBits
-        : public BitField<uword, intptr_t, kSizeTagPos, kSizeTagSize> {};
+        : public BitField<uint32_t, intptr_t, kSizeTagPos, kSizeTagSize> {};
 
     static intptr_t SizeToTagValue(intptr_t size) {
       ASSERT(Utils::IsAligned(size, kObjectAlignment));
@@ -317,7 +312,7 @@ class RawObject {
   };
 
   class ClassIdTag
-      : public BitField<uword, intptr_t, kClassIdTagPos, kClassIdTagSize> {};
+      : public BitField<uint32_t, intptr_t, kClassIdTagPos, kClassIdTagSize> {};
 
   bool IsWellFormed() const {
     uword value = reinterpret_cast<uword>(this);
@@ -361,7 +356,7 @@ class RawObject {
   }
   void SetMarkBitUnsynchronized() {
     ASSERT(!IsMarked());
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     ptr()->tags_ = MarkBit::update(true, tags);
   }
   void ClearMarkBit() {
@@ -387,12 +382,12 @@ class RawObject {
   }
   void SetRememberedBitUnsynchronized() {
     ASSERT(!IsRemembered());
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     ptr()->tags_ = RememberedBit::update(true, tags);
   }
   void ClearRememberedBit() { UpdateTagBit<RememberedBit>(false); }
   void ClearRememberedBitUnsynchronized() {
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     ptr()->tags_ = RememberedBit::update(false, tags);
   }
   // Returns false if the bit was already set.
@@ -418,6 +413,7 @@ class RawObject {
 #undef DEFINE_IS_CID
 
   bool IsStringInstance() const { return IsStringClassId(GetClassId()); }
+  bool IsRawNull() const { return GetClassId() == kNullCid; }
   bool IsDartInstance() const {
     return (!IsHeapObject() || (GetClassId() >= kInstanceCid));
   }
@@ -432,15 +428,15 @@ class RawObject {
   }
 
   intptr_t Size() const {
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     intptr_t result = SizeTag::decode(tags);
     if (result != 0) {
 #if defined(DEBUG)
-      // TODO(22501) Array::MakeArray has a race with this code: we might have
-      // loaded tags field and then MakeArray could have updated it leading
-      // to inconsistency between SizeFromClass() and SizeTag::decode(tags).
-      // We are working around it by reloading tags_ and recomputing
-      // size from tags.
+      // TODO(22501) Array::MakeFixedLength has a race with this code: we might
+      // have loaded tags field and then MakeFixedLength could have updated it
+      // leading to inconsistency between SizeFromClass() and
+      // SizeTag::decode(tags). We are working around it by reloading tags_ and
+      // recomputing size from tags.
       const intptr_t size_from_class = SizeFromClass();
       if ((result > size_from_class) && (GetClassId() == kArrayCid) &&
           (ptr()->tags_ != tags)) {
@@ -462,8 +458,48 @@ class RawObject {
   }
 
   void Validate(Isolate* isolate) const;
-  intptr_t VisitPointers(ObjectPointerVisitor* visitor);
   bool FindObject(FindObjectVisitor* visitor);
+
+  intptr_t VisitPointers(ObjectPointerVisitor* visitor) {
+    // Fall back to virtual variant for predefined classes
+    intptr_t class_id = GetClassId();
+    if (class_id < kNumPredefinedCids) {
+      return VisitPointersPredefined(visitor, class_id);
+    }
+
+    // Calculate the first and last raw object pointer fields.
+    intptr_t instance_size = Size();
+    uword obj_addr = ToAddr(this);
+    uword from = obj_addr + sizeof(RawObject);
+    uword to = obj_addr + instance_size - kWordSize;
+
+    // Call visitor function virtually
+    visitor->VisitPointers(reinterpret_cast<RawObject**>(from),
+                           reinterpret_cast<RawObject**>(to));
+
+    return instance_size;
+  }
+
+  template <class V>
+  intptr_t VisitPointersNonvirtual(V* visitor) {
+    // Fall back to virtual variant for predefined classes
+    intptr_t class_id = GetClassId();
+    if (class_id < kNumPredefinedCids) {
+      return VisitPointersPredefined(visitor, class_id);
+    }
+
+    // Calculate the first and last raw object pointer fields.
+    intptr_t instance_size = Size();
+    uword obj_addr = ToAddr(this);
+    uword from = obj_addr + sizeof(RawObject);
+    uword to = obj_addr + instance_size - kWordSize;
+
+    // Call visitor function non-virtually
+    visitor->V::VisitPointers(reinterpret_cast<RawObject**>(from),
+                              reinterpret_cast<RawObject**>(to));
+
+    return instance_size;
+  }
 
   static RawObject* FromAddr(uword addr) {
     // We expect the untagged address here.
@@ -502,18 +538,25 @@ class RawObject {
   static intptr_t NumberOfTypedDataClasses();
 
  private:
-  uword tags_;  // Various object tags (bits).
+  uint32_t tags_;  // Various object tags (bits).
+#if defined(HASH_IN_OBJECT_HEADER)
+  // On 64 bit there is a hash field in the header for the identity hash.
+  uint32_t hash_;
+#endif
 
-  class MarkBit : public BitField<uword, bool, kMarkBit, 1> {};
+  class MarkBit : public BitField<uint32_t, bool, kMarkBit, 1> {};
 
-  class RememberedBit : public BitField<uword, bool, kRememberedBit, 1> {};
+  class RememberedBit : public BitField<uint32_t, bool, kRememberedBit, 1> {};
 
-  class CanonicalObjectTag : public BitField<uword, bool, kCanonicalBit, 1> {};
+  class CanonicalObjectTag : public BitField<uint32_t, bool, kCanonicalBit, 1> {
+  };
 
-  class VMHeapObjectTag : public BitField<uword, bool, kVMHeapObjectBit, 1> {};
+  class VMHeapObjectTag : public BitField<uint32_t, bool, kVMHeapObjectBit, 1> {
+  };
 
   class ReservedBits
-      : public BitField<uword, intptr_t, kReservedTagPos, kReservedTagSize> {};
+      : public BitField<uint32_t, intptr_t, kReservedTagPos, kReservedTagSize> {
+  };
 
   // TODO(koda): After handling tags_, return const*, like Object::raw_ptr().
   RawObject* ptr() const {
@@ -522,40 +565,43 @@ class RawObject {
                                         kHeapObjectTag);
   }
 
+  intptr_t VisitPointersPredefined(ObjectPointerVisitor* visitor,
+                                   intptr_t class_id);
+
   intptr_t SizeFromClass() const;
 
   intptr_t GetClassId() const {
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     return ClassIdTag::decode(tags);
   }
 
   void SetClassId(intptr_t new_cid) {
-    uword tags = ptr()->tags_;
+    uint32_t tags = ptr()->tags_;
     ptr()->tags_ = ClassIdTag::update(new_cid, tags);
   }
 
   template <class TagBitField>
   void UpdateTagBit(bool value) {
-    uword tags = ptr()->tags_;
-    uword old_tags;
+    uint32_t tags = ptr()->tags_;
+    uint32_t old_tags;
     do {
       old_tags = tags;
-      uword new_tags = TagBitField::update(value, old_tags);
-      tags = AtomicOperations::CompareAndSwapWord(&ptr()->tags_, old_tags,
-                                                  new_tags);
+      uint32_t new_tags = TagBitField::update(value, old_tags);
+      tags = AtomicOperations::CompareAndSwapUint32(&ptr()->tags_, old_tags,
+                                                    new_tags);
     } while (tags != old_tags);
   }
 
   template <class TagBitField>
   bool TryAcquireTagBit() {
-    uword tags = ptr()->tags_;
-    uword old_tags;
+    uint32_t tags = ptr()->tags_;
+    uint32_t old_tags;
     do {
       old_tags = tags;
       if (TagBitField::decode(tags)) return false;
-      uword new_tags = TagBitField::update(true, old_tags);
-      tags = AtomicOperations::CompareAndSwapWord(&ptr()->tags_, old_tags,
-                                                  new_tags);
+      uint32_t new_tags = TagBitField::update(true, old_tags);
+      tags = AtomicOperations::CompareAndSwapUint32(&ptr()->tags_, old_tags,
+                                                    new_tags);
     } while (tags != old_tags);
     return true;
   }
@@ -613,6 +659,7 @@ class RawObject {
   friend class RawExternalTypedData;
   friend class RawInstructions;
   friend class RawInstance;
+  friend class RawString;
   friend class RawTypedData;
   friend class Scavenger;
   friend class ScavengerVisitor;
@@ -620,7 +667,7 @@ class RawObject {
   friend class InstanceAccumulator;        // GetClassId
   friend class RetainingPathVisitor;       // GetClassId
   friend class SkippedCodeFunctions;       // StorePointer
-  friend class InstructionsReader;         // tags_ check
+  friend class ImageReader;                // tags_ check
   friend class ImageWriter;
   friend class AssemblyImageWriter;
   friend class BlobImageWriter;
@@ -662,7 +709,7 @@ class RawClass : public RawObject {
 
   RawObject** from() { return reinterpret_cast<RawObject**>(&ptr()->name_); }
   RawString* name_;
-  NOT_IN_PRODUCT(RawString* user_name_);
+  RawString* user_name_;
   RawArray* functions_;
   RawArray* functions_hash_table_;
   RawArray* fields_;
@@ -685,10 +732,10 @@ class RawClass : public RawObject {
   }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kCore:
+      case Snapshot::kFull:
       case Snapshot::kScript:
-      case Snapshot::kAppJIT:
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullJIT:
+      case Snapshot::kFullAOT:
         return reinterpret_cast<RawObject**>(&ptr()->direct_subclasses_);
       case Snapshot::kMessage:
       case Snapshot::kNone:
@@ -763,6 +810,7 @@ class RawTypeArguments : public RawObject {
     return reinterpret_cast<RawObject**>(&ptr()->types()[length - 1]);
   }
 
+  friend class Object;
   friend class SnapshotReader;
 };
 
@@ -857,7 +905,7 @@ class RawFunction : public RawObject {
   uint32_t kind_tag_;                          // See Function::KindTagBits.
   int16_t num_fixed_parameters_;
   int16_t num_optional_parameters_;  // > 0: positional; < 0: named.
-  NOT_IN_PRECOMPILED(void* kernel_function_);
+  NOT_IN_PRECOMPILED(intptr_t kernel_offset_);
   NOT_IN_PRECOMPILED(uint16_t optimized_instruction_count_);
   NOT_IN_PRECOMPILED(uint16_t optimized_call_site_count_);
   NOT_IN_PRECOMPILED(int8_t deoptimization_counter_);
@@ -943,12 +991,12 @@ class RawField : public RawObject {
   }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kCore:
+      case Snapshot::kFull:
       case Snapshot::kScript:
         return reinterpret_cast<RawObject**>(&ptr()->guarded_list_length_);
-      case Snapshot::kAppJIT:
+      case Snapshot::kFullJIT:
         return reinterpret_cast<RawObject**>(&ptr()->dependent_code_);
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullAOT:
         return reinterpret_cast<RawObject**>(&ptr()->initializer_);
       case Snapshot::kMessage:
       case Snapshot::kNone:
@@ -965,11 +1013,11 @@ class RawField : public RawObject {
                            // any other value otherwise.
   // Offset to the guarded length field inside an instance of class matching
   // guarded_cid_. Stored corrected by -kHeapObjectTag to simplify code
-  // generated on platforms with weak addressing modes (ARM, MIPS).
+  // generated on platforms with weak addressing modes (ARM).
   int8_t guarded_list_length_in_object_offset_;
 
   uint8_t kind_bits_;  // static, final, const, has initializer....
-  NOT_IN_PRECOMPILED(void* kernel_field_);
+  NOT_IN_PRECOMPILED(intptr_t kernel_offset_);
 
   friend class CidRewriteVisitor;
 };
@@ -1024,15 +1072,18 @@ class RawScript : public RawObject {
   RawArray* line_starts_;
   RawArray* debug_positions_;
   RawArray* yield_positions_;
+  RawTypedData* kernel_string_offsets_;
+  RawTypedData* kernel_string_data_;
+  RawTypedData* kernel_canonical_names_;
   RawTokenStream* tokens_;
   RawString* source_;
   RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->source_); }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullAOT:
         return reinterpret_cast<RawObject**>(&ptr()->url_);
-      case Snapshot::kCore:
-      case Snapshot::kAppJIT:
+      case Snapshot::kFull:
+      case Snapshot::kFullJIT:
       case Snapshot::kScript:
         return reinterpret_cast<RawObject**>(&ptr()->tokens_);
       case Snapshot::kMessage:
@@ -1048,6 +1099,9 @@ class RawScript : public RawObject {
   int32_t col_offset_;
   int8_t kind_;  // Of type Kind.
   int64_t load_timestamp_;
+  const uint8_t* kernel_data_;
+  intptr_t kernel_data_size_;
+  intptr_t kernel_script_index_;
 };
 
 
@@ -1114,14 +1168,6 @@ class RawNamespace : public RawObject {
 
 
 class RawCode : public RawObject {
-  enum InlinedMetadataIndex {
-    kInlinedIntervalsIndex = 0,
-    kInlinedIdToFunctionIndex = 1,
-    kInlinedCallerIdMapIndex = 2,
-    kInlinedIdToTokenPosIndex = 3,
-    kInlinedMetadataSize = 4,
-  };
-
   RAW_HEAP_OBJECT_IMPLEMENTATION(Code);
 
   uword entry_point_;          // Accessed from generated code.
@@ -1138,9 +1184,14 @@ class RawCode : public RawObject {
   RawObject* owner_;  // Function, Null, or a Class.
   RawExceptionHandlers* exception_handlers_;
   RawPcDescriptors* pc_descriptors_;
+  union {
+    RawTypedData* catch_entry_state_maps_;
+    RawSmi* variables_;
+  } catch_entry_;
   RawArray* stackmaps_;
   RawArray* inlined_id_to_function_;
   RawCodeSourceMap* code_source_map_;
+  NOT_IN_PRECOMPILED(RawArray* await_token_positions_);
   NOT_IN_PRECOMPILED(RawInstructions* active_instructions_);
   NOT_IN_PRECOMPILED(RawArray* deopt_info_array_);
   // (code-offset, function, code) triples.
@@ -1227,7 +1278,7 @@ class RawInstructions : public RawObject {
   friend class MarkingVisitorBase;
   friend class SkippedCodeFunctions;
   friend class Function;
-  friend class InstructionsReader;
+  friend class ImageReader;
   friend class ImageWriter;
 };
 
@@ -1280,7 +1331,10 @@ class RawPcDescriptors : public RawObject {
  private:
   RAW_HEAP_OBJECT_IMPLEMENTATION(PcDescriptors);
 
-  int32_t length_;  // Number of descriptors.
+  // Number of descriptors.  This only needs to be an int32_t, but we make it a
+  // uword so that the variable length data is 64 bit aligned on 64 bit
+  // platforms.
+  uword length_;
 
   // Variable length data follows here.
   uint8_t* data() { OPEN_ARRAY_START(uint8_t, intptr_t); }
@@ -1296,7 +1350,9 @@ class RawCodeSourceMap : public RawObject {
  private:
   RAW_HEAP_OBJECT_IMPLEMENTATION(CodeSourceMap);
 
-  int32_t length_;  // Length in bytes.
+  // Length in bytes.  This only needs to be an int32_t, but we make it a uword
+  // so that the variable length data is 64 bit aligned on 64 bit platforms.
+  uword length_;
 
   // Variable length data follows here.
   uint8_t* data() { OPEN_ARRAY_START(uint8_t, intptr_t); }
@@ -1323,8 +1379,9 @@ class RawStackMap : public RawObject {
   int32_t slow_path_bit_count_;  // Slow path live values, included in length_.
 
   // Offset from code entry point corresponding to this stack map
-  // representation.
-  uint32_t pc_offset_;
+  // representation. This only needs to be an int32_t, but we make it a uword
+  // so that the variable length data is 64 bit aligned on 64 bit platforms.
+  uword pc_offset_;
 
   // Variable length data follows here (bitmap of the stack layout).
   uint8_t* data() { OPEN_ARRAY_START(uint8_t, uint8_t); }
@@ -1378,7 +1435,10 @@ class RawLocalVarDescriptors : public RawObject {
 
  private:
   RAW_HEAP_OBJECT_IMPLEMENTATION(LocalVarDescriptors);
-  int32_t num_entries_;  // Number of descriptors.
+  // Number of descriptors. This only needs to be an int32_t, but we make it a
+  // uword so that the variable length data is 64 bit aligned on 64 bit
+  // platforms.
+  uword num_entries_;
 
   RawObject** from() {
     return reinterpret_cast<RawObject**>(&ptr()->names()[0]);
@@ -1440,6 +1500,7 @@ class RawContext : public RawObject {
     return reinterpret_cast<RawObject**>(&ptr()->data()[num_vars - 1]);
   }
 
+  friend class Object;
   friend class SnapshotReader;
 };
 
@@ -1524,11 +1585,11 @@ class RawICData : public RawObject {
   RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->owner_); }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullAOT:
         return reinterpret_cast<RawObject**>(&ptr()->args_descriptor_);
-      case Snapshot::kCore:
+      case Snapshot::kFull:
       case Snapshot::kScript:
-      case Snapshot::kAppJIT:
+      case Snapshot::kFullJIT:
         return to();
       case Snapshot::kMessage:
       case Snapshot::kNone:
@@ -1623,7 +1684,6 @@ class RawUnwindError : public RawError {
   RawString* message_;
   RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->message_); }
   bool is_user_initiated_;
-  bool is_vm_restart_;
 };
 
 
@@ -1646,11 +1706,11 @@ class RawLibraryPrefix : public RawInstance {
   }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kCore:
+      case Snapshot::kFull:
       case Snapshot::kScript:
-      case Snapshot::kAppJIT:
+      case Snapshot::kFullJIT:
         return reinterpret_cast<RawObject**>(&ptr()->imports_);
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullAOT:
         return reinterpret_cast<RawObject**>(&ptr()->importer_);
       case Snapshot::kMessage:
       case Snapshot::kNone:
@@ -1740,7 +1800,6 @@ class RawTypeParameter : public RawAbstractType {
   classid_t parameterized_class_id_;
   TokenPosition token_pos_;
   int16_t index_;
-  uint8_t parent_level_;  // Max 255 levels of nested generic functions is OK.
   int8_t type_state_;
 
   friend class CidRewriteVisitor;
@@ -1782,14 +1841,29 @@ class RawClosure : public RawInstance {
   RAW_HEAP_OBJECT_IMPLEMENTATION(Closure);
 
   RawObject** from() {
-    return reinterpret_cast<RawObject**>(&ptr()->type_arguments_);
+    return reinterpret_cast<RawObject**>(&ptr()->instantiator_type_arguments_);
   }
 
-  RawTypeArguments* type_arguments_;
+  // No instance fields should be declared before the following 4 fields whose
+  // offsets must be identical in Dart and C++.
+
+  // These 4 fields are also declared in the Dart source of class _Closure.
+  RawTypeArguments* instantiator_type_arguments_;
+  RawTypeArguments* function_type_arguments_;
   RawFunction* function_;
   RawContext* context_;
 
   RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->context_); }
+
+  // Note that instantiator_type_arguments_ and function_type_arguments_ are
+  // used to instantiate the signature of function_ when this closure is
+  // involved in a type test. In other words, these fields define the function
+  // type of this closure instance, but they are not used when invoking it.
+  // If this closure is generic, it can be invoked with function type arguments
+  // that will be processed in the prolog of the closure function_. For example,
+  // if the generic closure function_ has a generic parent function, the
+  // passed-in function type arguments get concatenated to the function type
+  // arguments of the parent that are found in the context_.
 };
 
 
@@ -1847,10 +1921,20 @@ class RawString : public RawInstance {
  protected:
   RawObject** from() { return reinterpret_cast<RawObject**>(&ptr()->length_); }
   RawSmi* length_;
+#if !defined(HASH_IN_OBJECT_HEADER)
   RawSmi* hash_;
   RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->hash_); }
+#else
+  RawObject** to() { return reinterpret_cast<RawObject**>(&ptr()->length_); }
+#endif
 
+ private:
   friend class Library;
+  friend class OneByteStringSerializationCluster;
+  friend class TwoByteStringSerializationCluster;
+  friend class OneByteStringDeserializationCluster;
+  friend class TwoByteStringDeserializationCluster;
+  friend class RODataSerializationCluster;
 };
 
 
@@ -1862,8 +1946,9 @@ class RawOneByteString : public RawString {
   const uint8_t* data() const { OPEN_ARRAY_START(uint8_t, uint8_t); }
 
   friend class ApiMessageReader;
-  friend class SnapshotReader;
   friend class RODataSerializationCluster;
+  friend class SnapshotReader;
+  friend class String;
 };
 
 
@@ -1874,8 +1959,9 @@ class RawTwoByteString : public RawString {
   uint16_t* data() { OPEN_ARRAY_START(uint16_t, uint16_t); }
   const uint16_t* data() const { OPEN_ARRAY_START(uint16_t, uint16_t); }
 
-  friend class SnapshotReader;
   friend class RODataSerializationCluster;
+  friend class SnapshotReader;
+  friend class String;
 };
 
 
@@ -1911,6 +1997,7 @@ class RawExternalOneByteString : public RawString {
  private:
   ExternalData* external_data_;
   friend class Api;
+  friend class String;
 };
 
 
@@ -1923,6 +2010,7 @@ class RawExternalTwoByteString : public RawString {
  private:
   ExternalData* external_data_;
   friend class Api;
+  friend class String;
 };
 
 
@@ -2436,6 +2524,7 @@ inline intptr_t RawObject::NumberOfTypedDataClasses() {
   COMPILE_ASSERT(kNullCid == kByteBufferCid + 1);
   return (kNullCid - kTypedDataInt8ArrayCid);
 }
+
 
 }  // namespace dart
 

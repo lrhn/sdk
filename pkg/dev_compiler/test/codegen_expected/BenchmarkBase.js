@@ -4,7 +4,7 @@ define(['dart_sdk'], function(dart_sdk) {
   const dart = dart_sdk.dart;
   const dartx = dart_sdk.dartx;
   const BenchmarkBase$ = Object.create(null);
-  let VoidToNull = () => (VoidToNull = dart.constFn(dart.definiteFunctionType(core.Null, [])))();
+  let VoidToNull = () => (VoidToNull = dart.constFn(dart.fnType(core.Null, [])))();
   BenchmarkBase$.Expect = class Expect extends core.Object {
     static equals(expected, actual) {
       if (!dart.equals(expected, actual)) {
@@ -23,17 +23,22 @@ define(['dart_sdk'], function(dart_sdk) {
       dart.throw(message);
     }
   };
+  (BenchmarkBase$.Expect.new = function() {
+  }).prototype = BenchmarkBase$.Expect.prototype;
   dart.setSignature(BenchmarkBase$.Expect, {
-    methods: () => ({fail: dart.definiteFunctionType(dart.dynamic, [dart.dynamic])}),
+    methods: () => ({fail: dart.fnType(dart.dynamic, [dart.dynamic])}),
     statics: () => ({
-      equals: dart.definiteFunctionType(dart.void, [dart.dynamic, dart.dynamic]),
-      listEquals: dart.definiteFunctionType(dart.void, [core.List, core.List])
+      equals: dart.fnType(dart.void, [dart.dynamic, dart.dynamic]),
+      listEquals: dart.fnType(dart.void, [core.List, core.List])
     }),
     names: ['equals', 'listEquals']
   });
   BenchmarkBase$.BenchmarkBase = class BenchmarkBase extends core.Object {
-    new(name) {
-      this.name = name;
+    get name() {
+      return this[name$];
+    }
+    set name(value) {
+      super.name = value;
     }
     run() {}
     warmup() {
@@ -49,7 +54,7 @@ define(['dart_sdk'], function(dart_sdk) {
     static measureFor(f, timeMinimum) {
       let time = 0;
       let iter = 0;
-      let watch = new core.Stopwatch();
+      let watch = new core.Stopwatch.new();
       watch.start();
       let elapsed = 0;
       while (dart.notNull(elapsed) < dart.notNull(timeMinimum)) {
@@ -75,21 +80,27 @@ define(['dart_sdk'], function(dart_sdk) {
       core.print(dart.str`${this.name}(RunTime): ${score} us.`);
     }
   };
+  (BenchmarkBase$.BenchmarkBase.new = function(name) {
+    this[name$] = name;
+  }).prototype = BenchmarkBase$.BenchmarkBase.prototype;
+  const name$ = Symbol("BenchmarkBase.name");
   dart.setSignature(BenchmarkBase$.BenchmarkBase, {
-    constructors: () => ({new: dart.definiteFunctionType(BenchmarkBase$.BenchmarkBase, [core.String])}),
-    fields: () => ({name: core.String}),
+    fields: () => ({name: dart.finalFieldType(core.String)}),
     methods: () => ({
-      run: dart.definiteFunctionType(dart.void, []),
-      warmup: dart.definiteFunctionType(dart.void, []),
-      exercise: dart.definiteFunctionType(dart.void, []),
-      setup: dart.definiteFunctionType(dart.void, []),
-      teardown: dart.definiteFunctionType(dart.void, []),
-      measure: dart.definiteFunctionType(core.double, []),
-      report: dart.definiteFunctionType(dart.void, [])
+      run: dart.fnType(dart.void, []),
+      warmup: dart.fnType(dart.void, []),
+      exercise: dart.fnType(dart.void, []),
+      setup: dart.fnType(dart.void, []),
+      teardown: dart.fnType(dart.void, []),
+      measure: dart.fnType(core.double, []),
+      report: dart.fnType(dart.void, [])
     }),
-    statics: () => ({measureFor: dart.definiteFunctionType(core.double, [core.Function, core.int])}),
+    statics: () => ({measureFor: dart.fnType(core.double, [core.Function, core.int])}),
     names: ['measureFor']
   });
+  dart.trackLibraries("BenchmarkBase", {
+    "BenchmarkBase.dart": BenchmarkBase$
+  }, null);
   // Exports:
   return {
     BenchmarkBase: BenchmarkBase$

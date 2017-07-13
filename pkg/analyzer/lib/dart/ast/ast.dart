@@ -517,21 +517,20 @@ abstract class AstNode implements SyntacticEntity {
    * Use the given [visitor] to visit this node. Return the value returned by
    * the visitor as a result of visiting this node.
    */
-  dynamic/*=E*/ accept/*<E>*/(AstVisitor/*<E>*/ visitor);
+  E accept<E>(AstVisitor<E> visitor);
 
   /**
    * Return the most immediate ancestor of this node for which the [predicate]
    * returns `true`, or `null` if there is no such ancestor. Note that this node
    * will never be returned.
    */
-  AstNode/*=E*/ getAncestor/*<E extends AstNode>*/(
-      Predicate<AstNode> predicate);
+  E getAncestor<E extends AstNode>(Predicate<AstNode> predicate);
 
   /**
    * Return the value of the property with the given [name], or `null` if this
    * node does not have a property with the given name.
    */
-  Object/*=E*/ getProperty/*<E>*/(String name);
+  E getProperty<E>(String name);
 
   /**
    * Set the value of the property with the given [name] to the given [value].
@@ -2765,6 +2764,11 @@ abstract class FieldDeclaration extends ClassMember {
   Token get covariantKeyword;
 
   /**
+   * Set the token for the 'covariant' keyword to the given [token].
+   */
+  void set covariantKeyword(Token token);
+
+  /**
    * Return the fields being declared.
    */
   VariableDeclarationList get fields;
@@ -4960,7 +4964,7 @@ abstract class MethodInvocation extends InvocationExpression {
 }
 
 /**
- * An expression that implicity makes reference to a method.
+ * An expression that implicitly makes reference to a method.
  *
  * Clients may not extend, implement or mix-in this class.
  */
@@ -5310,6 +5314,11 @@ abstract class NodeList<E extends AstNode> implements List<E> {
  * Clients may not extend, implement or mix-in this class.
  */
 abstract class NormalFormalParameter extends FormalParameter {
+  /**
+   * Set the token for the 'covariant' keyword to the given [token].
+   */
+  void set covariantKeyword(Token token);
+
   /**
    * Return the documentation comment associated with this parameter, or `null`
    * if this parameter does not have a documentation comment associated with it.

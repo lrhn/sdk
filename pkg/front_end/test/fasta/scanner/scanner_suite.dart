@@ -4,18 +4,19 @@
 
 import 'package:testing/testing.dart';
 
-import 'package:front_end/src/fasta/scanner/testing/scanner_chain.dart';
+import 'package:front_end/src/fasta/testing/scanner_chain.dart';
 
 Future<ChainContext> createContext(
-    Chain suite, Map<String, String> enviroment) async {
+    Chain suite, Map<String, String> environment) async {
   return new ScannerContext();
 }
 
 class ScannerContext extends ChainContext {
   final List<Step> steps = const <Step>[
-      const Read(),
-      const Scan(),
+    const Read(),
+    const Scan(),
   ];
 }
 
-main(List<String> arguments) => runMe(arguments, createContext);
+main(List<String> arguments) =>
+    runMe(arguments, createContext, "../../../testing.json");

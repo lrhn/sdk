@@ -24,6 +24,7 @@ class Class;
 class ClassTable;
 class Closure;
 class Code;
+class Dwarf;
 class ExternalTypedData;
 class GrowableObjectArray;
 class Heap;
@@ -153,16 +154,13 @@ enum SerializeState {
 class Snapshot {
  public:
   enum Kind {
-    kCore = 0,  // Full snapshot of core libraries. No root library, no code.
+    // N.B. The order of these values must be preserved to give proper error
+    // messages for old snapshots.
+    kFull = 0,  // Full snapshot of core libraries or an application.
     kScript,    // A partial snapshot of only the application script.
     kMessage,   // A partial snapshot used only for isolate messaging.
-    kAppJIT,    // Full snapshot of core libraries and application. Has some
-                // code, but may compile in the future because we haven't
-                // necessarily included code for every function or to
-                // (de)optimize.
-    kAppAOT,    // Full snapshot of core libraries and application. Has
-                // complete code for the application that never deopts. Will
-                // not compile in the future.
+    kFullJIT,   // Full + JIT code
+    kFullAOT,   // Full + AOT code
     kNone,      // dart_bootstrap/gen_snapshot
     kInvalid
   };
@@ -184,10 +182,10 @@ class Snapshot {
   }
 
   static bool IsFull(Kind kind) {
-    return (kind == kCore) || (kind == kAppJIT) || (kind == kAppAOT);
+    return (kind == kFull) || (kind == kFullJIT) || (kind == kFullAOT);
   }
   static bool IncludesCode(Kind kind) {
-    return (kind == kAppJIT) || (kind == kAppAOT);
+    return (kind == kFullJIT) || (kind == kFullAOT);
   }
 
   const uint8_t* Addr() const { return reinterpret_cast<const uint8_t*>(this); }
@@ -336,10 +334,9 @@ class BackRefNode : public ValueObject {
 };
 
 
-class InstructionsReader : public ZoneAllocated {
+class ImageReader : public ZoneAllocated {
  public:
-  InstructionsReader(const uint8_t* instructions_buffer,
-                     const uint8_t* data_buffer)
+  ImageReader(const uint8_t* instructions_buffer, const uint8_t* data_buffer)
       : instructions_buffer_(instructions_buffer), data_buffer_(data_buffer) {
     ASSERT(instructions_buffer != NULL);
     ASSERT(data_buffer != NULL);
@@ -354,7 +351,7 @@ class InstructionsReader : public ZoneAllocated {
   const uint8_t* instructions_buffer_;
   const uint8_t* data_buffer_;
 
-  DISALLOW_COPY_AND_ASSIGN(InstructionsReader);
+  DISALLOW_COPY_AND_ASSIGN(ImageReader);
 };
 
 
@@ -396,7 +393,7 @@ class SnapshotReader : public BaseReader {
   RawObject* ReadScriptSnapshot();
 
   // Read version number of snapshot and verify.
-  RawApiError* VerifyVersionAndFeatures();
+  RawApiError* VerifyVersionAndFeatures(Isolate* isolate);
 
   RawObject* NewInteger(int64_t value);
 
@@ -448,6 +445,10 @@ class SnapshotReader : public BaseReader {
 
   // Process all the deferred canonicalization entries and patch all references.
   void ProcessDeferredCanonicalizations();
+
+  // Update subclasses array and is implemented bit for interfaces/superclass in
+  // the core snapshot.
+  void FixSubclassesAndImplementors();
 
   // Decode class id from the header field.
   intptr_t LookupInternalClass(intptr_t class_header);
@@ -714,8 +715,8 @@ class ImageWriter : public ZoneAllocated {
     instructions_.Clear();
     objects_.Clear();
   }
-  int32_t GetOffsetFor(RawInstructions* instructions, RawCode* code);
-  int32_t GetObjectOffsetFor(RawObject* raw_object);
+  int32_t GetTextOffsetFor(RawInstructions* instructions, RawCode* code);
+  int32_t GetDataOffsetFor(RawObject* raw_object);
 
   void Write(WriteStream* clustered_stream, bool vm);
   virtual intptr_t text_size() = 0;
@@ -765,10 +766,8 @@ class AssemblyImageWriter : public ImageWriter {
  public:
   AssemblyImageWriter(uint8_t** assembly_buffer,
                       ReAlloc alloc,
-                      intptr_t initial_size)
-      : ImageWriter(),
-        assembly_stream_(assembly_buffer, alloc, initial_size),
-        text_size_(0) {}
+                      intptr_t initial_size);
+  void Finalize();
 
   virtual void WriteText(WriteStream* clustered_stream, bool vm);
   virtual intptr_t text_size() { return text_size_; }
@@ -776,6 +775,9 @@ class AssemblyImageWriter : public ImageWriter {
   intptr_t AssemblySize() const { return assembly_stream_.bytes_written(); }
 
  private:
+  void FrameUnwindPrologue();
+  void FrameUnwindEpilogue();
+  void WriteByteSequence(uword start, uword end);
   void WriteWordLiteralText(uword value) {
 // Padding is helpful for comparing the .S with --disassemble.
 #if defined(ARCH_IS_64_BIT)
@@ -788,6 +790,7 @@ class AssemblyImageWriter : public ImageWriter {
 
   WriteStream assembly_stream_;
   intptr_t text_size_;
+  Dwarf* dwarf_;
 
   DISALLOW_COPY_AND_ASSIGN(AssemblyImageWriter);
 };
@@ -839,7 +842,8 @@ class SnapshotWriter : public BaseWriter {
   // Serialize an object into the buffer.
   void WriteObject(RawObject* raw);
 
-  uword GetObjectTags(RawObject* raw);
+  static uint32_t GetObjectTags(RawObject* raw);
+  static uword GetObjectTagsAndHash(RawObject* raw);
 
   Exceptions::ExceptionType exception_type() const { return exception_type_; }
   void set_exception_type(Exceptions::ExceptionType type) {

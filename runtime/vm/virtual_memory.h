@@ -35,9 +35,11 @@ class VirtualMemory {
   bool Contains(uword addr) const { return region_.Contains(addr); }
 
   // Commits the virtual memory area, which is guaranteed to be zeroed. Returns
-  // true on success and false on failure (e.g., out-of-memory).
-  bool Commit(bool is_executable) {
-    return Commit(start(), size(), is_executable);
+  // true on success and false on failure (e.g., out-of-memory). The name
+  // parameter is optional. On systems that support it, it is used to give the
+  // OS a name for the committed memory region.
+  bool Commit(bool is_executable, const char* name) {
+    return Commit(start(), size(), is_executable, name);
   }
 
   // Changes the protection of the virtual memory area.
@@ -61,8 +63,10 @@ class VirtualMemory {
   // upon destruction.
   void Truncate(intptr_t new_size, bool try_unmap = true);
 
-  // Commit a reserved memory area, so that the memory can be accessed.
-  bool Commit(uword addr, intptr_t size, bool is_executable);
+  // Commit a reserved memory area, so that the memory can be accessed. The name
+  // parameter is optional. On systems that support it, it is used to give the
+  // OS a name for the committed memory region.
+  bool Commit(uword addr, intptr_t size, bool is_executable, const char* name);
 
   bool vm_owns_region() const { return vm_owns_region_; }
 
@@ -94,7 +98,7 @@ class VirtualMemory {
   static uword page_size_;
 
   // False for a part of a snapshot added directly to the Dart heap, which
-  // belongs to the the embedder and must not be deallocated or have its
+  // belongs to the embedder and must not be deallocated or have its
   // protection status changed by the VM.
   bool vm_owns_region_;
 

@@ -4,7 +4,6 @@
 
 part of dart.io;
 
-
 /**
  * [InternetAddressType] is the type an [InternetAddress]. Currently,
  * IP version 4 (IPv4) and IP version 6 (IPv6) are supported.
@@ -29,16 +28,19 @@ class InternetAddressType {
    */
   String get name {
     switch (_value) {
-      case -1: return "ANY";
-      case 0: return "IP_V4";
-      case 1: return "IP_V6";
-      default: throw new ArgumentError("Invalid InternetAddress");
+      case -1:
+        return "ANY";
+      case 0:
+        return "IP_V4";
+      case 1:
+        return "IP_V6";
+      default:
+        throw new ArgumentError("Invalid InternetAddress");
     }
   }
 
   String toString() => "InternetAddressType: $name";
 }
-
 
 /**
  * An internet address.
@@ -139,8 +141,8 @@ abstract class InternetAddress {
    * specified type. The order of the list can, and most likely will,
    * change over time.
    */
-  external static Future<List<InternetAddress>> lookup(
-      String host, {InternetAddressType type: InternetAddressType.ANY});
+  external static Future<List<InternetAddress>> lookup(String host,
+      {InternetAddressType type: InternetAddressType.ANY});
 
   /**
    * Clones the given [address] with the new [host].
@@ -151,7 +153,6 @@ abstract class InternetAddress {
   external static InternetAddress _cloneWithNewHost(
       InternetAddress address, String host);
 }
-
 
 /**
  * A [NetworkInterface] represents an active network interface on the current
@@ -195,12 +196,11 @@ abstract class NetworkInterface {
    * [InternetAddressType.IP_V6] it will only lookup addresses of the
    * specified type. Default is [InternetAddressType.ANY].
    */
-  external static Future<List<NetworkInterface>> list({
-      bool includeLoopback: false,
+  external static Future<List<NetworkInterface>> list(
+      {bool includeLoopback: false,
       bool includeLinkLocal: false,
       InternetAddressType type: InternetAddressType.ANY});
 }
-
 
 /**
  * A [RawServerSocket] represents a listening socket, and provides a
@@ -247,11 +247,8 @@ abstract class RawServerSocket implements Stream<RawSocket> {
    * distributed among all the bound `RawServerSocket`s. Connections can be
    * distributed over multiple isolates this way.
    */
-  external static Future<RawServerSocket> bind(address,
-                                               int port,
-                                               {int backlog: 0,
-                                                bool v6Only: false,
-                                                bool shared: false});
+  external static Future<RawServerSocket> bind(address, int port,
+      {int backlog: 0, bool v6Only: false, bool shared: false});
 
   /**
    * Returns the port used by this socket.
@@ -269,7 +266,6 @@ abstract class RawServerSocket implements Stream<RawSocket> {
    */
   Future<RawServerSocket> close();
 }
-
 
 /**
  * A [ServerSocket] represents a listening socket, and provides a
@@ -316,11 +312,8 @@ abstract class ServerSocket implements Stream<Socket> {
    * distributed among all the bound `ServerSocket`s. Connections can be
    * distributed over multiple isolates this way.
    */
-  external static Future<ServerSocket> bind(address,
-                                            int port,
-                                            {int backlog: 0,
-                                             bool v6Only: false,
-                                             bool shared: false});
+  external static Future<ServerSocket> bind(address, int port,
+      {int backlog: 0, bool v6Only: false, bool shared: false});
 
   /**
    * Returns the port used by this socket.
@@ -338,7 +331,6 @@ abstract class ServerSocket implements Stream<Socket> {
    */
   Future<ServerSocket> close();
 }
-
 
 /**
  * The [SocketDirection] is used as a parameter to [Socket.close] and
@@ -362,7 +354,7 @@ class SocketOption {
   /**
    * Enable or disable no-delay on the socket. If TCP_NODELAY is enabled, the
    * socket will not buffer data internally, but instead write each data chunk
-   * as an invidual TCP packet.
+   * as an individual TCP packet.
    *
    * TCP_NODELAY is disabled by default.
    */
@@ -389,10 +381,12 @@ class RawSocketEvent {
 
   const RawSocketEvent._(this._value);
   String toString() {
-    return const ['RawSocketEvent:READ',
-                  'RawSocketEvent:WRITE',
-                  'RawSocketEvent:READ_CLOSED',
-                  'RawSocketEvent:CLOSED'][_value];
+    return const [
+      'RawSocketEvent:READ',
+      'RawSocketEvent:WRITE',
+      'RawSocketEvent:READ_CLOSED',
+      'RawSocketEvent:CLOSED'
+    ][_value];
   }
 }
 
@@ -430,8 +424,15 @@ abstract class RawSocket implements Stream<RawSocketEvent> {
    * address to bind when making the connection. `sourceAddress` can either
    * be a `String` or an `InternetAddress`. If a `String` is passed it must
    * hold a numeric IP address.
+   *
+   * The argument [timeout] is used to specify the maximum allowed time to wait
+   * for a connection to be established. If [timeout] is longer than the system
+   * level timeout duration, a timeout may occur sooner than specified in
+   * [timeout]. On timeout, a [SocketException] is thrown and all ongoing
+   * connection attempts to [host] are cancelled.
    */
-  external static Future<RawSocket> connect(host, int port, {sourceAddress});
+  external static Future<RawSocket> connect(host, int port,
+      {sourceAddress, Duration timeout});
 
   /**
    * Returns the number of received and non-read bytes in the socket that
@@ -528,8 +529,15 @@ abstract class Socket implements Stream<List<int>>, IOSink {
    * address to bind when making the connection. `sourceAddress` can either
    * be a `String` or an `InternetAddress`. If a `String` is passed it must
    * hold a numeric IP address.
+   *
+   * The argument [timeout] is used to specify the maximum allowed time to wait
+   * for a connection to be established. If [timeout] is longer than the system
+   * level timeout duration, a timeout may occur sooner than specified in
+   * [timeout]. On timeout, a [SocketException] is thrown and all ongoing
+   * connection attempts to [host] are cancelled.
    */
-  external static Future<Socket> connect(host, int port, {sourceAddress});
+  external static Future<Socket> connect(host, int port,
+      {sourceAddress, Duration timeout});
 
   /**
    * Destroy the socket in both directions. Calling [destroy] will make the
@@ -574,7 +582,6 @@ abstract class Socket implements Stream<List<int>>, IOSink {
   Future<Socket> get done;
 }
 
-
 /**
  * Datagram package. Data send to and received from datagram sockets
  * contains the internet address and port of the destination or source
@@ -587,7 +594,6 @@ class Datagram {
 
   Datagram(this.data, this.address, this.port);
 }
-
 
 /**
  * The [RawDatagramSocket] is a low-level interface to an UDP socket,
@@ -655,8 +661,8 @@ abstract class RawDatagramSocket extends Stream<RawSocketEvent> {
    * Creates a new raw datagram socket binding it to an address and
    * port.
    */
-  external static Future<RawDatagramSocket> bind(
-      host, int port, {bool reuseAddress: true});
+  external static Future<RawDatagramSocket> bind(host, int port,
+      {bool reuseAddress: true});
 
   /**
    * Returns the port used by this socket.
@@ -695,7 +701,7 @@ abstract class RawDatagramSocket extends Stream<RawSocketEvent> {
    * If an error occur when trying to join the multicast group an
    * exception is thrown.
    */
-  void joinMulticast(InternetAddress group, {NetworkInterface interface});
+  void joinMulticast(InternetAddress group, [NetworkInterface interface]);
 
   /**
    * Leave a multicast group.
@@ -703,9 +709,8 @@ abstract class RawDatagramSocket extends Stream<RawSocketEvent> {
    * If an error occur when trying to join the multicase group an
    * exception is thrown.
    */
-  void leaveMulticast(InternetAddress group, {NetworkInterface interface});
+  void leaveMulticast(InternetAddress group, [NetworkInterface interface]);
 }
-
 
 class SocketException implements IOException {
   final String message;

@@ -11,11 +11,12 @@ import 'dart:io';
 import 'package:compiler/compiler_new.dart';
 import 'package:compiler/src/apiimpl.dart';
 import 'package:compiler/src/compiler.dart';
-import 'package:compiler/src/elements/elements.dart';
+import 'package:compiler/src/elements/entities.dart' show LibraryEntity;
 import 'package:compiler/src/common.dart';
 import 'package:compiler/src/diagnostics/diagnostic_listener.dart';
 import 'package:compiler/src/diagnostics/messages.dart'
     show Message, MessageTemplate;
+import 'package:compiler/src/enqueue.dart' show ResolutionEnqueuer;
 import 'package:compiler/src/io/source_file.dart';
 import 'package:compiler/src/options.dart';
 import 'package:compiler/src/parser/element_listener.dart' show ScannerOptions;
@@ -23,7 +24,8 @@ import 'package:compiler/src/parser/node_listener.dart' show NodeListener;
 import 'package:compiler/src/parser/diet_parser_task.dart' show PartialParser;
 import 'package:compiler/src/platform_configuration.dart' as platform;
 import 'package:compiler/src/source_file_provider.dart';
-import 'package:compiler/src/universe/world_impact.dart' show WorldImpact;
+import 'package:compiler/src/universe/world_impact.dart'
+    show WorldImpactBuilderImpl;
 import 'package:front_end/src/fasta/parser.dart' show Listener, Parser;
 import 'package:front_end/src/fasta/scanner.dart' show Token, scan;
 import 'package:package_config/discovery.dart' show findPackages;
@@ -209,7 +211,7 @@ class DirectiveListener extends Listener {
 
   void beginLiteralString(Token token) {
     if (inDirective) {
-      var quotedString = token.value;
+      var quotedString = token.lexeme;
       targets.add(quotedString.substring(1, quotedString.length - 1));
     }
   }
@@ -292,13 +294,7 @@ class _Loader {
   }
 
   Future<SourceFile> _readFile(Uri uri) async {
-    var data = await inputProvider.readFromUri(uri);
-    if (data is List<int>) return new Utf8BytesSourceFile(uri, data);
-    if (data is String) return new StringSourceFile.fromUri(uri, data);
-    // TODO(sigmund): properly handle errors, just report, return null, wrap
-    // above and continue...
-    throw "Expected a 'String' or a 'List<int>' from the input "
-        "provider, but got: ${data.runtimeType}.";
+    return await inputProvider.readFromUri(uri, inputKind: InputKind.utf8);
   }
 
   Uri _translateUri(Uri uri) {
@@ -344,34 +340,35 @@ class MyCompiler extends CompilerImpl {
       : super(provider, null, handler, options) {}
 
   /// Performs the compilation when all libraries have been loaded.
-  void compileLoadedLibraries() =>
+  void compileLoadedLibraries(LibraryEntity rootLibrary) =>
       selfTask.measureSubtask('KernelCompiler.compileLoadedLibraries', () {
-        WorldImpact mainImpact = computeMain();
-        mirrorUsageAnalyzerTask.analyzeUsage(mainApp);
+        ResolutionEnqueuer resolutionEnqueuer = startResolution();
+        WorldImpactBuilderImpl mainImpact = new WorldImpactBuilderImpl();
+        var mainFunction =
+            frontendStrategy.computeMain(rootLibrary, mainImpact);
+        mirrorUsageAnalyzerTask.analyzeUsage(rootLibrary);
 
-        deferredLoadTask.beforeResolution(this);
+        deferredLoadTask.beforeResolution(rootLibrary);
         impactStrategy = backend.createImpactStrategy(
             supportDeferredLoad: deferredLoadTask.isProgramSplit,
             supportDumpInfo: options.dumpInfo,
             supportSerialization: serialization.supportSerialization);
 
         phase = Compiler.PHASE_RESOLVING;
-        enqueuer.resolution.applyImpact(mainImpact);
+        resolutionEnqueuer.applyImpact(mainImpact);
         // Note: we enqueue everything in the program so we measure generating
         // kernel for the entire code, not just what's reachable from main.
-        libraryLoader.libraries.forEach((LibraryElement library) {
-          enqueuer.resolution.applyImpact(computeImpactForLibrary(library));
+        libraryLoader.libraries.forEach((LibraryEntity library) {
+          resolutionEnqueuer.applyImpact(computeImpactForLibrary(library));
         });
 
-        if (deferredLoadTask.isProgramSplit) {
-          enqueuer.resolution
-              .applyImpact(backend.computeDeferredLoadingImpact());
+        if (frontendStrategy.commonElements.mirrorsLibrary != null) {
+          resolveLibraryMetadata();
         }
-        enqueuer.resolution.applyImpact(backend.computeHelpersImpact());
-        resolveLibraryMetadata();
         reporter.log('Resolving...');
-        processQueue(enqueuer.resolution, mainFunction);
-        enqueuer.resolution.logSummary(reporter.log);
+        processQueue(frontendStrategy.elementEnvironment, resolutionEnqueuer,
+            mainFunction, libraryLoader.libraries);
+        resolutionEnqueuer.logSummary(reporter.log);
 
         (reporter as CompilerDiagnosticReporter)
             .reportSuppressedMessagesSummary();
@@ -382,7 +379,8 @@ class MyCompiler extends CompilerImpl {
           exit(1);
         }
 
-        closeResolution();
+        backend.onResolutionEnd();
+        closeResolution(mainFunction);
         var program = (backend as dynamic).kernelTask.program;
         print('total libraries: ${program.libraries.length}');
       });

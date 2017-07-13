@@ -15,9 +15,10 @@ main() {
   final events = new EventRepositoryMock();
   final notifs = new NotificationRepositoryMock();
   final stores = new ObjectStoreRepositoryMock();
-  final instances = new InstanceRepositoryMock();
+  final objects = new ObjectRepositoryMock();
   test('instantiation', () {
-    final e = new ObjectStoreViewElement(vm, isolate, events, notifs, stores, instances);
+    final e = new ObjectStoreViewElement(
+        vm, isolate, events, notifs, stores, objects);
     expect(e, isNotNull, reason: 'element correctly created');
     expect(e.isolate, equals(isolate));
   });
@@ -29,13 +30,13 @@ main() {
     ];
     const store = const ObjectStoreMock(fields: fields);
     final stores = new ObjectStoreRepositoryMock(
-      getter: expectAsync((i) async {
-        expect(i, equals(isolate));
-        return store;
-      }, count: 1)
-    );
-    final instances = new InstanceRepositoryMock();
-    final e = new ObjectStoreViewElement(vm, isolate, events, notifs, stores, instances);
+        getter: expectAsync((i) async {
+      expect(i, equals(isolate));
+      return store;
+    }, count: 1));
+    final objects = new ObjectRepositoryMock();
+    final e = new ObjectStoreViewElement(
+        vm, isolate, events, notifs, stores, objects);
     document.body.append(e);
     await e.onRendered.first;
     expect(e.children.length, isNonZero, reason: 'has elements');

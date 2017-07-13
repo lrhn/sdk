@@ -173,6 +173,14 @@ abstract class Substitution {
         type.classNode.typeParameters, type.typeArguments));
   }
 
+  /// Substitutes the type parameters on the typedef of [type] with the
+  /// type arguments provided in [type].
+  static Substitution fromTypedefType(TypedefType type) {
+    if (type.typeArguments.isEmpty) return _NullSubstitution.instance;
+    return fromMap(new Map<TypeParameter, DartType>.fromIterables(
+        type.typedefNode.typeParameters, type.typeArguments));
+  }
+
   /// Substitutes the Nth parameter in [parameters] with the Nth type in
   /// [types].
   static Substitution fromPairs(
@@ -365,6 +373,7 @@ abstract class _TypeSubstitutor extends DartTypeVisitor<DartType> {
   DartType visitDynamicType(DynamicType node) => node;
   DartType visitVoidType(VoidType node) => node;
   DartType visitBottomType(BottomType node) => node;
+  DartType visitVector(VectorType node) => node;
 
   DartType visitInterfaceType(InterfaceType node) {
     if (node.typeArguments.isEmpty) return node;
@@ -372,6 +381,14 @@ abstract class _TypeSubstitutor extends DartTypeVisitor<DartType> {
     var typeArguments = node.typeArguments.map(visit).toList();
     if (useCounter == before) return node;
     return new InterfaceType(node.classNode, typeArguments);
+  }
+
+  DartType visitTypedefType(TypedefType node) {
+    if (node.typeArguments.isEmpty) return node;
+    int before = useCounter;
+    var typeArguments = node.typeArguments.map(visit).toList();
+    if (useCounter == before) return node;
+    return new TypedefType(node.typedefNode, typeArguments);
   }
 
   List<TypeParameter> freshTypeParameters(List<TypeParameter> parameters) {
@@ -539,6 +556,7 @@ class _TypeUnification {
     if (type1 is VoidType && type2 is VoidType) return true;
     if (type1 is InvalidType && type2 is InvalidType) return true;
     if (type1 is BottomType && type2 is BottomType) return true;
+    if (type1 is VectorType && type2 is VectorType) return true;
     if (type1 is InterfaceType && type2 is InterfaceType) {
       if (type1.classNode != type2.classNode) return _fail();
       assert(type1.typeArguments.length == type2.typeArguments.length);
@@ -647,8 +665,13 @@ class _OccurrenceVisitor extends DartTypeVisitor<bool> {
   bool visitInvalidType(InvalidType node) => false;
   bool visitDynamicType(DynamicType node) => false;
   bool visitVoidType(VoidType node) => false;
+  bool visitVectorType(VectorType node) => false;
 
   bool visitInterfaceType(InterfaceType node) {
+    return node.typeArguments.any(visit);
+  }
+
+  bool visitTypedefType(TypedefType node) {
     return node.typeArguments.any(visit);
   }
 

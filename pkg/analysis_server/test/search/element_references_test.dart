@@ -2,12 +2,11 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.search.element_references;
-
 import 'dart:async';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart';
-import 'package:analysis_server/src/services/index/index.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -16,7 +15,6 @@ import 'abstract_search_domain.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(ElementReferencesTest);
-    defineReflectiveTests(_NoSearchEngine);
   });
 }
 
@@ -29,7 +27,8 @@ class ElementReferencesTest extends AbstractSearchDomainTest {
     expect(result.isPotential, isPotential);
   }
 
-  Future<Null> findElementReferences(String search, bool includePotential) async {
+  Future<Null> findElementReferences(
+      String search, bool includePotential) async {
     int offset = findOffset(search);
     await waitForTasksFinished();
     Request request = new SearchFindElementReferencesParams(
@@ -404,7 +403,8 @@ main() {
 }
 ''');
     await findElementReferences('fff(p) {}', false);
-    expect(results, isEmpty);
+    expect(results, hasLength(1));
+    assertHasResult(SearchResultKind.INVOCATION, 'fff(10);');
   }
 
   test_parameter() async {
@@ -425,7 +425,9 @@ main(ppp) {
     assertHasResult(SearchResultKind.INVOCATION, 'ppp();');
   }
 
+  @failingTest
   test_path_inConstructor_named() async {
+    // The path does not contain the first expected element.
     addTestFile('''
 library my_lib;
 class A {}
@@ -447,7 +449,9 @@ COMPILATION_UNIT test.dart
 LIBRARY my_lib''');
   }
 
+  @failingTest
   test_path_inConstructor_unnamed() async {
+    // The path does not contain the first expected element.
     addTestFile('''
 library my_lib;
 class A {}
@@ -469,7 +473,9 @@ COMPILATION_UNIT test.dart
 LIBRARY my_lib''');
   }
 
+  @failingTest
   test_path_inFunction() async {
+    // The path does not contain the first expected element.
     addTestFile('''
 library my_lib;
 class A {}
@@ -670,27 +676,5 @@ class A<T> {
     expect(results, hasLength(2));
     assertHasResult(SearchResultKind.REFERENCE, 'T f;');
     assertHasResult(SearchResultKind.REFERENCE, 'T m()');
-  }
-}
-
-@reflectiveTest
-class _NoSearchEngine extends AbstractSearchDomainTest {
-  @override
-  Index createIndex() {
-    return null;
-  }
-
-  test_requestError_noSearchEngine() async {
-    addTestFile('''
-main() {
-  var vvv = 1;
-  print(vvv);
-}
-''');
-    Request request = new SearchFindElementReferencesParams(testFile, 0, false)
-        .toRequest('0');
-    Response response = await waitResponse(request);
-    expect(response.error, isNotNull);
-    expect(response.error.code, RequestErrorCode.NO_INDEX_GENERATED);
   }
 }

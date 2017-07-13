@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import '../common.dart';
-import '../core_types.dart';
+import '../common_elements.dart';
 import '../elements/elements.dart' show ErroneousElement;
 import '../elements/entities.dart';
 import '../elements/resolution_types.dart' show MalformedType;
@@ -14,36 +14,23 @@ import '../ssa/codegen.dart' show SsaCodeGenerator;
 import '../ssa/nodes.dart' show HTypeConversion;
 import '../universe/call_structure.dart' show CallStructure;
 import '../universe/use.dart' show StaticUse;
-import 'backend_helpers.dart';
+import 'namer.dart' show Namer;
 
 class CheckedModeHelper {
   final String name;
 
   const CheckedModeHelper(String this.name);
 
-  StaticUse getStaticUse(BackendHelpers helpers) {
+  StaticUse getStaticUse(CommonElements commonElements) {
     // TODO(johnniwinther): Refactor this to avoid looking up directly in the
-    // js helper library but instead access helpers directly on backend helpers.
+    // js helper library but instead access commonElements.
     return new StaticUse.staticInvoke(
-        helpers.findHelperFunction(name), callStructure);
+        commonElements.findHelperFunction(name), callStructure);
   }
 
   CallStructure get callStructure => CallStructure.ONE_ARG;
 
-  jsAst.Expression generateCall(
-      SsaCodeGenerator codegen, HTypeConversion node) {
-    StaticUse staticUse = getStaticUse(codegen.backend.helpers);
-    codegen.registry.registerStaticUse(staticUse);
-    List<jsAst.Expression> arguments = <jsAst.Expression>[];
-    codegen.use(node.checkedInput);
-    arguments.add(codegen.pop());
-    generateAdditionalArguments(codegen, node, arguments);
-    jsAst.Expression helper =
-        codegen.backend.emitter.staticFunctionAccess(staticUse.element);
-    return new jsAst.Call(helper, arguments);
-  }
-
-  void generateAdditionalArguments(SsaCodeGenerator codegen,
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
       HTypeConversion node, List<jsAst.Expression> arguments) {
     // No additional arguments needed.
   }
@@ -54,9 +41,9 @@ class MalformedCheckedModeHelper extends CheckedModeHelper {
 
   CallStructure get callStructure => CallStructure.TWO_ARGS;
 
-  void generateAdditionalArguments(SsaCodeGenerator codegen,
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
       HTypeConversion node, List<jsAst.Expression> arguments) {
-    // TODO(johnniwinther): Support malformed types in [types.dart].
+    // TODO(redemption): Support malformed types in [types.dart].
     MalformedType type = node.typeExpression;
     ErroneousElement element = type.element;
     arguments.add(js.escapedString(element.message));
@@ -68,10 +55,10 @@ class PropertyCheckedModeHelper extends CheckedModeHelper {
 
   CallStructure get callStructure => CallStructure.TWO_ARGS;
 
-  void generateAdditionalArguments(SsaCodeGenerator codegen,
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
       HTypeConversion node, List<jsAst.Expression> arguments) {
     DartType type = node.typeExpression;
-    jsAst.Name additionalArgument = codegen.backend.namer.operatorIsType(type);
+    jsAst.Name additionalArgument = namer.operatorIsType(type);
     arguments.add(js.quoteName(additionalArgument));
   }
 }
@@ -81,9 +68,22 @@ class TypeVariableCheckedModeHelper extends CheckedModeHelper {
 
   CallStructure get callStructure => CallStructure.TWO_ARGS;
 
-  void generateAdditionalArguments(SsaCodeGenerator codegen,
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
       HTypeConversion node, List<jsAst.Expression> arguments) {
     assert(node.typeExpression.isTypeVariable);
+    codegen.use(node.typeRepresentation);
+    arguments.add(codegen.pop());
+  }
+}
+
+class FunctionTypeRepresentationCheckedModeHelper extends CheckedModeHelper {
+  const FunctionTypeRepresentationCheckedModeHelper(String name) : super(name);
+
+  CallStructure get callStructure => CallStructure.TWO_ARGS;
+
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
+      HTypeConversion node, List<jsAst.Expression> arguments) {
+    assert(node.typeExpression.isFunctionType);
     codegen.use(node.typeRepresentation);
     arguments.add(codegen.pop());
   }
@@ -94,29 +94,29 @@ class SubtypeCheckedModeHelper extends CheckedModeHelper {
 
   CallStructure get callStructure => const CallStructure.unnamed(4);
 
-  void generateAdditionalArguments(SsaCodeGenerator codegen,
+  void generateAdditionalArguments(SsaCodeGenerator codegen, Namer namer,
       HTypeConversion node, List<jsAst.Expression> arguments) {
+    // TODO(sra): Move these calls into the SSA graph so that the arguments can
+    // be optimized, e,g, GVNed.
     InterfaceType type = node.typeExpression;
     ClassEntity element = type.element;
-    jsAst.Name isField = codegen.backend.namer.operatorIs(element);
+    jsAst.Name isField = namer.operatorIs(element);
     arguments.add(js.quoteName(isField));
     codegen.use(node.typeRepresentation);
     arguments.add(codegen.pop());
-    jsAst.Name asField = codegen.backend.namer.substitutionName(element);
+    jsAst.Name asField = namer.substitutionName(element);
     arguments.add(js.quoteName(asField));
   }
 }
 
 class CheckedModeHelpers {
   final CommonElements _commonElements;
-  final BackendHelpers _helpers;
 
-  CheckedModeHelpers(this._commonElements, this._helpers);
+  CheckedModeHelpers(this._commonElements);
 
   /// All the checked mode helpers.
   static const List<CheckedModeHelper> helpers = const <CheckedModeHelper>[
     const MalformedCheckedModeHelper('checkMalformedType'),
-    const CheckedModeHelper('voidTypeCheck'),
     const CheckedModeHelper('stringTypeCast'),
     const CheckedModeHelper('stringTypeCheck'),
     const CheckedModeHelper('doubleTypeCast'),
@@ -149,6 +149,8 @@ class CheckedModeHelpers {
     const TypeVariableCheckedModeHelper('assertSubtypeOfRuntimeType'),
     const PropertyCheckedModeHelper('propertyTypeCast'),
     const PropertyCheckedModeHelper('propertyTypeCheck'),
+    const FunctionTypeRepresentationCheckedModeHelper('functionTypeCast'),
+    const FunctionTypeRepresentationCheckedModeHelper('functionTypeCheck'),
   ];
 
   // Checked mode helpers indexed by name.
@@ -200,22 +202,18 @@ class CheckedModeHelpers {
       return 'checkMalformedType';
     }
 
-    if (type.isVoid) {
-      assert(!typeCast); // Cannot cast to void.
-      if (nativeCheckOnly) return null;
-      return 'voidTypeCheck';
-    }
-
     if (type.isTypeVariable) {
       return typeCast
           ? 'subtypeOfRuntimeTypeCast'
           : 'assertSubtypeOfRuntimeType';
     }
 
-    if (type.isFunctionType) return null;
+    if (type.isFunctionType) {
+      return typeCast ? 'functionTypeCast' : 'functionTypeCheck';
+    }
 
-    assert(invariant(NO_LOCATION_SPANNABLE, type.isInterfaceType,
-        message: "Unexpected type: $type"));
+    assert(type.isInterfaceType,
+        failedAt(NO_LOCATION_SPANNABLE, "Unexpected type: $type"));
     InterfaceType interfaceType = type;
     ClassEntity element = interfaceType.element;
     bool nativeCheck = true;
@@ -225,35 +223,35 @@ class CheckedModeHelpers {
     //  nativeCheckOnly || emitter.nativeEmitter.requiresNativeIsCheck(element);
 
     var suffix = typeCast ? 'TypeCast' : 'TypeCheck';
-    if (element == _helpers.jsStringClass ||
+    if (element == _commonElements.jsStringClass ||
         element == _commonElements.stringClass) {
       if (nativeCheckOnly) return null;
       return 'string$suffix';
     }
 
-    if (element == _helpers.jsDoubleClass ||
+    if (element == _commonElements.jsDoubleClass ||
         element == _commonElements.doubleClass) {
       if (nativeCheckOnly) return null;
       return 'double$suffix';
     }
 
-    if (element == _helpers.jsNumberClass ||
+    if (element == _commonElements.jsNumberClass ||
         element == _commonElements.numClass) {
       if (nativeCheckOnly) return null;
       return 'num$suffix';
     }
 
-    if (element == _helpers.jsBoolClass ||
+    if (element == _commonElements.jsBoolClass ||
         element == _commonElements.boolClass) {
       if (nativeCheckOnly) return null;
       return 'bool$suffix';
     }
 
-    if (element == _helpers.jsIntClass ||
+    if (element == _commonElements.jsIntClass ||
         element == _commonElements.intClass ||
-        element == _helpers.jsUInt32Class ||
-        element == _helpers.jsUInt31Class ||
-        element == _helpers.jsPositiveIntClass) {
+        element == _commonElements.jsUInt32Class ||
+        element == _commonElements.jsUInt31Class ||
+        element == _commonElements.jsPositiveIntClass) {
       if (nativeCheckOnly) return null;
       return 'int$suffix';
     }
@@ -269,7 +267,7 @@ class CheckedModeHelpers {
     }
 
     if ((element == _commonElements.listClass ||
-            element == _helpers.jsArrayClass) &&
+            element == _commonElements.jsArrayClass) &&
         type.treatAsRaw) {
       if (nativeCheckOnly) return null;
       return 'list$suffix';

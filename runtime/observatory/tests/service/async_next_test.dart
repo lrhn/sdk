@@ -3,16 +3,15 @@
 // BSD-style license that can be found in the LICENSE file.
 // VMOptions=--error_on_bad_type --error_on_bad_override  --verbose_debug
 
-import 'package:observatory/service_io.dart';
+import 'dart:developer';
 import 'service_test_common.dart';
 import 'test_helper.dart';
-import 'dart:developer';
 
-const int LINE_A = 19;
-const int LINE_B = 20;
-const int LINE_C = 21;
+const int LINE_A = 18;
+const int LINE_B = 19;
+const int LINE_C = 20;
 
-foo() async { }
+foo() async {}
 
 doAsync(stop) async {
   if (stop) debugger();
@@ -27,11 +26,6 @@ testMain() {
   // us to stop in the run we started in.
   doAsync(false);
   doAsync(true);
-}
-
-asyncNext(Isolate isolate) async {
-  print('asyncNext');
-  return asyncStepOver(isolate);
 }
 
 var tests = [

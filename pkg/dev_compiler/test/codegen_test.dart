@@ -86,6 +86,7 @@ main(List<String> arguments) {
     'language',
     'corelib',
     path.join('corelib', 'regexp'),
+    path.join('lib', 'async'),
     path.join('lib', 'collection'),
     path.join('lib', 'convert'),
     path.join('lib', 'html'),
@@ -156,35 +157,51 @@ main(List<String> arguments) {
         compiler = new ModuleCompiler(analyzerOptions);
       }
       JSModuleFile module = null;
-      var error, trace;
+      var exception, stackTrace;
       try {
         module = compiler.compile(unit, options);
-      } catch (e, t) {
-        error = e;
-        trace = t;
+      } catch (e, st) {
+        exception = e;
+        stackTrace = st;
       }
 
+      bool expectedCompileTimeError = contents.contains(': compile-time error');
       bool notStrong = notYetStrongTests.contains(name);
       bool crashing = _crashingTests.contains(name);
+      bool inconsistent = _inconsistentTests.contains(name);
 
       if (module == null) {
         expect(crashing, isTrue,
-            reason: "test $name crashes during compilation.\n\n"
-                "Exception: $error\n\nStack trace:\n\n$trace");
-      } else if (module.isValid) {
-        _writeModule(
-            path.join(codegenOutputDir, name),
-            isTopLevelTest ? path.join(codegenExpectDir, name) : null,
-            moduleFormat,
-            module);
+            reason: "test $name crashes during compilation.\n"
+                "$exception\n$stackTrace");
+        return;
+      }
 
+      // Write out JavaScript and/or compilation errors/warnings.
+      _writeModule(
+          path.join(codegenOutputDir, name),
+          isTopLevelTest ? path.join(codegenExpectDir, name) : null,
+          moduleFormat,
+          module);
+
+      if (inconsistent) {
+        // An inconsistent test will only compile on some platforms (see
+        // comment below).  It should not crash however.
         expect(crashing, isFalse, reason: "test $name no longer crashes.");
+      } else if (module.isValid) {
+        expect(crashing, isFalse, reason: "test $name no longer crashes.");
+        // TODO(vsm): We don't seem to trip on non-strong errors?
+        // expect(expectedCompileTimeError, isFalse,
+        //    reason: "test $name expected compilation errors, but compiled.");
         expect(notStrong, isFalse,
             reason: "test $name expected strong mode errors, but compiled.");
       } else {
         expect(crashing, isFalse, reason: "test $name no longer crashes.");
-        expect(notStrong, isTrue,
-            reason: "test $name failed to compile due to strong mode errors:"
+        var reason = expectedCompileTimeError
+            ? "expected"
+            : inconsistent ? "platform consistency" : "untriaged strong mode";
+        expect(expectedCompileTimeError || inconsistent || notStrong, isTrue,
+            reason: "test $name failed to compile due to $reason errors:"
                 "\n\n${module.errors.join('\n')}.");
       }
     });
@@ -211,7 +228,9 @@ void _writeModule(String outPath, String expectPath, ModuleFormat format,
   if (errors.isNotEmpty && !errors.endsWith('\n')) errors += '\n';
   new File(outPath + '.txt').writeAsStringSync(errors);
 
-  result.writeCodeSync(format, outPath + '.js');
+  if (result.isValid) {
+    result.writeCodeSync(format, outPath + '.js');
+  }
 
   if (result.summaryBytes != null) {
     new File(outPath + '.sum').writeAsBytesSync(result.summaryBytes);
@@ -263,7 +282,8 @@ List<String> _setUpTests(List<String> testDirs) {
     var dirParts = path.split(testDir);
     var sdkTestDir =
         path.join(dirParts[0] + "_strong", path.joinAll(dirParts.skip(1)));
-    var inputPath = path.join(testDirectory, '../../../tests/', sdkTestDir);
+    var inputPath =
+        path.join(testDirectory, '..', '..', '..', 'tests', sdkTestDir);
 
     for (var file in _listFiles(inputPath, recursive: true)) {
       var relativePath = path.relative(file, from: inputPath);
@@ -378,28 +398,20 @@ String _resolveDirective(UriBasedDirective directive) {
       : null;
 }
 
-final _crashingTests = new Set<String>.from([
-  'language/mixin_illegal_syntax_test_none_multi',
-  'language/mixin_illegal_syntax_test_01_multi',
-  'language/mixin_illegal_syntax_test_02_multi',
-  'language/mixin_illegal_syntax_test_03_multi',
-  'language/mixin_illegal_syntax_test_04_multi',
-  'language/mixin_illegal_syntax_test_05_multi',
-  'language/mixin_illegal_syntax_test_06_multi',
-  'language/mixin_illegal_syntax_test_07_multi',
-  'language/mixin_illegal_syntax_test_08_multi',
-  'language/mixin_illegal_syntax_test_09_multi',
-  'language/mixin_illegal_syntax_test_10_multi',
-  'language/mixin_illegal_syntax_test_11_multi',
-  'language/mixin_illegal_syntax_test_12_multi',
-  'language/mixin_illegal_syntax_test_13_multi',
-  'language/mixin_illegal_syntax_test_14_multi',
+/// Tests that, due to bugs, are strong-mode clean only on some platforms.
+final _inconsistentTests = new Set<String>.from([
+  // This test is clean on windows, but not linux/mac due to newline encoding.
+  // See: https://github.com/dart-lang/sdk/issues/27224
+  'language/multiline_newline_test_02_multi',
+].map((p) => p.replaceAll('/', path.separator)));
 
+final _crashingTests = new Set<String>.from([
   // TODO(vsm): Fix these - they import files from a different directory
   // - this triggers an invalid library root build error.
   'lib/html/custom/attribute_changed_callback_test',
+  'lib/html/custom/constructor_calls_created_synchronously_test',
   'lib/html/custom/entered_left_view_test',
   'lib/html/custom/js_custom_test',
   'lib/html/custom/mirrors_test',
   'lib/html/custom/regress_194523002_test',
-]);
+].map((p) => p.replaceAll('/', path.separator)));

@@ -13,12 +13,16 @@ import 'package:analyzer/instrumentation/instrumentation.dart';
  * An [InstrumentationServer] that writes to a file.
  */
 class FileInstrumentationServer implements InstrumentationServer {
+  final String filePath;
   IOSink _sink;
 
-  FileInstrumentationServer(String path) {
-    File file = new File(path);
+  FileInstrumentationServer(this.filePath) {
+    File file = new File(filePath);
     _sink = file.openWrite();
   }
+
+  @override
+  String get describe => "file: $filePath";
 
   @override
   String get sessionId => '';

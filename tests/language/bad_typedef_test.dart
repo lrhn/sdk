@@ -5,9 +5,10 @@
 
 import "package:expect/expect.dart";
 
-typedef int H(Function
-    Function   /// 00: compile-time error
-    x);
+typedef int H(
+    Function
+    Function //  //# 00: compile-time error
+        x);
 
 main() {
   bool b = true;

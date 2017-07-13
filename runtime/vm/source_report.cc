@@ -56,9 +56,10 @@ void SourceReport::Init(Thread* thread,
   ClearScriptTable();
   if (IsReportRequested(kProfile)) {
     // Build the profile.
-    SampleFilter samplesForIsolate(thread_->isolate(), Thread::kMutatorTask, -1,
-                                   -1);
-    profile_.Build(thread, &samplesForIsolate, Profile::kNoTags);
+    SampleFilter samplesForIsolate(thread_->isolate()->main_port(),
+                                   Thread::kMutatorTask, -1, -1);
+    profile_.Build(thread, &samplesForIsolate, Profiler::sample_buffer(),
+                   Profile::kNoTags);
   }
 }
 
@@ -332,8 +333,7 @@ void SourceReport::PrintProfileData(JSONObject* jsobj,
       for (intptr_t i = 0; i < profile_function->NumSourcePositions(); i++) {
         const ProfileFunctionSourcePosition& position =
             profile_function->GetSourcePosition(i);
-        if (position.token_pos().IsSourcePosition() &&
-            !position.token_pos().IsNoSource()) {
+        if (position.token_pos().IsSourcePosition()) {
           // Add as an integer.
           positions.AddValue(position.token_pos().Pos());
         } else {

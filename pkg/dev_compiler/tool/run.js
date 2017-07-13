@@ -42,13 +42,50 @@ requirejs.config({
 // TODO(vsm): Factor out test framework code in test/browser/language_tests.js
 // and use here.  Async tests and unittests won't work without it.
 var sdk = requirejs('dart_sdk');
+sdk.dart.ignoreWhitelistedErrors(false);
+
+let negative = /negative_test/.test(test);
+function finish(e) {
+  if (negative) {
+    if (e) {
+      e = null;
+    } else {
+      e = new Error("test marked as 'negative' but did not throw");
+    }
+  }
+  if (e) {
+    console.log('Test ' + test + ' failed:\n' + e.toString());
+    sdk.dart.stackPrint(e);
+  } else {
+    console.log('Test ' + test + ' passed.');
+  }
+}
+
+sdk.dart.ignoreWhitelistedErrors(false);
+sdk.dart.failForWeakModeIsChecks(false);
+sdk._isolate_helper.startRootIsolate(() => {}, []);
+// Make it easier to debug test failures and required for formatter test that
+// assumes custom formatters are enabled.
+sdk._debugger.registerDevtoolsFormatter();
+
+var async_helper = requirejs('async_helper').async_helper;
+async_helper.asyncTestInitialize(finish);
+
 var module = requirejs(test);
 var lib = test.split('/').slice(-1)[0];
 try {
-  sdk._isolate_helper.startRootIsolate(() => {}, []);
-  module[lib].main();
-  console.log('Test ' + test + ' passed.');
+  if (module[lib]._expectRuntimeError) negative = true;
+  var result = module[lib].main();
+  // async_helper tests call finish directly - call here for all other
+  // tests.
+  if (!async_helper.asyncTestStarted) {
+    if (!result || !(sdk.async.Future.is(result))) {
+      finish();
+    } else {
+      // Wait iff result is a future
+      result.then(sdk.dart.dynamic)(() => finish(), { onError: (e) => finish(e) });
+    }
+  }
 } catch (e) {
-  console.log('Test ' + test + ' failed:\n' + e.toString());
-  sdk.dart.stackPrint(e);
+  finish(e);
 }

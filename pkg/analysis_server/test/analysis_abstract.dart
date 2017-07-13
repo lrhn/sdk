@@ -2,27 +2,32 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.domain.analysis.abstract;
-
 import 'dart:async';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart'
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_constants.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart'
     hide AnalysisOptions;
 import 'package:analysis_server/src/analysis_server.dart';
-import 'package:analysis_server/src/constants.dart';
 import 'package:analysis_server/src/domain_analysis.dart';
+import 'package:analysis_server/src/plugin/notification_manager.dart';
+import 'package:analysis_server/src/plugin/plugin_manager.dart';
 import 'package:analysis_server/src/plugin/server_plugin.dart';
 import 'package:analysis_server/src/provisional/completion/dart/completion_plugin.dart';
-import 'package:analysis_server/src/services/index/index.dart';
+import 'package:analyzer/context/context_root.dart' as analyzer;
 import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/file_system/memory_file_system.dart';
 import 'package:analyzer/instrumentation/instrumentation.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/sdk.dart';
+import 'package:analyzer_plugin/protocol/protocol.dart' as plugin;
+import 'package:analyzer_plugin/protocol/protocol_generated.dart' as plugin;
+import 'package:analyzer_plugin/src/protocol/protocol_internal.dart' as plugin;
 import 'package:plugin/manager.dart';
 import 'package:plugin/plugin.dart';
 import 'package:test/test.dart';
+import 'package:watcher/watcher.dart';
 
 import 'mock_sdk.dart';
 import 'mocks.dart';
@@ -46,11 +51,11 @@ int findIdentifierLength(String search) {
  * An abstract base for all 'analysis' domain tests.
  */
 class AbstractAnalysisTest {
-  bool enableNewAnalysisDriver = false;
   bool generateSummaryFiles = false;
   MockServerChannel serverChannel;
   MemoryResourceProvider resourceProvider;
   MockPackageMapProvider packageMapProvider;
+  TestPluginManager pluginManager;
   AnalysisServer server;
   RequestHandler handler;
 
@@ -69,11 +74,7 @@ class AbstractAnalysisTest {
   AnalysisDomainHandler get analysisHandler => server.handlers
       .singleWhere((handler) => handler is AnalysisDomainHandler);
 
-  AnalysisOptions get analysisOptions => enableNewAnalysisDriver
-      ? testDiver.analysisOptions
-      : testContext.analysisOptions;
-
-  AnalysisContext get testContext => server.getAnalysisContext(testFile);
+  AnalysisOptions get analysisOptions => testDiver.analysisOptions;
 
   AnalysisDriver get testDiver => server.getAnalysisDriver(testFile);
 
@@ -112,7 +113,7 @@ class AbstractAnalysisTest {
     return testFile;
   }
 
-  AnalysisServer createAnalysisServer(Index index) {
+  AnalysisServer createAnalysisServer() {
     //
     // Collect plugins
     //
@@ -137,20 +138,14 @@ class AbstractAnalysisTest {
     // Create server
     //
     AnalysisServerOptions options = new AnalysisServerOptions();
-    options.enableNewAnalysisDriver = enableNewAnalysisDriver;
     return new AnalysisServer(
         serverChannel,
         resourceProvider,
         packageMapProvider,
-        index,
         serverPlugin,
         options,
         new DartSdkManager(resourceProvider.convertPath('/'), true),
         InstrumentationService.NULL_SERVICE);
-  }
-
-  Index createIndex() {
-    return null;
   }
 
   /**
@@ -204,7 +199,7 @@ class AbstractAnalysisTest {
   }
 
   void processNotification(Notification notification) {
-    if (notification.event == SERVER_ERROR) {
+    if (notification.event == SERVER_NOTIFICATION_ERROR) {
       var params = new ServerErrorParams.fromNotification(notification);
       serverErrors.add(params);
     }
@@ -217,6 +212,11 @@ class AbstractAnalysisTest {
     handleSuccessfulRequest(request);
   }
 
+  void setPriorityFiles(List<String> files) {
+    var request = new AnalysisSetPriorityFilesParams(files).toRequest('0');
+    handleSuccessfulRequest(request);
+  }
+
   void setUp() {
     serverChannel = new MockServerChannel();
     resourceProvider = new MemoryResourceProvider();
@@ -224,8 +224,9 @@ class AbstractAnalysisTest {
     testFolder = resourceProvider.convertPath('/project/bin');
     testFile = resourceProvider.convertPath('/project/bin/test.dart');
     packageMapProvider = new MockPackageMapProvider();
-    Index index = createIndex();
-    server = createAnalysisServer(index);
+    pluginManager = new TestPluginManager();
+    server = createAnalysisServer();
+    server.pluginManager = pluginManager;
     handler = analysisHandler;
     // listen for notifications
     Stream<Notification> notificationStream =
@@ -256,5 +257,114 @@ class AbstractAnalysisTest {
    */
   Future<Response> waitResponse(Request request) async {
     return serverChannel.sendRequest(request);
+  }
+}
+
+/**
+ * A plugin manager that simulates broadcasting requests to plugins by
+ * hard-coding the responses.
+ */
+class TestPluginManager implements PluginManager {
+  plugin.AnalysisSetPriorityFilesParams analysisSetPriorityFilesParams;
+  plugin.AnalysisSetSubscriptionsParams analysisSetSubscriptionsParams;
+  plugin.AnalysisUpdateContentParams analysisUpdateContentParams;
+  plugin.RequestParams broadcastedRequest;
+  Map<PluginInfo, Future<plugin.Response>> broadcastResults;
+
+  @override
+  String get byteStorePath {
+    fail('Unexpected invocation of byteStorePath');
+    return null;
+  }
+
+  @override
+  InstrumentationService get instrumentationService {
+    fail('Unexpected invocation of instrumentationService');
+    return null;
+  }
+
+  @override
+  NotificationManager get notificationManager {
+    fail('Unexpected invocation of notificationManager');
+    return null;
+  }
+
+  @override
+  List<PluginInfo> get plugins {
+    fail('Unexpected invocation of plugins');
+    return null;
+  }
+
+  @override
+  ResourceProvider get resourceProvider {
+    fail('Unexpected invocation of resourceProvider');
+    return null;
+  }
+
+  @override
+  String get sdkPath {
+    fail('Unexpected invocation of sdkPath');
+    return null;
+  }
+
+  @override
+  Future<Null> addPluginToContextRoot(
+      analyzer.ContextRoot contextRoot, String path) async {
+    fail('Unexpected invocation of addPluginToContextRoot');
+    return null;
+  }
+
+  @override
+  Map<PluginInfo, Future<plugin.Response>> broadcastRequest(
+      plugin.RequestParams params,
+      {analyzer.ContextRoot contextRoot}) {
+    broadcastedRequest = params;
+    return broadcastResults ?? <PluginInfo, Future<plugin.Response>>{};
+  }
+
+  @override
+  Future<List<Future<plugin.Response>>> broadcastWatchEvent(
+      WatchEvent watchEvent) async {
+    return <Future<plugin.Response>>[];
+  }
+
+  @override
+  List<PluginInfo> pluginsForContextRoot(analyzer.ContextRoot contextRoot) {
+    fail('Unexpected invocation of pluginsForContextRoot');
+    return null;
+  }
+
+  @override
+  void removedContextRoot(analyzer.ContextRoot contextRoot) {
+    fail('Unexpected invocation of removedContextRoot');
+  }
+
+  @override
+  void setAnalysisSetPriorityFilesParams(
+      plugin.AnalysisSetPriorityFilesParams params) {
+    analysisSetPriorityFilesParams = params;
+  }
+
+  @override
+  void setAnalysisSetSubscriptionsParams(
+      plugin.AnalysisSetSubscriptionsParams params) {
+    analysisSetSubscriptionsParams = params;
+  }
+
+  @override
+  void setAnalysisUpdateContentParams(
+      plugin.AnalysisUpdateContentParams params) {
+    analysisUpdateContentParams = params;
+  }
+
+  @override
+  Future<List<Null>> stopAll() async {
+    fail('Unexpected invocation of stopAll');
+    return null;
+  }
+
+  @override
+  void whitelistEverything() {
+    fail('Unexpected invocation of whitelistEverything');
   }
 }

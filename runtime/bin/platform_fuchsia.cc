@@ -3,12 +3,15 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
 
 #include "bin/platform.h"
 
-#include <string.h>  // NOLINT
-#include <unistd.h>  // NOLINT
+#include <magenta/process.h>
+#include <magenta/status.h>
+#include <magenta/syscalls.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "bin/dartutils.h"
 #include "bin/fdutils.h"
@@ -47,6 +50,15 @@ const char* Platform::LibraryExtension() {
 }
 
 
+const char* Platform::LocaleName() {
+  char* lang = getenv("LANG");
+  if (lang == NULL) {
+    return "en_US";
+  }
+  return lang;
+}
+
+
 bool Platform::LocalHostname(char* buffer, intptr_t buffer_length) {
   return gethostname(buffer, buffer_length) == 0;
 }
@@ -70,42 +82,54 @@ char** Platform::Environment(intptr_t* count) {
 }
 
 
+const char* Platform::GetExecutableName() {
+  if (executable_name_ != NULL) {
+    return executable_name_;
+  }
+  char* name = DartUtils::ScopedCString(MX_MAX_NAME_LEN);
+  mx_status_t status = mx_object_get_property(mx_process_self(), MX_PROP_NAME,
+                                              name, MX_MAX_NAME_LEN);
+  if (status != MX_OK) {
+    return NULL;
+  }
+  return name;
+}
+
+
 const char* Platform::ResolveExecutablePath() {
-  // The string used on the command line to spawn the executable is in argv_[0].
-  // If that string is a relative or absolute path, i.e. it contains a '/', then
-  // we make the path absolute if it is not already and return it. If argv_[0]
-  // does not contain a '/', we assume it is a program whose location is
-  // resolved via the PATH environment variable, and search for it using the
-  // paths found there.
-  const char* path = getenv("PATH");
-  if ((strchr(argv_[0], '/') != NULL) || (path == NULL)) {
-    if (argv_[0][0] == '/') {
-      return File::GetCanonicalPath(argv_[0]);
-    } else {
-      char* result = DartUtils::ScopedCString(PATH_MAX + 1);
-      char* cwd = DartUtils::ScopedCString(PATH_MAX + 1);
-      getcwd(cwd, PATH_MAX);
-      snprintf(result, PATH_MAX, "%s/%s", cwd, argv_[0]);
-      result[PATH_MAX] = '\0';
-      ASSERT(File::Exists(result));
-      return File::GetCanonicalPath(result);
+  const char* executable_name = Platform::GetExecutableName();
+  if (executable_name == NULL) {
+    return NULL;
+  }
+  if ((executable_name[0] == '/') && File::Exists(executable_name)) {
+    return File::GetCanonicalPath(executable_name);
+  }
+  if (strchr(executable_name, '/') != NULL) {
+    const char* result = File::GetCanonicalPath(executable_name);
+    if (File::Exists(result)) {
+      return result;
     }
   } else {
+    const char* path = getenv("PATH");
+    if (path == NULL) {
+      // If PATH isn't set, make some guesses about where we should look.
+      path = "/system/bin:/system/apps:/boot/bin";
+    }
     char* pathcopy = DartUtils::ScopedCopyCString(path);
     char* result = DartUtils::ScopedCString(PATH_MAX + 1);
     char* save = NULL;
     while ((pathcopy = strtok_r(pathcopy, ":", &save)) != NULL) {
-      snprintf(result, PATH_MAX, "%s/%s", pathcopy, argv_[0]);
+      snprintf(result, PATH_MAX, "%s/%s", pathcopy, executable_name);
       result[PATH_MAX] = '\0';
       if (File::Exists(result)) {
         return File::GetCanonicalPath(result);
       }
       pathcopy = NULL;
     }
-    // Couldn't find it. This causes null to be returned for
-    // Platform.resovledExecutable.
-    return NULL;
   }
+  // Couldn't find it. This causes null to be returned for
+  // Platform.resovledExecutable.
+  return NULL;
 }
 
 
@@ -116,4 +140,4 @@ void Platform::Exit(int exit_code) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)

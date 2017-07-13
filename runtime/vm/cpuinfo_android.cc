@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_ANDROID)
+#if defined(HOST_OS_ANDROID)
 
 #include "vm/cpuinfo.h"
 #include "vm/proccpuinfo.h"
@@ -31,12 +31,6 @@ void CpuInfo::InitOnce() {
   fields_[kCpuInfoModel] = "model name";
   fields_[kCpuInfoHardware] = "Hardware";
   fields_[kCpuInfoFeatures] = "Features";
-  fields_[kCpuInfoArchitecture] = "CPU architecture";
-#elif defined(HOST_ARCH_MIPS)
-  fields_[kCpuInfoProcessor] = "system type";
-  fields_[kCpuInfoModel] = "cpu model";
-  fields_[kCpuInfoHardware] = "cpu model";
-  fields_[kCpuInfoFeatures] = "ASEs implemented";
   fields_[kCpuInfoArchitecture] = "CPU architecture";
 #else
 #error Unrecognized target architecture
@@ -68,4 +62,4 @@ bool CpuInfo::HasField(const char* field) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_ANDROID)
+#endif  // defined(HOST_OS_ANDROID)

@@ -2,7 +2,7 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-// Test that we do not accidentially leak code from deferred libraries but do
+// Test that we do not accidentally leak code from deferred libraries but do
 // allow inlining of empty functions and from main.
 
 import 'package:async_helper/async_helper.dart';
@@ -24,15 +24,15 @@ void main() {
 
     var outputUnitForElement = compiler.deferredLoadTask.outputUnitForElement;
 
-    var lib1 = lookupLibrary("memory:lib1.dart");
+    dynamic lib1 = lookupLibrary("memory:lib1.dart");
     var inlineMeAway = lib1.find("inlineMeAway");
     var ou_lib1 = outputUnitForElement(inlineMeAway);
 
-    var lib3 = lookupLibrary("memory:lib3.dart");
+    dynamic lib3 = lookupLibrary("memory:lib3.dart");
     var sameContextInline = lib3.find("sameContextInline");
     var ou_lib3 = outputUnitForElement(sameContextInline);
 
-    // Test that we actually got differnt output units.
+    // Test that we actually got different output units.
     Expect.notEquals(ou_lib1.name, ou_lib3.name);
 
     String mainOutput = collector.getOutput("", OutputType.js);

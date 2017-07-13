@@ -3,6 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 // VMOptions=--optimization-counter-threshold=5 --no-background-compilation
+// VMOptions=--optimization-counter-threshold=5 --no-background-compilation --stress-async-stacks
 
 import 'package:expect/expect.dart';
 import "package:async_helper/async_helper.dart";
@@ -33,7 +34,7 @@ test1_2() async {
   try {
     await test1_1();
   } catch (e) {
-    throw e+1;
+    throw e + 1;
   }
 }
 
@@ -91,8 +92,8 @@ awaitFoo() async {
 
 main() {
   asyncStart();
-  test().then((_) => awaitFoo().then(
-          (_) => Expect.fail("Should have thrown"),
+  test()
+      .then((_) => awaitFoo().then((_) => Expect.fail("Should have thrown"),
           onError: (error) => Expect.equals("Error", error)))
       .whenComplete(asyncEnd);
 }

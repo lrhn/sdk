@@ -1,21 +1,22 @@
 // Copyright (c) 2013, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
-library browser;
 
-import "dart:async";
-import "dart:convert" show UTF8, JSON;
-import "dart:core";
-import "dart:io";
-import "dart:math" show min;
+import 'dart:async';
+import 'dart:convert';
+import 'dart:core';
+import 'dart:io';
+import 'dart:math';
 
 import 'android.dart';
-import 'http_server.dart';
+import 'configuration.dart';
 import 'path.dart';
+import 'reset_safari.dart';
 import 'utils.dart';
 
-import 'reset_safari.dart' show
-    killAndResetSafari;
+typedef void BrowserDoneCallback(BrowserTestOutput output);
+typedef void TestChangedCallback(String browserId, String output, int testId);
+typedef BrowserTest NextTestCallback(String browserId);
 
 class BrowserOutput {
   final StringBuffer stdout = new StringBuffer();
@@ -70,24 +71,34 @@ abstract class Browser {
 
   Browser();
 
-  factory Browser.byName(String name, String executablePath,
+  factory Browser.byRuntime(Runtime runtime, String executablePath,
       [bool checkedMode = false]) {
-    var browser;
-    if (name == 'firefox') {
-      browser = new Firefox();
-    } else if (name == 'chrome') {
-      browser = new Chrome();
-    } else if (name == 'dartium') {
-      browser = new Dartium(checkedMode);
-    } else if (name == 'safari') {
-      browser = new Safari();
-    } else if (name == 'safarimobilesim') {
-      browser = new SafariMobileSimulator();
-    } else if (name.startsWith('ie')) {
-      browser = new IE();
-    } else {
-      throw "Non supported browser";
+    Browser browser;
+    switch (runtime) {
+      case Runtime.firefox:
+        browser = new Firefox();
+        break;
+      case Runtime.chrome:
+        browser = new Chrome();
+        break;
+      case Runtime.dartium:
+        browser = new Dartium(checkedMode);
+        break;
+      case Runtime.safari:
+        browser = new Safari();
+        break;
+      case Runtime.safariMobileSim:
+        browser = new SafariMobileSimulator();
+        break;
+      case Runtime.ie9:
+      case Runtime.ie10:
+      case Runtime.ie11:
+        browser = new IE();
+        break;
+      default:
+        throw "unreachable";
     }
+
     browser._binary = executablePath;
     return browser;
   }
@@ -102,16 +113,6 @@ abstract class Browser {
     'ie11',
     'dartium'
   ];
-
-  static const List<String> BROWSERS_WITH_WINDOW_SUPPORT = const [
-    'ie11',
-    'ie10'
-  ];
-
-  /// If [browserName] doesn't support Window.open, we use iframes instead.
-  static bool requiresIframe(String browserName) {
-    return !BROWSERS_WITH_WINDOW_SUPPORT.contains(browserName);
-  }
 
   static bool requiresFocus(String browserName) {
     return browserName == "safari";
@@ -173,11 +174,11 @@ abstract class Browser {
       process = startedProcess;
       // Used to notify when exiting, and as a return value on calls to
       // close().
-      var doneCompleter = new Completer();
+      var doneCompleter = new Completer<bool>();
       done = doneCompleter.future;
 
-      Completer stdoutDone = new Completer();
-      Completer stderrDone = new Completer();
+      Completer stdoutDone = new Completer<Null>();
+      Completer stderrDone = new Completer<Null>();
 
       bool stdoutIsDone = false;
       bool stderrIsDone = false;
@@ -304,7 +305,7 @@ class Safari extends Browser {
   Future<bool> resetConfiguration() async {
     if (!Browser.resetBrowserConfiguration) return true;
 
-    Completer completer = new Completer();
+    var completer = new Completer<Null>();
     handleUncaughtError(error, StackTrace stackTrace) {
       if (!completer.isCompleted) {
         completer.completeError(error, stackTrace);
@@ -312,13 +313,14 @@ class Safari extends Browser {
         throw new AsyncError(error, stackTrace);
       }
     }
+
     Zone parent = Zone.current;
     ZoneSpecification specification = new ZoneSpecification(
         print: (Zone self, ZoneDelegate delegate, Zone zone, String line) {
-          delegate.run(parent, () {
-            _logEvent(line);
-          });
-        });
+      delegate.run(parent, () {
+        _logEvent(line);
+      });
+    });
     Future zoneWrapper() {
       Uri safariUri = Uri.base.resolve(safariBundleLocation);
       return new Future(() => killAndResetSafari(bundle: safariUri))
@@ -328,9 +330,8 @@ class Safari extends Browser {
     // We run killAndResetSafari in a Zone as opposed to running an external
     // process. The Zone allows us to collect its output, and protect the rest
     // of the test infrastructure against errors in it.
-    runZoned(
-        zoneWrapper, zoneSpecification: specification,
-        onError: handleUncaughtError);
+    runZoned(zoneWrapper,
+        zoneSpecification: specification, onError: handleUncaughtError);
 
     try {
       await completer.future;
@@ -374,8 +375,8 @@ class Safari extends Browser {
     });
   }
 
-  Future<Null> _createLaunchHTML(var path, var url) async {
-    var file = new File("${path}/launch.html");
+  Future<Null> _createLaunchHTML(String path, String url) async {
+    var file = new File("$path/launch.html");
     var randomFile = await file.open(mode: FileMode.WRITE);
     var content = '<script language="JavaScript">location = "$url"</script>';
     await randomFile.writeString(content);
@@ -413,8 +414,14 @@ class Safari extends Browser {
       return false;
     }
     var args = [
-        "-d", "-i", "-m", "-s", "-u", _binary,
-        "${userDir.path}/launch.html"];
+      "-d",
+      "-i",
+      "-m",
+      "-s",
+      "-u",
+      _binary,
+      "${userDir.path}/launch.html"
+    ];
     try {
       return startBrowserProcess("/usr/bin/caffeinate", args);
     } catch (error) {
@@ -424,8 +431,8 @@ class Safari extends Browser {
   }
 
   Future<Null> onDriverPageRequested() async {
-    await Process.run("/usr/bin/osascript",
-        ['-e', 'tell application "Safari" to activate']);
+    await Process.run(
+        "/usr/bin/osascript", ['-e', 'tell application "Safari" to activate']);
   }
 
   String toString() => "Safari";
@@ -459,7 +466,7 @@ class Chrome extends Browser {
         _logEvent("Make sure $_binary is a valid program for running chrome");
         return false;
       }
-      _version = versionResult.stdout;
+      _version = versionResult.stdout as String;
       return true;
     });
   }
@@ -467,13 +474,27 @@ class Chrome extends Browser {
   Future<bool> start(String url) {
     _logEvent("Starting chrome browser on: $url");
     // Get the version and log that.
-    return _getVersion().then((success) {
+    return _getVersion().then<bool>((success) {
       if (!success) return false;
       _logEvent("Got version: $_version");
 
       return Directory.systemTemp.createTemp().then((userDir) {
         _cleanup = () {
-          userDir.deleteSync(recursive: true);
+          try {
+            userDir.deleteSync(recursive: true);
+          } catch (e) {
+            _logEvent(
+                "Error: failed to delete Chrome user-data-dir ${userDir.path}"
+                ", will try again in 40 seconds: $e");
+            new Timer(new Duration(seconds: 40), () {
+              try {
+                userDir.deleteSync(recursive: true);
+              } catch (e) {
+                _logEvent("Error: failed on second attempt to delete Chrome "
+                    "user-data-dir ${userDir.path}: $e");
+              }
+            });
+          }
         };
         var args = [
           "--user-data-dir=${userDir.path}",
@@ -481,8 +502,13 @@ class Chrome extends Browser {
           "--disable-extensions",
           "--disable-popup-blocking",
           "--bwsi",
-          "--no-first-run"
+          "--no-first-run",
         ];
+
+        // TODO(rnystrom): Uncomment this to open the dev tools tab when Chrome
+        // is spawned. Handy for debugging tests.
+        // args.add("--auto-open-devtools-for-tabs");
+
         return startBrowserProcess(_binary, args,
             environment: _getEnvironment());
       });
@@ -592,9 +618,11 @@ class IE extends Browser {
         // HKEY_LOCAL_MACHINE\Software\Microsoft\Internet Explorer
         //    version    REG_SZ    9.0.8112.16421
         var findString = "REG_SZ";
-        var index = result.stdout.indexOf(findString);
+        var index = (result.stdout as String).indexOf(findString);
         if (index > 0) {
-          return result.stdout.substring(index + findString.length).trim();
+          return (result.stdout as String)
+              .substring(index + findString.length)
+              .trim();
         }
       }
       return "Could not get the version of internet explorer";
@@ -650,7 +678,8 @@ class AndroidBrowser extends Browser {
   AdbDevice _adbDevice;
   AndroidBrowserConfig _config;
 
-  AndroidBrowser(this._adbDevice, this._config, this.checkedMode, apkPath) {
+  AndroidBrowser(
+      this._adbDevice, this._config, this.checkedMode, String apkPath) {
     _binary = apkPath;
   }
 
@@ -775,8 +804,8 @@ class Firefox extends Browser {
   static const String disableScriptTimeLimit =
       'user_pref("dom.max_script_run_time", 0);';
 
-  void _createPreferenceFile(var path) {
-    var file = new File("${path.toString()}/user.js");
+  void _createPreferenceFile(String path) {
+    var file = new File("$path/user.js");
     var randomFile = file.openSync(mode: FileMode.WRITE);
     randomFile.writeStringSync(enablePopUp);
     randomFile.writeStringSync(disableDefaultCheck);
@@ -793,7 +822,7 @@ class Firefox extends Browser {
         _logEvent("Make sure $_binary is a valid program for running firefox");
         return new Future.value(false);
       }
-      version = versionResult.stdout;
+      version = versionResult.stdout as String;
       _logEvent("Got version: $version");
 
       return Directory.systemTemp.createTemp().then((userDir) {
@@ -844,7 +873,7 @@ class BrowserStatus {
  */
 class BrowserTest {
   // TODO(ricow): Add timeout callback instead of the string passing hack.
-  Function doneCallback;
+  BrowserDoneCallback doneCallback;
   String url;
   int timeout;
   String lastKnownMessage = '';
@@ -875,7 +904,8 @@ class BrowserTest {
 class HtmlTest extends BrowserTest {
   List<String> expectedMessages;
 
-  HtmlTest(url, doneCallback, timeout, this.expectedMessages)
+  HtmlTest(String url, BrowserDoneCallback doneCallback, int timeout,
+      this.expectedMessages)
       : super(url, doneCallback, timeout) {}
 
   String toJSON() => JSON.encode({
@@ -912,19 +942,17 @@ class BrowserTestOutput {
 /// requests back from the browsers.
 class BrowserTestRunner {
   static const int MAX_NEXT_TEST_TIMEOUTS = 10;
-  static const Duration NEXT_TEST_TIMEOUT = const Duration(seconds: 60);
+  static const Duration NEXT_TEST_TIMEOUT = const Duration(seconds: 120);
   static const Duration RESTART_BROWSER_INTERVAL = const Duration(seconds: 60);
 
   /// If the queue was recently empty, don't start another browser.
   static const Duration MIN_NONEMPTY_QUEUE_TIME = const Duration(seconds: 1);
 
-  final Map configuration;
+  final Configuration configuration;
   final BrowserTestingServer testingServer;
 
   final String localIp;
-  final String browserName;
   int maxNumBrowsers;
-  final bool checkedMode;
   int numBrowsers = 0;
   // Used to send back logs from the browser (start, stop etc)
   Function logger;
@@ -936,18 +964,18 @@ class BrowserTestRunner {
   int numBrowserGetTestTimeouts = 0;
   DateTime lastEmptyTestQueueTime = new DateTime.now();
   String _currentStartingBrowserId;
-  List<BrowserTest> testQueue = new List<BrowserTest>();
-  Map<String, BrowserStatus> browserStatus = new Map<String, BrowserStatus>();
+  List<BrowserTest> testQueue = [];
+  Map<String, BrowserStatus> browserStatus = {};
 
-  var adbDeviceMapping = new Map<String, AdbDevice>();
+  Map<String, AdbDevice> adbDeviceMapping = {};
   List<AdbDevice> idleAdbDevices;
 
   // This cache is used to guarantee that we never see double reporting.
   // If we do we need to provide developers with this information.
   // We don't add urls to the cache until we have run it.
-  Map<int, String> testCache = new Map<int, String>();
+  Map<int, String> testCache = {};
 
-  Map<int, String> doubleReportingOutputs = new Map<int, String>();
+  Map<int, String> doubleReportingOutputs = {};
   List<String> timedOut = [];
 
   // We will start a new browser when the test queue hasn't been empty
@@ -972,18 +1000,11 @@ class BrowserTestRunner {
   }
 
   BrowserTestRunner(
-      Map configuration,
-      String localIp,
-      String browserName,
-      this.maxNumBrowsers)
+      Configuration configuration, String localIp, this.maxNumBrowsers)
       : configuration = configuration,
         localIp = localIp,
-        browserName = (browserName == 'ff') ? 'firefox' : browserName,
-        checkedMode = configuration['checked'],
-        testingServer = new BrowserTestingServer(
-            configuration, localIp,
-            Browser.requiresIframe(browserName),
-            Browser.requiresFocus(browserName)) {
+        testingServer = new BrowserTestingServer(configuration, localIp,
+            Browser.requiresFocus(configuration.runtime.name)) {
     testingServer.testRunner = this;
   }
 
@@ -994,7 +1015,7 @@ class BrowserTestRunner {
       ..testStatusUpdateCallBack = handleStatusUpdate
       ..testStartedCallBack = handleStarted
       ..nextTestCallBack = getNextTest;
-    if (browserName == 'chromeOnAndroid') {
+    if (configuration.runtime == Runtime.chromeOnAndroid) {
       var idbNames = await AdbHelper.listDevices();
       idleAdbDevices = new List.from(idbNames.map((id) => new AdbDevice(id)));
       maxNumBrowsers = min(maxNumBrowsers, idleAdbDevices.length);
@@ -1022,21 +1043,24 @@ class BrowserTestRunner {
   String getNextBrowserId() => "BROWSER${browserIdCounter++}";
 
   void createBrowser() {
-    final String id = getNextBrowserId();
-    final String url = testingServer.getDriverUrl(id);
+    var id = getNextBrowserId();
+    var url = testingServer.getDriverUrl(id);
+
     Browser browser;
-    if (browserName == 'chromeOnAndroid') {
+    if (configuration.runtime == Runtime.chromeOnAndroid) {
       AdbDevice device = idleAdbDevices.removeLast();
       adbDeviceMapping[id] = device;
       browser = new AndroidChrome(device);
     } else {
-      String path = Locations.getBrowserLocation(browserName, configuration);
-      browser = new Browser.byName(browserName, path, checkedMode);
+      var path = configuration.browserLocation;
+      browser = new Browser.byRuntime(
+          configuration.runtime, path, configuration.isChecked);
       browser.logger = logger;
     }
+
     browser.id = id;
     markCurrentlyStarting(id);
-    final status = new BrowserStatus(browser);
+    var status = new BrowserStatus(browser);
     browserStatus[id] = status;
     numBrowsers++;
     status.nextTestTimeout = createNextTestTimer(status);
@@ -1113,7 +1137,7 @@ class BrowserTestRunner {
     }
   }
 
-  void handleTimeout(BrowserStatus status) {
+  Future handleTimeout(BrowserStatus status) async {
     // We simply kill the browser and starts up a new one!
     // We could be smarter here, but it does not seems like it is worth it.
     if (status.timeout) {
@@ -1125,39 +1149,45 @@ class BrowserTestRunner {
     var id = status.browser.id;
 
     status.currentTest.stopwatch.stop();
-    status.browser.close().then((_) {
-      var lastKnownMessage =
-          'Dom could not be fetched, since the test timed out.';
-      if (status.currentTest.lastKnownMessage.length > 0) {
-        lastKnownMessage = status.currentTest.lastKnownMessage;
-      }
-      if (status.lastTest != null) {
-        lastKnownMessage += '\nPrevious test was ${status.lastTest.url}';
-      }
-      // Wait until the browser is closed before reporting the test as timeout.
-      // This will enable us to capture stdout/stderr from the browser
-      // (which might provide us with information about what went wrong).
-      var browserTestOutput = new BrowserTestOutput(
-          status.currentTest.delayUntilTestStarted,
-          status.currentTest.stopwatch.elapsed,
-          lastKnownMessage,
-          status.browser.testBrowserOutput,
-          didTimeout: true);
-      status.currentTest.doneCallback(browserTestOutput);
-      status.lastTest = status.currentTest;
-      status.currentTest = null;
 
-      // We don't want to start a new browser if we are terminating.
-      if (underTermination) return;
-      removeBrowser(id);
-      requestBrowser();
-    });
+    // Before closing the browser, we'll try to capture a screenshot on
+    // windows when using IE (to debug flakiness).
+    if (status.browser is IE) {
+      await captureInternetExplorerScreenshot(
+          'IE screenshot for ${status.currentTest.url}');
+    }
+    await status.browser.close();
+    var lastKnownMessage =
+        'Dom could not be fetched, since the test timed out.';
+    if (status.currentTest.lastKnownMessage.length > 0) {
+      lastKnownMessage = status.currentTest.lastKnownMessage;
+    }
+    if (status.lastTest != null) {
+      lastKnownMessage += '\nPrevious test was ${status.lastTest.url}';
+    }
+    // Wait until the browser is closed before reporting the test as timeout.
+    // This will enable us to capture stdout/stderr from the browser
+    // (which might provide us with information about what went wrong).
+    var browserTestOutput = new BrowserTestOutput(
+        status.currentTest.delayUntilTestStarted,
+        status.currentTest.stopwatch.elapsed,
+        lastKnownMessage,
+        status.browser.testBrowserOutput,
+        didTimeout: true);
+    status.currentTest.doneCallback(browserTestOutput);
+    status.lastTest = status.currentTest;
+    status.currentTest = null;
+
+    // We don't want to start a new browser if we are terminating.
+    if (underTermination) return;
+    removeBrowser(id);
+    requestBrowser();
   }
 
   /// Remove a browser that has closed from our data structures that track
   /// open browsers. Check if we want to replace it with a new browser.
   void removeBrowser(String id) {
-    if (browserName == 'chromeOnAndroid') {
+    if (configuration.runtime == Runtime.chromeOnAndroid) {
       idleAdbDevices.add(adbDeviceMapping.remove(id));
     }
     markNotCurrentlyStarting(id);
@@ -1181,7 +1211,8 @@ class BrowserTestRunner {
     // Restart Internet Explorer if it has been
     // running for longer than RESTART_BROWSER_INTERVAL. The tests have
     // had flaky timeouts, and this may help.
-    if ((browserName == 'ie10' || browserName == 'ie11') &&
+    if ((configuration.runtime == Runtime.ie10 ||
+            configuration.runtime == Runtime.ie11) &&
         status.timeSinceRestart.elapsed > RESTART_BROWSER_INTERVAL) {
       var id = status.browser.id;
       // Reset stopwatch so we don't trigger again before restarting.
@@ -1244,7 +1275,7 @@ class BrowserTestRunner {
     });
   }
 
-  void handleNextTestTimeout(status) {
+  void handleNextTestTimeout(BrowserStatus status) {
     DebugLogger
         .warning("Browser timed out before getting next test. Restarting");
     if (status.timeout) return;
@@ -1290,7 +1321,7 @@ class BrowserTestRunner {
   // TODO(26191): Call a unified fatalError(), that shuts down all subprocesses.
   // This just kills the browsers in this BrowserTestRunner instance.
   Future terminate() async {
-    var browsers = [];
+    var browsers = <Browser>[];
     underTermination = true;
     testingServer.underTermination = true;
     for (BrowserStatus status in browserStatus.values) {
@@ -1300,16 +1331,18 @@ class BrowserTestRunner {
         status.nextTestTimeout = null;
       }
     }
-    for (Browser b in browsers) {
-      await b.close();
+
+    for (var browser in browsers) {
+      await browser.close();
     }
+
     testingServer.errorReportingServer.close();
     printDoubleReportingTests();
   }
 }
 
 class BrowserTestingServer {
-  final Map configuration;
+  final Configuration configuration;
 
   /// Interface of the testing server:
   ///
@@ -1324,7 +1357,6 @@ class BrowserTestingServer {
   ///                                   test
 
   final String localIp;
-  final bool useIframe;
   final bool requiresFocus;
   BrowserTestRunner testRunner;
 
@@ -1337,21 +1369,19 @@ class BrowserTestingServer {
   static const String terminateSignal = "TERMINATE";
 
   var testCount = 0;
-  var errorReportingServer;
+  HttpServer errorReportingServer;
   bool underTermination = false;
 
-  Function testDoneCallBack;
-  Function testStatusUpdateCallBack;
-  Function testStartedCallBack;
-  Function nextTestCallBack;
+  TestChangedCallback testDoneCallBack;
+  TestChangedCallback testStatusUpdateCallBack;
+  TestChangedCallback testStartedCallBack;
+  NextTestCallback nextTestCallBack;
 
-  BrowserTestingServer(
-      this.configuration, this.localIp, this.useIframe, this.requiresFocus);
+  BrowserTestingServer(this.configuration, this.localIp, this.requiresFocus);
 
   Future start() {
-    var test_driver_error_port = configuration['test_driver_error_port'];
     return HttpServer
-        .bind(localIp, test_driver_error_port)
+        .bind(localIp, configuration.testDriverErrorPort)
         .then(setupErrorServer)
         .then(setupDispatchingServer);
   }
@@ -1376,20 +1406,24 @@ class BrowserTestingServer {
         print(error);
       });
     }
+
     void errorHandler(e) {
       if (!underTermination) print("Error occured in httpserver: $e");
     }
+
     errorReportingServer.listen(errorReportingHandler, onError: errorHandler);
   }
 
   void setupDispatchingServer(_) {
-    DispatchingServer server = configuration['_servers_'].server;
-    void noCache(request) {
+    var server = configuration.servers.server;
+    void noCache(HttpRequest request) {
       request.response.headers
           .set("Cache-Control", "no-cache, no-store, must-revalidate");
     }
-    int testId(request) => int.parse(request.uri.queryParameters["id"]);
-    String browserId(request, prefix) =>
+
+    int testId(HttpRequest request) =>
+        int.parse(request.uri.queryParameters["id"]);
+    String browserId(HttpRequest request, String prefix) =>
         request.uri.path.substring(prefix.length + 1);
 
     server.addHandler(reportPath, (HttpRequest request) {
@@ -1436,7 +1470,7 @@ class BrowserTestingServer {
         request.response.write(text);
         await request.listen(null).asFuture();
         // Ignoring the returned closure as it returns the 'done' future
-        // which alread has catchError installed above.
+        // which already has catchError installed above.
         request.response.close();
       });
     }
@@ -1445,7 +1479,7 @@ class BrowserTestingServer {
     server.addHandler(nextTestPath, sendPageHandler);
   }
 
-  void handleReport(HttpRequest request, String browserId, var testId,
+  void handleReport(HttpRequest request, String browserId, int testId,
       {bool isStatusUpdate}) {
     StringBuffer buffer = new StringBuffer();
     request.transform(UTF8.decoder).listen((data) {
@@ -1464,7 +1498,7 @@ class BrowserTestingServer {
     });
   }
 
-  void handleStarted(HttpRequest request, String browserId, var testId) {
+  void handleStarted(HttpRequest request, String browserId, int testId) {
     StringBuffer buffer = new StringBuffer();
     // If an error occurs while receiving the data from the request stream,
     // we don't handle it specially. We can safely ignore it, since the started
@@ -1497,8 +1531,8 @@ class BrowserTestingServer {
       exit(1);
       // This should never happen - exit immediately;
     }
-    var port = configuration['_servers_'].port;
-    return "http://$localIp:$port/driver/$browserId";
+
+    return "http://$localIp:${configuration.servers.port}/driver/$browserId";
   }
 
   Future<String> getDriverPage(String browserId) async {
@@ -1548,7 +1582,7 @@ body div {
       var number_div = document.getElementById('number');
       var executing_div = document.getElementById('currently_executing');
       var error_div = document.getElementById('unhandled_error');
-      var use_iframe = ${useIframe};
+      var use_iframe = ${configuration.runtime.requiresIFrame};
       var start = new Date();
 
       // Object that holds the state of an HTML test
@@ -1785,11 +1819,17 @@ body div {
       function sendStatusUpdate () {
         var dom =
             embedded_iframe.contentWindow.document.documentElement.innerHTML;
-        reportMessage('Status:\\n  Messages received multiple times:\\n    ' +
-                      html_test.double_received_messages +
-                      '\\n  Unexpected messages:\\n    ' +
-                      html_test.unexpected_messages +
-                      '\\n  DOM:\\n    ' + dom, false, true);
+        var message = 'Status:\\n';
+        if (html_test != null) {
+          message +=
+            '  Messages received multiple times:\\n' +
+            '    ' + html_test.double_received_messages + '\\n' +
+            '  Unexpected messages:\\n' +
+            '    ' + html_test.unexpected_messages + '\\n';
+        }
+        message += '  DOM:\\n' +
+                   '    ' + dom;
+        reportMessage(message, false, true);
       }
 
       function sendRepeatingStatusUpdate() {
@@ -1857,4 +1897,58 @@ body div {
 """;
     return driverContent;
   }
+}
+
+Future captureInternetExplorerScreenshot(String message) async {
+  if (Platform.environment['USERNAME'] != 'chrome-bot') {
+    return;
+  }
+
+  print('--------------------------------------------------------------------');
+  final String date =
+      new DateTime.now().toUtc().toIso8601String().replaceAll(':', '_');
+  final screenshotName = 'ie_screenshot_${date}.png';
+
+  // The "capture_screen.ps1" script is next to "test.dart" in "tools/"
+  final powerShellScript =
+      Platform.script.resolve('../../capture_screenshot.ps1').toFilePath();
+  final screenshotFile =
+      Platform.script.resolve('../../../$screenshotName').toFilePath();
+
+  final args = [
+    '-ExecutionPolicy',
+    'ByPass',
+    '-File',
+    powerShellScript,
+    screenshotFile
+  ];
+  final ProcessResult result =
+      await Process.run('powershell.exe', args, runInShell: true);
+  if (result.exitCode != 0) {
+    print('[$message] Failed to capture IE screenshot on windows: '
+        'powershell.exe "${args.join(' ')}" returned with:\n'
+        'exit code: ${result.exitCode}\n'
+        'stdout: ${result.stdout}\n'
+        'stderr: ${result.stderr}');
+  } else {
+    final storageUrl = 'gs://dart-temp-crash-archive/$screenshotName';
+    final args = [
+      r'e:\b\depot_tools\gsutil.py',
+      'cp',
+      screenshotFile,
+      storageUrl,
+    ];
+    final ProcessResult result = await Process.run('python', args);
+    if (result.exitCode != 0) {
+      print('[$message] Failed upload captured IE screenshot to cloud storage: '
+          '"${args.join(' ')}" returned with:\n'
+          'exit code: ${result.exitCode}\n'
+          'stdout: ${result.stdout}\n'
+          'stderr: ${result.stderr}');
+    } else {
+      print('[$message] Successfully uploaded screenshot to $storageUrl');
+    }
+    new File(screenshotFile).deleteSync();
+  }
+  print('--------------------------------------------------------------------');
 }

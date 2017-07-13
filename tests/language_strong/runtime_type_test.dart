@@ -4,11 +4,9 @@
 
 import "package:expect/expect.dart";
 
-class A {
-}
+class A {}
 
-class B {
-}
+class B {}
 
 main() {
   var a = new A();
@@ -35,4 +33,7 @@ main() {
 
   Expect.isTrue(null.runtimeType is Type);
   Expect.equals(Null, null.runtimeType);
+
+  Expect.equals([].runtimeType.toString(), 'List');
+  Expect.equals((<int>[]).runtimeType.toString(), 'List<int>');
 }

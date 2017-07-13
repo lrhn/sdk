@@ -2,8 +2,6 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library analyzer.test.generated.test_all;
-
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
 import 'all_the_rest_test.dart' as all_the_rest;
@@ -24,7 +22,6 @@ import 'error_suppression_test.dart' as error_suppression_test;
 import 'gn_test.dart' as gn_test;
 import 'hint_code_driver_test.dart' as hint_code_driver_test;
 import 'hint_code_test.dart' as hint_code_test;
-import 'incremental_resolver_test.dart' as incremental_resolver_test;
 import 'inheritance_manager_test.dart' as inheritance_manager_test;
 import 'java_core_test.dart' as java_core_test;
 import 'java_io_test.dart' as java_io_test;
@@ -32,6 +29,7 @@ import 'non_error_resolver_driver_test.dart' as non_error_resolver_driver_test;
 import 'non_error_resolver_test.dart' as non_error_resolver_test;
 import 'non_hint_code_driver_test.dart' as non_hint_code_driver_test;
 import 'non_hint_code_test.dart' as non_hint_code_test;
+import 'package_test.dart' as package_test;
 import 'parser_fasta_test.dart' as parser_fasta_test;
 import 'parser_test.dart' as parser_test;
 import 'resolver_driver_test.dart' as resolver_driver_test;
@@ -55,7 +53,6 @@ import 'type_system_test.dart' as type_system_test;
 import 'utilities_dart_test.dart' as utilities_dart_test;
 import 'utilities_test.dart' as utilities_test;
 
-/// Utility for manually running all tests.
 main() {
   defineReflectiveSuite(() {
     all_the_rest.main();
@@ -73,7 +70,6 @@ main() {
     gn_test.main();
     hint_code_driver_test.main();
     hint_code_test.main();
-    incremental_resolver_test.main();
     inheritance_manager_test.main();
     java_core_test.main();
     java_io_test.main();
@@ -81,6 +77,7 @@ main() {
     non_error_resolver_test.main();
     non_hint_code_driver_test.main();
     non_hint_code_test.main();
+    package_test.main();
     parser_fasta_test.main();
     parser_test.main();
     resolver_driver_test.main();

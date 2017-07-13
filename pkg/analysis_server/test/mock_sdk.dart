@@ -130,7 +130,8 @@ class Iterator<E> {
 abstract class Iterable<E> {
   Iterator<E> get iterator;
   bool get isEmpty;
-  Iterable/*<R>*/ map/*<R>*/(/*=R*/ f(E e));
+  Iterable<T> map<T>(T f(E e)) => null;
+  T fold<T>(T initialValue, T combine(T previousValue, E element));
 }
 
 class List<E> implements Iterable<E> {
@@ -145,12 +146,6 @@ class List<E> implements Iterable<E> {
   bool get isEmpty => false;
   E get first => null;
   E get last => null;
-
-  Iterable/*<R>*/ map/*<R>*/(/*=R*/ f(E e)) => null;
-
-  /*=R*/ fold/*<R>*/(/*=R*/ initialValue,
-      /*=R*/ combine(/*=R*/ previousValue, E element)) => null;
-
 }
 
 abstract class Map<K, V> extends Object {
@@ -200,6 +195,7 @@ abstract class StreamTransformer<S, T> {}
 library dart.collection;
 
 abstract class HashMap<K, V> implements Map<K, V> {}
+abstract class LinkedHashMap<K, V> implements Map<K, V> {}
 ''');
 
   static const MockSdkLibrary LIB_CONVERT = const MockSdkLibrary(
@@ -224,9 +220,9 @@ const double PI = 3.1415926535897932;
 const double LN10 =  2.302585092994046;
 T min<T extends num>(T a, T b) => null;
 T max<T extends num>(T a, T b) => null;
-external double cos(num x);
+external double cos(num radians);
 external num pow(num x, num exponent);
-external double sin(num x);
+external double sin(num radians);
 external double sqrt(num x);
 class Random {
   bool nextBool() => true;

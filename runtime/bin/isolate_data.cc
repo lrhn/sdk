@@ -5,6 +5,8 @@
 #include "bin/isolate_data.h"
 #include "bin/snapshot_utils.h"
 
+#include "vm/kernel.h"
+
 namespace dart {
 namespace bin {
 
@@ -16,6 +18,7 @@ IsolateData::IsolateData(const char* url,
       package_root(NULL),
       packages_file(NULL),
       udp_receive_buffer(NULL),
+      kernel_program(NULL),
       builtin_lib_(NULL),
       loader_(NULL),
       app_snapshot_(app_snapshot),
@@ -29,6 +32,14 @@ IsolateData::IsolateData(const char* url,
 }
 
 
+void IsolateData::OnIsolateShutdown() {
+  if (builtin_lib_ != NULL) {
+    Dart_DeletePersistentHandle(builtin_lib_);
+    builtin_lib_ = NULL;
+  }
+}
+
+
 IsolateData::~IsolateData() {
   free(script_url);
   script_url = NULL;
@@ -38,8 +49,9 @@ IsolateData::~IsolateData() {
   packages_file = NULL;
   free(udp_receive_buffer);
   udp_receive_buffer = NULL;
-  if (builtin_lib_ != NULL) {
-    Dart_DeletePersistentHandle(builtin_lib_);
+  if (kernel_program != NULL) {
+    delete reinterpret_cast<kernel::Program*>(kernel_program);
+    kernel_program = NULL;
   }
   delete app_snapshot_;
   app_snapshot_ = NULL;

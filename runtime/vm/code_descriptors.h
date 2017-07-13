@@ -6,11 +6,12 @@
 #define RUNTIME_VM_CODE_DESCRIPTORS_H_
 
 #include "vm/ast.h"
-#include "vm/code_generator.h"
+#include "vm/datastream.h"
 #include "vm/globals.h"
 #include "vm/growable_array.h"
-#include "vm/object.h"
 #include "vm/log.h"
+#include "vm/object.h"
+#include "vm/runtime_entry.h"
 
 namespace dart {
 
@@ -74,6 +75,8 @@ class ExceptionHandlerList : public ZoneAllocated {
   struct HandlerDesc {
     intptr_t outer_try_index;    // Try block in which this try block is nested.
     intptr_t pc_offset;          // Handler PC offset value.
+    TokenPosition token_pos;     // Token position of handler.
+    bool is_generated;           // False if this is directly from Dart code.
     const Array* handler_types;  // Catch clause guards.
     bool needs_stacktrace;
   };
@@ -86,6 +89,8 @@ class ExceptionHandlerList : public ZoneAllocated {
     struct HandlerDesc data;
     data.outer_try_index = -1;
     data.pc_offset = ExceptionHandlers::kInvalidPcOffset;
+    data.token_pos = TokenPosition::kNoSource;
+    data.is_generated = true;
     data.handler_types = NULL;
     data.needs_stacktrace = false;
     list_.Add(data);
@@ -94,6 +99,8 @@ class ExceptionHandlerList : public ZoneAllocated {
   void AddHandler(intptr_t try_index,
                   intptr_t outer_try_index,
                   intptr_t pc_offset,
+                  TokenPosition token_pos,
+                  bool is_generated,
                   const Array& handler_types,
                   bool needs_stacktrace) {
     ASSERT(try_index >= 0);
@@ -103,6 +110,8 @@ class ExceptionHandlerList : public ZoneAllocated {
     list_[try_index].outer_try_index = outer_try_index;
     ASSERT(list_[try_index].pc_offset == ExceptionHandlers::kInvalidPcOffset);
     list_[try_index].pc_offset = pc_offset;
+    list_[try_index].token_pos = token_pos;
+    list_[try_index].is_generated = is_generated;
     ASSERT(handler_types.IsZoneHandle());
     list_[try_index].handler_types = &handler_types;
     list_[try_index].needs_stacktrace |= needs_stacktrace;
@@ -137,6 +146,59 @@ class ExceptionHandlerList : public ZoneAllocated {
  private:
   GrowableArray<struct HandlerDesc> list_;
   DISALLOW_COPY_AND_ASSIGN(ExceptionHandlerList);
+};
+
+
+// An encoded move from stack/constant to stack performed
+struct CatchEntryStatePair {
+  enum { kCatchEntryStateIsMove = 1, kCatchEntryStateDestShift = 1 };
+
+  intptr_t src, dest;
+
+  static CatchEntryStatePair FromConstant(intptr_t pool_id,
+                                          intptr_t dest_slot) {
+    CatchEntryStatePair pair;
+    pair.src = pool_id;
+    pair.dest = (dest_slot << kCatchEntryStateDestShift);
+    return pair;
+  }
+
+  static CatchEntryStatePair FromMove(intptr_t src_slot, intptr_t dest_slot) {
+    CatchEntryStatePair pair;
+    pair.src = src_slot;
+    pair.dest =
+        (dest_slot << kCatchEntryStateDestShift) | kCatchEntryStateIsMove;
+    return pair;
+  }
+
+  bool operator==(const CatchEntryStatePair& rhs) {
+    return src == rhs.src && dest == rhs.dest;
+  }
+};
+
+
+// Used to construct CatchEntryState metadata for AoT mode of compilation.
+class CatchEntryStateMapBuilder : public ZoneAllocated {
+ public:
+  CatchEntryStateMapBuilder();
+
+  void NewMapping(intptr_t pc_offset);
+  void AppendMove(intptr_t src_slot, intptr_t dest_slot);
+  void AppendConstant(intptr_t pool_id, intptr_t dest_slot);
+  void EndMapping();
+  RawTypedData* FinalizeCatchEntryStateMap();
+
+ private:
+  class TrieNode;
+
+  Zone* zone_;
+  TrieNode* root_;
+  intptr_t current_pc_offset_;
+  GrowableArray<CatchEntryStatePair> moves_;
+  uint8_t* buffer_;
+  WriteStream stream_;
+
+  DISALLOW_COPY_AND_ASSIGN(CatchEntryStateMapBuilder);
 };
 
 
@@ -179,6 +241,8 @@ class CodeSourceMapBuilder : public ZoneAllocated {
   RawCodeSourceMap* Finalize();
 
  private:
+  intptr_t GetFunctionId(intptr_t inline_id);
+
   void BufferChangePosition(TokenPosition pos) {
     buffered_token_pos_stack_.Last() = pos;
   }
@@ -195,7 +259,7 @@ class CodeSourceMapBuilder : public ZoneAllocated {
   }
   void WritePush(intptr_t inline_id) {
     stream_.Write<uint8_t>(kPushFunction);
-    stream_.Write<int32_t>(inline_id);
+    stream_.Write<int32_t>(GetFunctionId(inline_id));
     written_inline_id_stack_.Add(inline_id);
     written_token_pos_stack_.Add(kInitialPosition);
   }
@@ -232,6 +296,8 @@ class CodeSourceMapBuilder : public ZoneAllocated {
   const GrowableArray<intptr_t>& caller_inline_id_;
   const GrowableArray<TokenPosition>& inline_id_to_token_pos_;
   const GrowableArray<const Function*>& inline_id_to_function_;
+
+  const GrowableObjectArray& inlined_functions_;
 
   uint8_t* buffer_;
   WriteStream stream_;

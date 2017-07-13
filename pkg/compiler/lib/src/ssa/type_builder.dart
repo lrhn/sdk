@@ -10,18 +10,19 @@ import '../types/types.dart';
 import '../elements/elements.dart';
 import '../elements/entities.dart';
 import '../elements/resolution_types.dart';
+import '../elements/types.dart';
 import '../io/source_information.dart';
 import '../universe/use.dart' show TypeUse;
 
 /// Functions to insert type checking, coercion, and instruction insertion
 /// depending on the environment for dart code.
-class TypeBuilder {
+abstract class TypeBuilder {
   final GraphBuilder builder;
   TypeBuilder(this.builder);
 
   /// Create an instruction to simply trust the provided type.
   HInstruction _trustType(HInstruction original, ResolutionDartType type) {
-    assert(builder.compiler.options.trustTypeAnnotations);
+    assert(builder.options.trustTypeAnnotations);
     assert(type != null);
     type = builder.localsHandler.substInContext(type);
     type = type.unaliased;
@@ -38,7 +39,7 @@ class TypeBuilder {
   /// by attempting a type conversion.
   HInstruction _checkType(
       HInstruction original, ResolutionDartType type, int kind) {
-    assert(builder.compiler.options.enableTypeAssertions);
+    assert(builder.options.enableTypeAssertions);
     assert(type != null);
     type = builder.localsHandler.substInContext(type);
     HInstruction other = buildTypeConversion(original, type, kind);
@@ -54,14 +55,13 @@ class TypeBuilder {
   /// Depending on the context and the mode, wrap the given type in an
   /// instruction that checks the type is what we expect or automatically
   /// trusts the written type.
-  HInstruction potentiallyCheckOrTrustType(
-      HInstruction original, ResolutionDartType type,
+  HInstruction potentiallyCheckOrTrustType(HInstruction original, DartType type,
       {int kind: HTypeConversion.CHECKED_MODE_CHECK}) {
     if (type == null) return original;
     HInstruction checkedOrTrusted = original;
-    if (builder.compiler.options.trustTypeAnnotations) {
+    if (builder.options.trustTypeAnnotations) {
       checkedOrTrusted = _trustType(original, type);
-    } else if (builder.compiler.options.enableTypeAssertions) {
+    } else if (builder.options.enableTypeAssertions) {
       checkedOrTrusted = _checkType(original, type, kind);
     }
     if (checkedOrTrusted == original) return original;
@@ -71,24 +71,25 @@ class TypeBuilder {
 
   /// Helper to create an instruction that gets the value of a type variable.
   HInstruction addTypeVariableReference(
-      ResolutionTypeVariableType type, Element member,
+      TypeVariableType type, MemberEntity member,
       {SourceInformation sourceInformation}) {
     assert(assertTypeInContext(type));
-    if (type is MethodTypeVariableType) {
+    if (type.element.typeDeclaration is! ClassEntity) {
+      // GENERIC_METHODS:  We currently don't reify method type variables.
       return builder.graph.addConstantNull(builder.closedWorld);
     }
-    bool isClosure = member.enclosingElement.isClosure;
+    bool isClosure = member.enclosingClass.isClosure;
     if (isClosure) {
-      ClosureClassElement closureClass = member.enclosingElement;
-      member = closureClass.methodElement;
-      member = member.outermostEnclosingMemberOrTopLevel;
+      ClosureClassElement closureClass = member.enclosingClass;
+      LocalFunctionElement localFunction = closureClass.methodElement;
+      member = localFunction.memberContext;
     }
     bool isInConstructorContext =
-        member.isConstructor || member.isGenerativeConstructorBody;
+        member.isConstructor || member is ConstructorBodyEntity;
     Local typeVariableLocal =
         builder.localsHandler.getTypeVariableAsLocal(type);
     if (isClosure) {
-      if (member.isFactoryConstructor ||
+      if ((member is ConstructorEntity && member.isFactoryConstructor) ||
           (isInConstructorContext &&
               builder.hasDirectLocal(typeVariableLocal))) {
         // The type variable is used from a closure in a factory constructor.
@@ -124,18 +125,17 @@ class TypeBuilder {
       return readTypeVariable(type, member,
           sourceInformation: sourceInformation);
     } else {
-      builder.compiler.reporter.internalError(
+      builder.reporter.internalError(
           type.element, 'Unexpected type variable in static context.');
       return null;
     }
   }
 
   /// Generate code to extract the type argument from the object.
-  HInstruction readTypeVariable(
-      ResolutionTypeVariableType variable, Element member,
+  HInstruction readTypeVariable(TypeVariableType variable, MemberEntity member,
       {SourceInformation sourceInformation}) {
     assert(member.isInstanceMember);
-    assert(variable is! MethodTypeVariableType);
+    assert(variable.element.typeDeclaration is ClassEntity);
     HInstruction target = builder.localsHandler.readThis();
     builder.push(new HTypeInfoReadVariable(
         variable, target, builder.commonMasks.dynamicType)
@@ -143,20 +143,22 @@ class TypeBuilder {
     return builder.pop();
   }
 
+  InterfaceType getThisType(ClassEntity cls);
+
   HInstruction buildTypeArgumentRepresentations(
-      ResolutionDartType type, Element sourceElement) {
+      DartType type, MemberEntity sourceElement) {
     assert(!type.isTypeVariable);
     // Compute the representation of the type arguments, including access
     // to the runtime type information for type variables as instructions.
-    assert(type.element.isClass);
-    ResolutionInterfaceType interface = type;
+    assert(type.isInterfaceType);
+    InterfaceType interface = type;
     List<HInstruction> inputs = <HInstruction>[];
-    for (ResolutionDartType argument in interface.typeArguments) {
+    for (DartType argument in interface.typeArguments) {
       inputs.add(analyzeTypeArgument(argument, sourceElement));
     }
     HInstruction representation = new HTypeInfoExpression(
         TypeInfoExpressionKind.INSTANCE,
-        interface.element.thisType,
+        getThisType(interface.element),
         inputs,
         builder.commonMasks.dynamicType);
     return representation;
@@ -164,19 +166,22 @@ class TypeBuilder {
 
   /// Check that [type] is valid in the context of `localsHandler.contextClass`.
   /// This should only be called in assertions.
-  bool assertTypeInContext(ResolutionDartType type, [Spannable spannable]) {
-    return invariant(spannable == null ? CURRENT_ELEMENT_SPANNABLE : spannable,
-        () {
-      ClassElement contextClass = Types.getClassContext(type);
-      return contextClass == null ||
-          contextClass == builder.localsHandler.contextClass;
-    },
-        message: "Type '$type' is not valid context of "
-            "${builder.localsHandler.contextClass}.");
+  bool assertTypeInContext(DartType type, [Spannable spannable]) {
+    if (builder.compiler.options.useKernel) return true;
+    if (builder.compiler.options.loadFromDill) return true;
+    ClassEntity contextClass = DartTypes.getClassContext(type);
+    assert(
+        contextClass == null ||
+            contextClass == builder.localsHandler.contextClass,
+        failedAt(
+            spannable ?? CURRENT_ELEMENT_SPANNABLE,
+            "Type '$type' is not valid context of "
+            "${builder.localsHandler.contextClass}."));
+    return true;
   }
 
   HInstruction analyzeTypeArgument(
-      ResolutionDartType argument, Element sourceElement,
+      DartType argument, MemberEntity sourceElement,
       {SourceInformation sourceInformation}) {
     assert(assertTypeInContext(argument));
     argument = argument.unaliased;
@@ -191,8 +196,10 @@ class TypeBuilder {
     }
 
     List<HInstruction> inputs = <HInstruction>[];
-    argument.forEachTypeVariable((variable) {
-      if (variable is! MethodTypeVariableType) {
+    argument.forEachTypeVariable((TypeVariableType variable) {
+      if (variable.element.typeDeclaration is ClassEntity) {
+        // GENERIC_METHODS: We currently only reify class type variables but not
+        // method type variables.
         inputs.add(analyzeTypeArgument(variable, sourceElement));
       }
     });
@@ -200,7 +207,8 @@ class TypeBuilder {
         TypeInfoExpressionKind.COMPLETE,
         argument,
         inputs,
-        builder.commonMasks.dynamicType)..sourceInformation = sourceInformation;
+        builder.commonMasks.dynamicType)
+      ..sourceInformation = sourceInformation;
     builder.add(result);
     return result;
   }
@@ -211,31 +219,37 @@ class TypeBuilder {
     if (!checkOrTrustTypes) return;
 
     FunctionSignature signature = function.functionSignature;
-    signature.orderedForEachParameter((ParameterElement parameter) {
+    signature.orderedForEachParameter((_parameter) {
+      ParameterElement parameter = _parameter;
       HInstruction argument = builder.localsHandler.readLocal(parameter);
       potentiallyCheckOrTrustType(argument, parameter.type);
     });
   }
 
   bool get checkOrTrustTypes =>
-      builder.compiler.options.enableTypeAssertions ||
-      builder.compiler.options.trustTypeAnnotations;
+      builder.options.enableTypeAssertions ||
+      builder.options.trustTypeAnnotations;
 
   /// Build a [HTypeConversion] for converting [original] to type [type].
   ///
   /// Invariant: [type] must be valid in the context.
   /// See [LocalsHandler.substInContext].
   HInstruction buildTypeConversion(
-      HInstruction original, ResolutionDartType type, int kind) {
+      HInstruction original, DartType type, int kind) {
     if (type == null) return original;
-    // GENERIC_METHODS: The following statement was added for parsing and
-    // ignoring method type variables; must be generalized for full support of
-    // generic methods.
-    type = type.dynamifyMethodTypeVariableType;
+    if (type.isTypeVariable) {
+      TypeVariableType typeVariable = type;
+      // GENERIC_METHODS: The following statement was added for parsing and
+      // ignoring method type variables; must be generalized for full support of
+      // generic methods.
+      if (typeVariable.element.typeDeclaration is! ClassEntity) {
+        type = const DynamicType();
+      }
+    }
     type = type.unaliased;
     assert(assertTypeInContext(type, original));
     if (type.isInterfaceType && !type.treatAsRaw) {
-      ResolutionInterfaceType interfaceType = type;
+      InterfaceType interfaceType = type;
       TypeMask subtype =
           new TypeMask.subtype(interfaceType.element, builder.closedWorld);
       HInstruction representations =
@@ -250,7 +264,12 @@ class TypeBuilder {
       return new HTypeConversion.withTypeRepresentation(
           type, kind, subtype, original, typeVariable);
     } else if (type.isFunctionType) {
-      return builder.buildFunctionTypeConversion(original, type, kind);
+      HInstruction reifiedType =
+          analyzeTypeArgument(type, builder.sourceElement);
+      // TypeMasks don't encode function types.
+      TypeMask refinedMask = original.instructionType;
+      return new HTypeConversion.withTypeRepresentation(
+          type, kind, refinedMask, original, reifiedType);
     } else {
       return original.convertType(builder.closedWorld, type, kind);
     }

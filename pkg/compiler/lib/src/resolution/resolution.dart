@@ -19,9 +19,10 @@ import '../constants/expressions.dart'
         ConstructedConstantExpression,
         ErroneousConstantExpression;
 import '../constants/values.dart' show ConstantValue;
-import '../core_types.dart' show CommonElements;
+import '../common_elements.dart' show CommonElements;
 import '../elements/resolution_types.dart';
 import '../elements/elements.dart';
+import '../elements/entities.dart' show AsyncMarker;
 import '../elements/modelx.dart'
     show
         BaseClassElementX,
@@ -82,8 +83,10 @@ class ResolverTask extends CompilerTask {
     return measure(() {
       if (Elements.isMalformed(element)) {
         // TODO(johnniwinther): Add a predicate for this.
-        assert(invariant(element, element is! ErroneousElement,
-            message: "Element $element expected to have parse errors."));
+        assert(
+            element is! ErroneousElement,
+            failedAt(
+                element, "Element $element expected to have parse errors."));
         _ensureTreeElements(element);
         return const ResolutionImpact();
       }
@@ -120,8 +123,11 @@ class ResolverTask extends CompilerTask {
 
   void resolveRedirectingConstructor(InitializerResolver resolver, Node node,
       FunctionElement constructor, FunctionElement redirection) {
-    assert(invariant(node, constructor.isImplementation,
-        message: 'Redirecting constructors must be resolved on implementation '
+    assert(
+        constructor.isImplementation,
+        failedAt(
+            node,
+            'Redirecting constructors must be resolved on implementation '
             'elements.'));
     Setlet<FunctionElement> seen = new Setlet<FunctionElement>();
     seen.add(constructor);
@@ -207,14 +213,14 @@ class ResolverTask extends CompilerTask {
   bool _isNativeClassOrExtendsNativeClass(ClassElement classElement) {
     assert(classElement != null);
     while (classElement != null) {
-      if (target.isNative(classElement)) return true;
+      if (target.isNativeClass(classElement)) return true;
       classElement = classElement.superclass;
     }
     return false;
   }
 
   WorldImpact resolveMethodElementImplementation(
-      FunctionElement element, FunctionExpression tree) {
+      FunctionElementX element, FunctionExpression tree) {
     return reporter.withCurrentElement(element, () {
       if (element.isExternal && tree.hasBody) {
         reporter.reportErrorMessage(element, MessageKind.EXTERNAL_WITH_BODY,
@@ -270,10 +276,9 @@ class ResolverTask extends CompilerTask {
       ClassElement enclosingClass = element.enclosingClass;
       if (enclosingClass != null) {
         // TODO(johnniwinther): Find another way to obtain mixin uses.
-        Iterable<MixinApplicationElement> mixinUses =
-            world.allMixinUsesOf(enclosingClass);
         ClassElement mixin = enclosingClass;
-        for (MixinApplicationElement mixinApplication in mixinUses) {
+        for (MixinApplicationElement mixinApplication
+            in world.allMixinUsesOf(enclosingClass)) {
           checkMixinSuperUses(resolutionTree, mixinApplication, mixin);
         }
       }
@@ -286,21 +291,29 @@ class ResolverTask extends CompilerTask {
         reporter.reportErrorMessage(tree, MessageKind.NO_SUCH_METHOD_IN_NATIVE);
       }
 
-      resolution.target.resolveNativeElement(element, registry.impactBuilder);
+      resolution.target.resolveNativeMember(element, registry.impactBuilder);
 
       return registry.impactBuilder;
     });
   }
 
+  /// Returns `true` if [element] has been processed by the resolution enqueuer.
+  bool _hasBeenProcessed(MemberElement element) {
+    assert(element == element.analyzableElement.declaration,
+        failedAt(element, "Unexpected element $element"));
+    return enqueuer.processedEntities.contains(element);
+  }
+
   WorldImpact resolveMethodElement(FunctionElementX element) {
-    assert(invariant(element, element.isDeclaration));
+    assert(element.isDeclaration, failedAt(element));
     return reporter.withCurrentElement(element, () {
-      if (enqueuer.hasBeenProcessed(element)) {
+      if (_hasBeenProcessed(element)) {
         // TODO(karlklose): Remove the check for [isConstructor]. [elememts]
         // should never be non-null, not even for constructors.
-        assert(invariant(element, element.isConstructor,
-            message: 'Non-constructor element $element '
-                'has already been analyzed.'));
+        assert(
+            element.isConstructor,
+            failedAt(element,
+                'Non-constructor element $element has already been analyzed.'));
         return const ResolutionImpact();
       }
       if (element.isSynthesized) {
@@ -375,14 +388,15 @@ class ResolverTask extends CompilerTask {
       // declared in the same declaration.
       if (tree.type != null) {
         ResolutionDartType type = visitor.resolveTypeAnnotation(tree.type);
-        assert(invariant(
-            element,
+        assert(
             element.variables.type == null ||
                 // Crude check but we have no equivalence relation that
                 // equates malformed types, like matching creations of type
                 // `Foo<Unresolved>`.
                 element.variables.type.toString() == type.toString(),
-            message: "Unexpected type computed for $element. "
+            failedAt(
+                element,
+                "Unexpected type computed for $element. "
                 "Was ${element.variables.type}, computed $type."));
         element.variables.type = type;
       } else if (element.variables.type == null) {
@@ -434,7 +448,7 @@ class ResolverTask extends CompilerTask {
       // Perform various checks as side effect of "computing" the type.
       element.computeType(resolution);
 
-      resolution.target.resolveNativeElement(element, registry.impactBuilder);
+      resolution.target.resolveNativeMember(element, registry.impactBuilder);
 
       return registry.impactBuilder;
     });
@@ -454,8 +468,8 @@ class ResolverTask extends CompilerTask {
     if (annotation == null) return const ResolutionDynamicType();
     ResolutionDartType result =
         visitorFor(element).resolveTypeAnnotation(annotation);
-    assert(invariant(annotation, result != null,
-        message: "No type computed for $annotation."));
+    assert(result != null,
+        failedAt(annotation, "No type computed for $annotation."));
     if (result == null) {
       // TODO(karklose): warning.
       return const ResolutionDynamicType();
@@ -476,9 +490,10 @@ class ResolverTask extends CompilerTask {
         // interface?
         targetType =
             target.computeEffectiveTargetType(target.enclosingClass.thisType);
-        assert(invariant(target, targetType != null,
-            message: 'Redirection target type has not been computed for '
-                '$target'));
+        assert(
+            targetType != null,
+            failedAt(target,
+                'Redirection target type has not been computed for $target'));
         target = target.effectiveTarget;
         break;
       }
@@ -516,8 +531,8 @@ class ResolverTask extends CompilerTask {
     while (!seen.isEmpty) {
       ConstructorElementX factory = seen.removeLast();
       ResolvedAst resolvedAst = factory.resolvedAst;
-      assert(invariant(node, resolvedAst != null,
-          message: 'No ResolvedAst for $factory.'));
+      assert(
+          resolvedAst != null, failedAt(node, 'No ResolvedAst for $factory.'));
       RedirectingFactoryBody redirectionNode = resolvedAst.body;
       ResolutionDartType factoryType =
           resolvedAst.elements.getType(redirectionNode);
@@ -546,8 +561,8 @@ class ResolverTask extends CompilerTask {
         cls.allSupertypesAndSelf = objectClass.allSupertypesAndSelf
             .extendClass(cls.computeType(resolution));
         cls.supertype = cls.allSupertypes.head;
-        assert(invariant(from, cls.supertype != null,
-            message: 'Missing supertype on cyclic class $cls.'));
+        assert(cls.supertype != null,
+            failedAt(from, 'Missing supertype on cyclic class $cls.'));
         cls.interfaces = const Link<ResolutionDartType>();
         return;
       }
@@ -759,7 +774,8 @@ class ResolverTask extends CompilerTask {
 
     // Check that the mixed in class doesn't have any constructors and
     // make sure we aren't mixing in methods that use 'super'.
-    mixin.forEachLocalMember((AstElement member) {
+    mixin.forEachLocalMember((_member) {
+      AstElement member = _member;
       if (member.isGenerativeConstructor && !member.isSynthesized) {
         reporter.reportErrorMessage(
             member, MessageKind.ILLEGAL_MIXIN_CONSTRUCTOR);
@@ -770,7 +786,7 @@ class ResolverTask extends CompilerTask {
         // mixin application has been performed.
         // TODO(johnniwinther): Obtain the [TreeElements] for [member]
         // differently.
-        if (resolution.enqueuer.hasBeenProcessed(member)) {
+        if (_hasBeenProcessed(member)) {
           if (member.resolvedAst.kind == ResolvedAstKind.PARSED) {
             checkMixinSuperUses(
                 member.resolvedAst.elements, mixinApplication, mixin);
@@ -797,23 +813,25 @@ class ResolverTask extends CompilerTask {
   }
 
   void checkClassMembers(ClassElement cls) {
-    assert(invariant(cls, cls.isDeclaration));
+    assert(cls.isDeclaration, failedAt(cls));
     if (cls.isObject) return;
     // TODO(johnniwinther): Should this be done on the implementation element as
     // well?
     List<Element> constConstructors = <Element>[];
     List<Element> nonFinalInstanceFields = <Element>[];
-    cls.forEachMember((holder, member) {
+    cls.forEachMember((holder, dynamic member) {
       reporter.withCurrentElement(member, () {
         // Perform various checks as side effect of "computing" the type.
         member.computeType(resolution);
 
         // Check modifiers.
+        // ignore: UNDEFINED_GETTER
         if (member.isFunction && member.modifiers.isFinal) {
           reporter.reportErrorMessage(
               member, MessageKind.ILLEGAL_FINAL_METHOD_MODIFIER);
         }
         if (member.isConstructor) {
+          // ignore: UNDEFINED_GETTER
           final mismatchedFlagsBits = member.modifiers.flags &
               (Modifiers.FLAG_STATIC | Modifiers.FLAG_ABSTRACT);
           if (mismatchedFlagsBits != 0) {
@@ -824,15 +842,18 @@ class ResolverTask extends CompilerTask {
                 MessageKind.ILLEGAL_CONSTRUCTOR_MODIFIERS,
                 {'modifiers': mismatchedFlags});
           }
+          // ignore: UNDEFINED_GETTER
           if (member.modifiers.isConst) {
             constConstructors.add(member);
           }
         }
         if (member.isField) {
+          // ignore: UNDEFINED_GETTER
           if (member.modifiers.isConst && !member.modifiers.isStatic) {
             reporter.reportErrorMessage(
                 member, MessageKind.ILLEGAL_CONST_FIELD_MODIFIER);
           }
+          // ignore: UNDEFINED_GETTER
           if (!member.modifiers.isStatic && !member.modifiers.isFinal) {
             nonFinalInstanceFields.add(member);
           }
@@ -1068,8 +1089,11 @@ class ResolverTask extends CompilerTask {
                 // The annotation is resolved in the scope of [classElement].
                 classElement.ensureResolved(resolution);
               }
-              assert(invariant(node, context != null,
-                  message: "No context found for metadata annotation "
+              assert(
+                  context != null,
+                  failedAt(
+                      node,
+                      "No context found for metadata annotation "
                       "on $annotatedElement."));
               ResolverVisitor visitor =
                   visitorFor(context, useEnclosingScope: true);
@@ -1137,8 +1161,8 @@ abstract class AnalyzableElementX implements AnalyzableElement {
   bool get hasTreeElements => _treeElements != null;
 
   TreeElements get treeElements {
-    assert(invariant(this, _treeElements != null,
-        message: "TreeElements have not been computed for $this."));
+    assert(_treeElements != null,
+        failedAt(this, "TreeElements have not been computed for $this."));
     return _treeElements;
   }
 

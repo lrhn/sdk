@@ -268,7 +268,6 @@ void ConstantPropagator::VisitDeoptimize(DeoptimizeInstr* instr) {
   // TODO(vegorov) remove all code after DeoptimizeInstr as dead.
 }
 
-void ConstantPropagator::VisitGrowRegExpStack(GrowRegExpStackInstr* instr) {}
 
 Definition* ConstantPropagator::UnwrapPhi(Definition* defn) {
   if (defn->IsPhi()) {
@@ -373,7 +372,7 @@ void ConstantPropagator::VisitAssertBoolean(AssertBooleanInstr* instr) {
 }
 
 
-void ConstantPropagator::VisitCurrentContext(CurrentContextInstr* instr) {
+void ConstantPropagator::VisitSpecialParameter(SpecialParameterInstr* instr) {
   SetValue(instr, non_constant_);
 }
 
@@ -755,7 +754,7 @@ void ConstantPropagator::VisitInstanceOf(InstanceOfInstr* instr) {
              ((rep == kUnboxedDouble) && (value_cid == kDoubleCid)) ||
              ((rep == kUnboxedMint) && (value_cid == kMintCid)));
       // The representation guarantees the type check to be true.
-      SetValue(instr, instr->negate_result() ? Bool::False() : Bool::True());
+      SetValue(instr, Bool::True());
     } else {
       SetValue(instr, non_constant_);
     }
@@ -763,15 +762,15 @@ void ConstantPropagator::VisitInstanceOf(InstanceOfInstr* instr) {
     if (value.IsInstance()) {
       const Instance& instance = Instance::Cast(value);
       const AbstractType& checked_type = instr->type();
-      if (instr->instantiator_type_arguments()->BindsToConstantNull()) {
-        const TypeArguments& checked_type_arguments = TypeArguments::Handle();
+      if (instr->instantiator_type_arguments()->BindsToConstantNull() &&
+          instr->function_type_arguments()->BindsToConstantNull()) {
         Error& bound_error = Error::Handle();
-        bool is_instance = instance.IsInstanceOf(
-            checked_type, checked_type_arguments, &bound_error);
+        bool is_instance =
+            instance.IsInstanceOf(checked_type, Object::null_type_arguments(),
+                                  Object::null_type_arguments(), &bound_error);
         // Can only have bound error with generics.
         ASSERT(bound_error.IsNull());
-        SetValue(instr, Bool::Get(instr->negate_result() ? !is_instance
-                                                         : is_instance));
+        SetValue(instr, Bool::Get(is_instance));
         return;
       }
     }
@@ -831,42 +830,47 @@ void ConstantPropagator::VisitLoadField(LoadFieldInstr* instr) {
     }
   }
 
-  if (instr->IsImmutableLengthLoad()) {
-    ConstantInstr* constant =
-        instance->definition()->OriginalDefinition()->AsConstant();
-    if (constant != NULL) {
-      if (constant->value().IsString()) {
+  const Object& constant = instance->definition()->constant_value();
+  if (IsConstant(constant)) {
+    if (instr->IsImmutableLengthLoad()) {
+      if (constant.IsString()) {
         SetValue(instr,
-                 Smi::ZoneHandle(
-                     Z, Smi::New(String::Cast(constant->value()).Length())));
+                 Smi::ZoneHandle(Z, Smi::New(String::Cast(constant).Length())));
         return;
       }
-      if (constant->value().IsArray()) {
+      if (constant.IsArray()) {
         SetValue(instr,
-                 Smi::ZoneHandle(
-                     Z, Smi::New(Array::Cast(constant->value()).Length())));
+                 Smi::ZoneHandle(Z, Smi::New(Array::Cast(constant).Length())));
         return;
       }
-      if (constant->value().IsTypedData()) {
-        SetValue(instr,
-                 Smi::ZoneHandle(
-                     Z, Smi::New(TypedData::Cast(constant->value()).Length())));
+      if (constant.IsTypedData()) {
+        SetValue(instr, Smi::ZoneHandle(
+                            Z, Smi::New(TypedData::Cast(constant).Length())));
+        return;
+      }
+    } else {
+      Object& value = Object::Handle();
+      if (instr->Evaluate(constant, &value)) {
+        SetValue(instr, Object::ZoneHandle(Z, value.raw()));
         return;
       }
     }
   }
+
   SetValue(instr, non_constant_);
 }
 
 
 void ConstantPropagator::VisitInstantiateType(InstantiateTypeInstr* instr) {
-  const Object& object = instr->instantiator()->definition()->constant_value();
+  const Object& object =
+      instr->instantiator_type_arguments()->definition()->constant_value();
   if (IsNonConstant(object)) {
     SetValue(instr, non_constant_);
     return;
   }
   if (IsConstant(object)) {
-    if (instr->type().IsTypeParameter()) {
+    if (instr->type().IsTypeParameter() &&
+        TypeParameter::Cast(instr->type()).IsClassTypeParameter()) {
       if (object.IsNull()) {
         SetValue(instr, Object::dynamic_type());
         return;
@@ -876,30 +880,46 @@ void ConstantPropagator::VisitInstantiateType(InstantiateTypeInstr* instr) {
     }
     SetValue(instr, non_constant_);
   }
+  // TODO(regis): We can do the same as above for a function type parameter.
+  // Better: If both instantiator type arguments and function type arguments are
+  // constant, instantiate the type if no bound error is reported.
 }
 
 
 void ConstantPropagator::VisitInstantiateTypeArguments(
     InstantiateTypeArgumentsInstr* instr) {
-  const Object& object = instr->instantiator()->definition()->constant_value();
-  if (IsNonConstant(object)) {
+  const Object& instantiator_type_args =
+      instr->instantiator_type_arguments()->definition()->constant_value();
+  const Object& function_type_args =
+      instr->function_type_arguments()->definition()->constant_value();
+  if (IsNonConstant(instantiator_type_args) ||
+      IsNonConstant(function_type_args)) {
     SetValue(instr, non_constant_);
     return;
   }
-  if (IsConstant(object)) {
-    const intptr_t len = instr->type_arguments().Length();
-    if (instr->type_arguments().IsRawInstantiatedRaw(len) && object.IsNull()) {
-      SetValue(instr, object);
-      return;
+  if (IsConstant(instantiator_type_args) && IsConstant(function_type_args)) {
+    if (instantiator_type_args.IsNull() && function_type_args.IsNull()) {
+      const intptr_t len = instr->type_arguments().Length();
+      if (instr->type_arguments().IsRawWhenInstantiatedFromRaw(len)) {
+        SetValue(instr, instantiator_type_args);
+        return;
+      }
     }
     if (instr->type_arguments().IsUninstantiatedIdentity() ||
         instr->type_arguments().CanShareInstantiatorTypeArguments(
             instr->instantiator_class())) {
-      SetValue(instr, object);
+      SetValue(instr, instantiator_type_args);
       return;
     }
     SetValue(instr, non_constant_);
   }
+  // TODO(regis): If both instantiator type arguments and function type
+  // arguments are constant, instantiate the type arguments if no bound error
+  // is reported.
+  // TODO(regis): If either instantiator type arguments or function type
+  // arguments are constant null, check
+  // type_arguments().IsRawWhenInstantiatedFromRaw() separately for each
+  // genericity.
 }
 
 
@@ -1101,7 +1121,7 @@ void ConstantPropagator::VisitInvokeMathCFunction(
 }
 
 
-void ConstantPropagator::VisitMergedMath(MergedMathInstr* instr) {
+void ConstantPropagator::VisitTruncDivMod(TruncDivModInstr* instr) {
   // TODO(srdjan): Handle merged instruction.
   SetValue(instr, non_constant_);
 }
@@ -1530,7 +1550,8 @@ void ConstantPropagator::EliminateRedundantBranches() {
         // Drop the comparison, which does not have side effects
         JoinEntryInstr* join = if_true->AsJoinEntry();
         if (join->phis() == NULL) {
-          GotoInstr* jump = new (Z) GotoInstr(if_true->AsJoinEntry());
+          GotoInstr* jump =
+              new (Z) GotoInstr(if_true->AsJoinEntry(), Thread::kNoDeoptId);
           jump->InheritDeoptTarget(Z, branch);
 
           Instruction* previous = branch->previous();
@@ -1673,16 +1694,16 @@ void ConstantPropagator::Transform() {
         ASSERT(reachable_->Contains(if_false->preorder_number()));
         ASSERT(if_false->parallel_move() == NULL);
         ASSERT(if_false->loop_info() == NULL);
-        join =
-            new (Z) JoinEntryInstr(if_false->block_id(), if_false->try_index());
+        join = new (Z) JoinEntryInstr(
+            if_false->block_id(), if_false->try_index(), Thread::kNoDeoptId);
         join->InheritDeoptTarget(Z, if_false);
         if_false->UnuseAllInputs();
         next = if_false->next();
       } else if (!reachable_->Contains(if_false->preorder_number())) {
         ASSERT(if_true->parallel_move() == NULL);
         ASSERT(if_true->loop_info() == NULL);
-        join =
-            new (Z) JoinEntryInstr(if_true->block_id(), if_true->try_index());
+        join = new (Z) JoinEntryInstr(if_true->block_id(), if_true->try_index(),
+                                      Thread::kNoDeoptId);
         join->InheritDeoptTarget(Z, if_true);
         if_true->UnuseAllInputs();
         next = if_true->next();
@@ -1693,7 +1714,7 @@ void ConstantPropagator::Transform() {
         // Drop the comparison, which does not have side effects as long
         // as it is a strict compare (the only one we can determine is
         // constant with the current analysis).
-        GotoInstr* jump = new (Z) GotoInstr(join);
+        GotoInstr* jump = new (Z) GotoInstr(join, Thread::kNoDeoptId);
         jump->InheritDeoptTarget(Z, branch);
 
         Instruction* previous = branch->previous();

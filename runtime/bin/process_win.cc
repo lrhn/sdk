@@ -5,10 +5,11 @@
 #if !defined(DART_IO_DISABLED)
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_WINDOWS)
+#if defined(HOST_OS_WINDOWS)
 
 #include "bin/process.h"
 
+#include <psapi.h>    // NOLINT
 #include <process.h>  // NOLINT
 
 #include "bin/builtin.h"
@@ -941,12 +942,32 @@ intptr_t Process::CurrentProcessId() {
 }
 
 
+int64_t Process::CurrentRSS() {
+  PROCESS_MEMORY_COUNTERS pmc;
+  if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+    return -1;
+  }
+  return pmc.WorkingSetSize;
+}
+
+
+int64_t Process::MaxRSS() {
+  PROCESS_MEMORY_COUNTERS pmc;
+  if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+    return -1;
+  }
+  return pmc.PeakWorkingSetSize;
+}
+
+
 static SignalInfo* signal_handlers = NULL;
 static Mutex* signal_mutex = new Mutex();
 
 
 SignalInfo::~SignalInfo() {
-  reinterpret_cast<FileHandle*>(fd_)->Close();
+  FileHandle* file_handle = reinterpret_cast<FileHandle*>(fd_);
+  file_handle->Close();
+  file_handle->Release();
 }
 
 
@@ -957,7 +978,7 @@ BOOL WINAPI SignalHandler(DWORD signal) {
   while (handler != NULL) {
     if (handler->signal() == signal) {
       int value = 0;
-      Socket::Write(handler->fd(), &value, 1);
+      SocketBase::Write(handler->fd(), &value, 1, SocketBase::kAsync);
       handled = true;
     }
     handler = handler->next();
@@ -981,6 +1002,7 @@ intptr_t GetWinSignal(intptr_t signal) {
 intptr_t Process::SetSignalHandler(intptr_t signal) {
   signal = GetWinSignal(signal);
   if (signal == -1) {
+    SetLastError(ERROR_NOT_SUPPORTED);
     return -1;
   }
 
@@ -1005,7 +1027,12 @@ intptr_t Process::SetSignalHandler(intptr_t signal) {
   if (signal_handlers == NULL) {
     if (SetConsoleCtrlHandler(SignalHandler, true) == 0) {
       int error_code = GetLastError();
-      delete write_handle;
+      // Since SetConsoleCtrlHandler failed, the IO completion port will
+      // never receive an event for this handle, and will therefore never
+      // release the reference Retained by EnsureInitialized(). So, we
+      // have to do a second Release() here.
+      write_handle->Release();
+      write_handle->Release();
       CloseProcessPipe(fds);
       SetLastError(error_code);
       return -1;
@@ -1016,7 +1043,7 @@ intptr_t Process::SetSignalHandler(intptr_t signal) {
 }
 
 
-void Process::ClearSignalHandler(intptr_t signal) {
+void Process::ClearSignalHandler(intptr_t signal, Dart_Port port) {
   signal = GetWinSignal(signal);
   if (signal == -1) {
     return;
@@ -1024,27 +1051,32 @@ void Process::ClearSignalHandler(intptr_t signal) {
   MutexLocker lock(signal_mutex);
   SignalInfo* handler = signal_handlers;
   while (handler != NULL) {
-    if ((handler->port() == Dart_GetMainPortId()) &&
-        (handler->signal() == signal)) {
-      handler->Unlink();
-      break;
+    bool remove = false;
+    if (handler->signal() == signal) {
+      if ((port == ILLEGAL_PORT) || (handler->port() == port)) {
+        if (signal_handlers == handler) {
+          signal_handlers = handler->next();
+        }
+        handler->Unlink();
+        FileHandle* file_handle = reinterpret_cast<FileHandle*>(handler->fd());
+        file_handle->Release();
+        remove = true;
+      }
     }
-    handler = handler->next();
+    SignalInfo* next = handler->next();
+    if (remove) {
+      delete handler;
+    }
+    handler = next;
   }
-  if (handler != NULL) {
-    if (signal_handlers == handler) {
-      signal_handlers = handler->next();
-    }
-    if (signal_handlers == NULL) {
-      USE(SetConsoleCtrlHandler(SignalHandler, false));
-    }
+  if (signal_handlers == NULL) {
+    USE(SetConsoleCtrlHandler(SignalHandler, false));
   }
-  delete handler;
 }
 
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_WINDOWS)
+#endif  // defined(HOST_OS_WINDOWS)
 
 #endif  // !defined(DART_IO_DISABLED)

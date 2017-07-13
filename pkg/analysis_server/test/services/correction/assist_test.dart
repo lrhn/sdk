@@ -2,13 +2,10 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.services.correction.assist;
-
 import 'dart:async';
 
 import 'package:analysis_server/plugin/edit/assist/assist_core.dart';
 import 'package:analysis_server/plugin/edit/assist/assist_dart.dart';
-import 'package:analysis_server/plugin/protocol/protocol.dart';
 import 'package:analysis_server/src/plugin/server_plugin.dart';
 import 'package:analysis_server/src/services/correction/assist.dart';
 import 'package:analysis_server/src/services/correction/assist_internal.dart';
@@ -17,19 +14,24 @@ import 'package:analyzer/dart/ast/standard_resolution_map.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/source/package_map_resolver.dart';
+import 'package:analyzer/src/dart/analysis/ast_provider_driver.dart';
+import 'package:analyzer/src/dart/analysis/driver.dart';
+import 'package:analyzer/src/dart/element/ast_provider.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/source.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
+import 'package:analyzer_plugin/utilities/assist/assist.dart';
 import 'package:plugin/manager.dart';
 import 'package:plugin/plugin.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
 import '../../abstract_single_unit.dart';
+import 'flutter_util.dart';
 
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(AssistProcessorTest);
-    defineReflectiveTests(AssistProcessorTest_Driver);
   });
 }
 
@@ -43,21 +45,6 @@ class AssistProcessorTest extends AbstractSingleUnitTest {
   SourceChange change;
   String resultCode;
   LinkedEditGroup linkedPositionGroup;
-
-  String flutterPkgLibPath = '/packages/flutter/lib';
-
-  String get _flutter_framework_code => '''
-class Widget {}
-class RenderObjectWidget extends Widget {}
-class StatelessWidget extends Widget {}
-class SingleChildRenderObjectWidget extends RenderObjectWidget {}
-class Transform extends SingleChildRenderObjectWidget {}
-class ClipRect extends SingleChildRenderObjectWidget { ClipRect.rect(){} }
-class AspectRatio extends SingleChildRenderObjectWidget {}
-class Container extends StatelessWidget { Container({child: null}){}}
-class DefaultTextStyle extends StatelessWidget { DefaultTextStyle({child: null}){}}
-class Row extends Widget { Row({children: null}){}}
-''';
 
   /**
    * Asserts that there is an [Assist] of the given [kind] at [offset] which
@@ -180,6 +167,8 @@ class A<T> {
   }
 
   test_addTypeAnnotation_BAD_privateType_list() async {
+    // This is now failing because we're suggesting "List" rather than nothing.
+    // Is it really better to produce nothing?
     addSource(
         '/my_lib.dart',
         '''
@@ -194,7 +183,15 @@ main() {
   var v = getValues();
 }
 ''');
-    await assertNoAssistAt('var ', DartAssistKind.ADD_TYPE_ANNOTATION);
+    await assertHasAssistAt(
+        'var ',
+        DartAssistKind.ADD_TYPE_ANNOTATION,
+        '''
+import 'my_lib.dart';
+main() {
+  List v = getValues();
+}
+''');
   }
 
   test_addTypeAnnotation_BAD_privateType_variable() async {
@@ -349,6 +346,7 @@ main() {
         DartAssistKind.ADD_TYPE_ANNOTATION,
         '''
 import 'dart:async';
+
 import 'my_lib.dart';
 main() {
   for (Future<int> future in getFutures()) {
@@ -498,6 +496,7 @@ main() {
         DartAssistKind.ADD_TYPE_ANNOTATION,
         '''
 import 'dart:async';
+
 import 'my_lib.dart';
 main() {
   Future<int> v = getFutureInt();
@@ -526,17 +525,10 @@ main() {
 }
 ''';
     // add sources
-    Source appSource = addSource('/app.dart', appCode);
+    addSource('/app.dart', appCode);
     testSource = addSource('/test.dart', testCode);
     // resolve
-    if (enableNewAnalysisDriver) {
-      await resolveTestUnit(testCode);
-    } else {
-      context.resolveCompilationUnit2(appSource, appSource);
-      testUnit = context.resolveCompilationUnit2(testSource, appSource);
-      testUnitElement = testUnit.element;
-      testLibraryElement = testUnitElement.library;
-    }
+    await resolveTestUnit(testCode);
     // prepare the assist
     offset = findOffset('v = ');
     assist = await _assertHasAssist(DartAssistKind.ADD_TYPE_ANNOTATION);
@@ -550,6 +542,7 @@ main() {
           '''
 library my_app;
 import 'dart:async';
+
 import 'my_lib.dart';
 part 'test.dart';
 ''');
@@ -1029,6 +1022,129 @@ class A {
   /// BBBBBBBB BBBB BBBB
   /// CCC [A] CCCCCCCCCCC
   mmm() {}
+}
+''');
+  }
+
+  test_convertFlutterChild_OK_multiLine() async {
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/child: new Container(
+        width: 200.0,
+        height: 300.0,
+      ),
+      key: null,
+    ),
+// end
+  );
+}
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.CONVERT_FLUTTER_CHILD,
+        '''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/children: <Widget>[
+        new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+      ],
+      key: null,
+    ),
+// end
+  );
+}
+''');
+  }
+
+  test_convertFlutterChild_OK_newlineChild() async {
+    // This case could occur with deeply nested constructors, common in Flutter.
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/child:
+          new Container(
+        width: 200.0,
+        height: 300.0,
+      ),
+      key: null,
+    ),
+// end
+  );
+}
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.CONVERT_FLUTTER_CHILD,
+        '''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/children: <Widget>[
+        new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+      ],
+      key: null,
+    ),
+// end
+  );
+}
+''');
+  }
+
+  test_convertFlutterChild_OK_singleLine() async {
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/child: new GestureDetector(),
+      key: null,
+    ),
+// end
+  );
+}
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.CONVERT_FLUTTER_CHILD,
+        '''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      /*caret*/children: <Widget>[new GestureDetector()],
+      key: null,
+    ),
+// end
+  );
 }
 ''');
   }
@@ -3499,6 +3615,104 @@ main() {
 ''');
   }
 
+  test_moveFlutterWidgetDown_OK() async {
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new /*caret*/GestureDetector(
+      onTap: () => startResize(),
+      child: new Center(
+        child: new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+        key: null,
+      ),
+    ),
+// end
+  );
+}
+startResize() {}
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.MOVE_FLUTTER_WIDGET_DOWN,
+        '''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      child: new /*caret*/GestureDetector(
+        onTap: () => startResize(),
+        child: new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+      ),
+      key: null,
+    ),
+// end
+  );
+}
+startResize() {}
+''');
+  }
+
+  test_moveFlutterWidgetUp_OK() async {
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new Center(
+      child: new /*caret*/GestureDetector(
+        onTap: () => startResize(),
+        child: new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+      ),
+      key: null,
+    ),
+// end
+  );
+}
+startResize() {}
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.MOVE_FLUTTER_WIDGET_UP,
+        '''
+import 'package:flutter/src/widgets/framework.dart';
+build() {
+  return new Scaffold(
+// start
+    body: new /*caret*/GestureDetector(
+      onTap: () => startResize(),
+      child: new Center(
+        child: new Container(
+          width: 200.0,
+          height: 300.0,
+        ),
+        key: null,
+      ),
+    ),
+// end
+  );
+}
+startResize() {}
+''');
+  }
+
   test_removeTypeAnnotation_classField_OK() async {
     await resolveTestUnit('''
 class A {
@@ -3621,8 +3835,9 @@ final V = 1;
   }
 
   test_reparentFlutterList_BAD_multiLine() async {
+    verifyNoTestUnitErrors = false;
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3646,7 +3861,7 @@ build() {
 
   test_reparentFlutterList_BAD_singleLine() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3665,7 +3880,7 @@ class FakeFlutter {
 
   test_reparentFlutterList_OK_multiLine() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3710,7 +3925,7 @@ build() {
 
   test_reparentFlutterWidget_BAD_minimal() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 /*caret*/x(){}
@@ -3721,7 +3936,7 @@ build() {
 
   test_reparentFlutterWidget_BAD_singleLine() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3740,7 +3955,7 @@ class FakeFlutter {
 
   test_reparentFlutterWidget_OK_multiLines() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3787,9 +4002,58 @@ class FakeFlutter {
 ''');
   }
 
+  test_reparentFlutterWidget_OK_multiLines_eol2() async {
+    _configureFlutterPkg({
+      'src/widgets/framework.dart': flutter_framework_code,
+    });
+    await resolveTestUnit('''
+import 'package:flutter/src/widgets/framework.dart';\r
+class FakeFlutter {\r
+  main() {\r
+    return new Container(\r
+// start\r
+      child: new /*caret*/DefaultTextStyle(\r
+        child: new Row(\r
+          children: <Widget>[\r
+            new Container(\r
+            ),\r
+          ],\r
+        ),\r
+      ),\r
+// end\r
+    );\r
+  }\r
+}\r
+''');
+    _setCaretLocation();
+    await assertHasAssist(
+        DartAssistKind.REPARENT_FLUTTER_WIDGET,
+        '''
+import 'package:flutter/src/widgets/framework.dart';\r
+class FakeFlutter {\r
+  main() {\r
+    return new Container(\r
+// start\r
+      child: new widget(\r
+        child: new /*caret*/DefaultTextStyle(\r
+          child: new Row(\r
+            children: <Widget>[\r
+              new Container(\r
+              ),\r
+            ],\r
+          ),\r
+        ),\r
+      ),\r
+// end\r
+    );\r
+  }\r
+}\r
+''');
+  }
+
   test_reparentFlutterWidget_OK_singleLine1() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -3818,7 +4082,7 @@ class FakeFlutter {
 
   test_reparentFlutterWidget_OK_singleLine2() async {
     _configureFlutterPkg({
-      'src/widgets/framework.dart': _flutter_framework_code,
+      'src/widgets/framework.dart': flutter_framework_code,
     });
     await resolveTestUnit('''
 import 'package:flutter/src/widgets/framework.dart';
@@ -4440,12 +4704,9 @@ main() {
   Future<List<Assist>> _computeAssists() async {
     CompilationUnitElement testUnitElement =
         resolutionMap.elementDeclaredByCompilationUnit(testUnit);
-    DartAssistContext assistContext = new _DartAssistContextForValues(
-        testUnitElement.source,
-        offset,
-        length,
-        testUnitElement.context,
-        testUnit);
+    DartAssistContext assistContext;
+    assistContext = new _DartAssistContextForValues(testUnitElement.source,
+        offset, length, driver, new AstProviderForDriver(driver), testUnit);
     AssistProcessor processor = new AssistProcessor(assistContext);
     return await processor.compute();
   }
@@ -4465,11 +4726,7 @@ main() {
     });
     SourceFactory sourceFactory = new SourceFactory(
         [new DartUriResolver(sdk), pkgResolver, resourceResolver]);
-    if (enableNewAnalysisDriver) {
-      driver.configure(sourceFactory: sourceFactory);
-    } else {
-      context.sourceFactory = sourceFactory;
-    }
+    driver.configure(sourceFactory: sourceFactory);
     // force 'flutter' resolution
     addSource(
         '/tmp/other.dart',
@@ -4498,12 +4755,6 @@ main() {
   }
 }
 
-@reflectiveTest
-class AssistProcessorTest_Driver extends AssistProcessorTest {
-  @override
-  bool get enableNewAnalysisDriver => true;
-}
-
 class _DartAssistContextForValues implements DartAssistContext {
   @override
   final Source source;
@@ -4515,11 +4766,14 @@ class _DartAssistContextForValues implements DartAssistContext {
   final int selectionLength;
 
   @override
-  final AnalysisContext analysisContext;
+  final AnalysisDriver analysisDriver;
+
+  @override
+  final AstProvider astProvider;
 
   @override
   final CompilationUnit unit;
 
   _DartAssistContextForValues(this.source, this.selectionOffset,
-      this.selectionLength, this.analysisContext, this.unit);
+      this.selectionLength, this.analysisDriver, this.astProvider, this.unit);
 }

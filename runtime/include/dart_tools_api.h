@@ -5,7 +5,7 @@
 #ifndef RUNTIME_INCLUDE_DART_TOOLS_API_H_
 #define RUNTIME_INCLUDE_DART_TOOLS_API_H_
 
-#include "include/dart_api.h"
+#include "dart_api.h"
 
 /** \mainpage Dart Tools Embedding API Reference
  *
@@ -906,6 +906,11 @@ typedef bool (*Dart_FileModifiedCallback)(const char* url, int64_t since);
 DART_EXPORT Dart_Handle
 Dart_SetFileModifiedCallback(Dart_FileModifiedCallback file_modified_callback);
 
+/**
+ * Returns true if isolate is currently reloading.
+ */
+DART_EXPORT bool Dart_IsReloading();
+
 /*
  * ========
  * Timeline
@@ -1019,6 +1024,9 @@ typedef enum {
   Dart_Timeline_Event_Async_End,      // Phase = 'e'.
   Dart_Timeline_Event_Async_Instant,  // Phase = 'n'.
   Dart_Timeline_Event_Counter,        // Phase = 'C'.
+  Dart_Timeline_Event_Flow_Begin,     // Phase = 's'.
+  Dart_Timeline_Event_Flow_Step,      // Phase = 't'.
+  Dart_Timeline_Event_Flow_End,       // Phase = 'f'.
 } Dart_Timeline_Event_Type;
 
 /**

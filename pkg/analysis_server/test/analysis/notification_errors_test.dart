@@ -2,16 +2,15 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.analysis.notification_errors;
-
-import 'package:analysis_server/plugin/protocol/protocol.dart';
-import 'package:analysis_server/src/constants.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_constants.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
 import 'package:analysis_server/src/context_manager.dart';
 import 'package:analysis_server/src/domain_analysis.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
-import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/lint/linter.dart';
 import 'package:analyzer/src/services/lint.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:linter/src/rules.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
@@ -22,16 +21,15 @@ import '../mocks.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(NotificationErrorsTest);
-    defineReflectiveTests(NotificationErrorsTest_Driver);
   });
 }
 
 @reflectiveTest
-class AbstractNotificationErrorsTest extends AbstractAnalysisTest {
+class NotificationErrorsTest extends AbstractAnalysisTest {
   Map<String, List<AnalysisError>> filesErrors = {};
 
   void processNotification(Notification notification) {
-    if (notification.event == ANALYSIS_ERRORS) {
+    if (notification.event == ANALYSIS_NOTIFICATION_ERRORS) {
       var decoded = new AnalysisErrorsParams.fromNotification(notification);
       filesErrors[decoded.file] = decoded.errors;
     }
@@ -39,6 +37,7 @@ class AbstractNotificationErrorsTest extends AbstractAnalysisTest {
 
   @override
   void setUp() {
+    generateSummaryFiles = true;
     registerLintRules();
     super.setUp();
     server.handlers = [
@@ -83,15 +82,10 @@ linter:
 
     await waitForTasksFinished();
     List<Linter> lints;
-    if (enableNewAnalysisDriver) {
-      AnalysisDriver testDriver = (server.contextManager as ContextManagerImpl)
-          .getContextInfoFor(resourceProvider.getFolder(projectPath))
-          .analysisDriver;
-      lints = testDriver.analysisOptions.lintRules;
-    } else {
-      AnalysisContext testContext = server.getContainingContext(testFile);
-      lints = getLints(testContext);
-    }
+    AnalysisDriver testDriver = (server.contextManager as ContextManagerImpl)
+        .getContextInfoFor(resourceProvider.getFolder(projectPath))
+        .analysisDriver;
+    lints = testDriver.analysisOptions.lintRules;
     // Registry should only contain single lint rule.
     expect(lints, hasLength(1));
     LintRule lint = lints.first as LintRule;
@@ -150,18 +144,5 @@ main() {
     AnalysisError error = errors[0];
     expect(error.severity, AnalysisErrorSeverity.WARNING);
     expect(error.type, AnalysisErrorType.STATIC_WARNING);
-  }
-}
-
-@reflectiveTest
-class NotificationErrorsTest extends AbstractNotificationErrorsTest {}
-
-@reflectiveTest
-class NotificationErrorsTest_Driver extends AbstractNotificationErrorsTest {
-  @override
-  void setUp() {
-    enableNewAnalysisDriver = true;
-    generateSummaryFiles = true;
-    super.setUp();
   }
 }

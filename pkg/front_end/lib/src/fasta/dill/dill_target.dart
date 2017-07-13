@@ -4,86 +4,69 @@
 
 library fasta.dill_target;
 
-import 'dart:async' show
-    Future;
+import 'dart:async' show Future;
 
-import 'package:kernel/ast.dart' show
-    Class;
+import 'package:kernel/ast.dart' show Class;
 
-import 'dill_loader.dart' show
-    DillLoader;
+import 'package:kernel/target/targets.dart' show Target;
 
-import '../errors.dart' show
-    inputError,
-    internalError;
+import '../kernel/kernel_builder.dart' show ClassBuilder;
 
-import '../target_implementation.dart' show
-    TargetImplementation;
+import '../problems.dart' show unsupported;
 
-import '../ticker.dart' show
-    Ticker;
+import '../target_implementation.dart' show TargetImplementation;
 
-import '../translate_uri.dart' show
-    TranslateUri;
+import '../ticker.dart' show Ticker;
 
-import '../ast_kind.dart' show
-    AstKind;
+import '../uri_translator.dart' show UriTranslator;
 
-import '../kernel/kernel_builder.dart' show
-    ClassBuilder,
-    KernelClassBuilder;
+import 'dill_library_builder.dart' show DillLibraryBuilder;
 
-import 'dill_library_builder.dart' show
-    DillLibraryBuilder;
+import 'dill_loader.dart' show DillLoader;
 
 class DillTarget extends TargetImplementation {
   bool isLoaded = false;
   DillLoader loader;
 
-  DillTarget(Ticker ticker, TranslateUri uriTranslator)
-      : super(ticker, uriTranslator) {
+  DillTarget(Ticker ticker, UriTranslator uriTranslator, Target backendTarget)
+      : super(ticker, uriTranslator, backendTarget) {
     loader = new DillLoader(this);
   }
 
-  void addLineStarts(Uri uri, List<int> lineStarts) {
-    internalError("Unsupported operation.");
+  void addSourceInformation(
+      Uri uri, List<int> lineStarts, List<int> sourceCode) {
+    unsupported("addSourceInformation", -1, null);
   }
 
   void read(Uri uri) {
-    if (loader.input == null) {
-      loader.input = uri;
-    } else {
-      inputError(uri, -1, "Can only read one dill file.");
+    unsupported("read", -1, null);
+  }
+
+  @override
+  Future<Null> buildProgram() {
+    return new Future<Null>.sync(() => unsupported("buildProgram", -1, null));
+  }
+
+  @override
+  Future<Null> buildOutlines() async {
+    if (loader.libraries.isNotEmpty) {
+      await loader.buildOutlines();
     }
-  }
-
-  Future<Null> writeProgram(Uri uri, AstKind kind) {
-    return internalError("not implemented.");
-  }
-
-  Future<Null> writeOutline(Uri uri) async {
-    if (loader.input == null) return null;
-    await loader.buildOutlines();
     isLoaded = true;
-    return null;
   }
 
-  DillLibraryBuilder createLibraryBuilder(Uri uri, Uri fileUri) {
+  DillLibraryBuilder createLibraryBuilder(Uri uri, Uri fileUri, bool isPatch) {
+    assert(!isPatch);
     return new DillLibraryBuilder(uri, loader);
   }
 
-  void addDirectSupertype(ClassBuilder cls, Set<ClassBuilder> set) {
-  }
+  void addDirectSupertype(ClassBuilder cls, Set<ClassBuilder> set) {}
 
   List<ClassBuilder> collectAllClasses() {
     return null;
   }
 
-  void breakCycle(ClassBuilder cls) {
-  }
+  void breakCycle(ClassBuilder cls) {}
 
-  Class get objectClass {
-    KernelClassBuilder builder = loader.coreLibrary.exports["Object"];
-    return builder.cls;
-  }
+  Class get objectClass => loader.coreLibrary["Object"].target;
 }

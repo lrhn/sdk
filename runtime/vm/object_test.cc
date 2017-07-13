@@ -10,6 +10,7 @@
 #include "vm/dart_entry.h"
 #include "vm/debugger.h"
 #include "vm/isolate.h"
+#include "vm/malloc_hooks.h"
 #include "vm/object.h"
 #include "vm/object_store.h"
 #include "vm/simulator.h"
@@ -1141,7 +1142,7 @@ ISOLATE_UNIT_TEST_CASE(StringConcat) {
     EXPECT(str6.Equals(two_one_two, two_one_two_len));
   }
 
-  // Concatenated emtpy and non-empty strings built from 4-byte elements.
+  // Concatenated empty and non-empty strings built from 4-byte elements.
   {
     const String& str1 = String::Handle(String::New(""));
     EXPECT(str1.IsOneByteString());
@@ -2147,7 +2148,7 @@ ISOLATE_UNIT_TEST_CASE(GrowableObjectArray) {
     EXPECT(value.Equals(expected_value));
   }
 
-  // Test the MakeArray functionality to make sure the resulting array
+  // Test the MakeFixedLength functionality to make sure the resulting array
   // object is properly setup.
   // 1. Should produce an array of length 2 and a left over int8 array.
   Array& new_array = Array::Handle();
@@ -2164,7 +2165,7 @@ ISOLATE_UNIT_TEST_CASE(GrowableObjectArray) {
     array.Add(value);
   }
   used_size = Array::InstanceSize(array.Length());
-  new_array = Array::MakeArray(array);
+  new_array = Array::MakeFixedLength(array);
   addr = RawObject::ToAddr(new_array.raw());
   obj = RawObject::FromAddr(addr);
   EXPECT(obj.IsArray());
@@ -2185,7 +2186,7 @@ ISOLATE_UNIT_TEST_CASE(GrowableObjectArray) {
     array.Add(value);
   }
   used_size = Array::InstanceSize(array.Length());
-  new_array = Array::MakeArray(array);
+  new_array = Array::MakeFixedLength(array);
   addr = RawObject::ToAddr(new_array.raw());
   obj = RawObject::FromAddr(addr);
   EXPECT(obj.IsArray());
@@ -2206,7 +2207,7 @@ ISOLATE_UNIT_TEST_CASE(GrowableObjectArray) {
     array.Add(value);
   }
   used_size = Array::InstanceSize(array.Length());
-  new_array = Array::MakeArray(array);
+  new_array = Array::MakeFixedLength(array);
   addr = RawObject::ToAddr(new_array.raw());
   obj = RawObject::FromAddr(addr);
   EXPECT(obj.IsArray());
@@ -2228,7 +2229,7 @@ ISOLATE_UNIT_TEST_CASE(GrowableObjectArray) {
   Heap* heap = Isolate::Current()->heap();
   heap->CollectAllGarbage();
   intptr_t capacity_before = heap->CapacityInWords(Heap::kOld);
-  new_array = Array::MakeArray(array);
+  new_array = Array::MakeFixedLength(array);
   EXPECT_EQ(1, new_array.Length());
   heap->CollectAllGarbage();
   intptr_t capacity_after = heap->CapacityInWords(Heap::kOld);
@@ -2523,6 +2524,11 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
       new LocalScope(parent_scope, local_scope_function_level, 0);
 
   const Type& dynamic_type = Type::ZoneHandle(Type::DynamicType());
+  const String& ta = Symbols::FunctionTypeArgumentsVar();
+  LocalVariable* var_ta = new LocalVariable(
+      TokenPosition::kNoSource, TokenPosition::kNoSource, ta, dynamic_type);
+  parent_scope->AddVariable(var_ta);
+
   const String& a = String::ZoneHandle(Symbols::New(thread, "a"));
   LocalVariable* var_a = new LocalVariable(
       TokenPosition::kNoSource, TokenPosition::kNoSource, a, dynamic_type);
@@ -2539,6 +2545,11 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
   parent_scope->AddVariable(var_c);
 
   bool test_only = false;  // Please, insert alias.
+  var_ta = local_scope->LookupVariable(ta, test_only);
+  EXPECT(var_ta->is_captured());
+  EXPECT_EQ(parent_scope_function_level, var_ta->owner()->function_level());
+  EXPECT(local_scope->LocalLookupVariable(ta) == var_ta);  // Alias.
+
   var_a = local_scope->LookupVariable(a, test_only);
   EXPECT(var_a->is_captured());
   EXPECT_EQ(parent_scope_function_level, var_a->owner()->function_level());
@@ -2560,8 +2571,8 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
   var_c = local_scope->LookupVariable(c, test_only);
   EXPECT(var_c->is_captured());
 
-  EXPECT_EQ(3, local_scope->num_variables());         // a, b, and c alias.
-  EXPECT_EQ(2, local_scope->NumCapturedVariables());  // a, c alias.
+  EXPECT_EQ(4, local_scope->num_variables());         // ta, a, b, c.
+  EXPECT_EQ(3, local_scope->NumCapturedVariables());  // ta, a, c.
 
   const int first_parameter_index = 0;
   const int num_parameters = 0;
@@ -2570,7 +2581,9 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
   int next_frame_index = parent_scope->AllocateVariables(
       first_parameter_index, num_parameters, first_frame_index, NULL,
       &found_captured_vars);
-  EXPECT_EQ(first_frame_index, next_frame_index);  // a and c not in frame.
+  // Variables a and c are captured, therefore are not allocated in frame.
+  // Variable var_ta, although captured, still requires a slot in frame.
+  EXPECT_EQ(-1, next_frame_index - first_frame_index);  // Indices in frame < 0.
   const intptr_t parent_scope_context_level = 1;
   EXPECT_EQ(parent_scope_context_level, parent_scope->context_level());
   EXPECT(found_captured_vars);
@@ -2579,11 +2592,17 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
   const ContextScope& context_scope = ContextScope::Handle(
       local_scope->PreserveOuterScope(local_scope_context_level));
   LocalScope* outer_scope = LocalScope::RestoreOuterScope(context_scope);
-  EXPECT_EQ(2, outer_scope->num_variables());
+  EXPECT_EQ(3, outer_scope->num_variables());
+
+  var_ta = outer_scope->LocalLookupVariable(ta);
+  EXPECT(var_ta->is_captured());
+  EXPECT_EQ(0, var_ta->index());  // First index.
+  EXPECT_EQ(parent_scope_context_level - local_scope_context_level,
+            var_ta->owner()->context_level());  // Adjusted context level.
 
   var_a = outer_scope->LocalLookupVariable(a);
   EXPECT(var_a->is_captured());
-  EXPECT_EQ(0, var_a->index());  // First index.
+  EXPECT_EQ(1, var_a->index());  // First index.
   EXPECT_EQ(parent_scope_context_level - local_scope_context_level,
             var_a->owner()->context_level());  // Adjusted context level.
 
@@ -2592,7 +2611,7 @@ ISOLATE_UNIT_TEST_CASE(ContextScope) {
 
   var_c = outer_scope->LocalLookupVariable(c);
   EXPECT(var_c->is_captured());
-  EXPECT_EQ(1, var_c->index());
+  EXPECT_EQ(2, var_c->index());
   EXPECT_EQ(parent_scope_context_level - local_scope_context_level,
             var_c->owner()->context_level());  // Adjusted context level.
 }
@@ -2618,7 +2637,9 @@ ISOLATE_UNIT_TEST_CASE(Closure) {
   const String& function_name = String::Handle(Symbols::New(thread, "foo"));
   function = Function::NewClosureFunction(function_name, parent,
                                           TokenPosition::kMinSource);
-  const Closure& closure = Closure::Handle(Closure::New(function, context));
+  const Closure& closure = Closure::Handle(
+      Closure::New(Object::null_type_arguments(), Object::null_type_arguments(),
+                   function, context));
   const Class& closure_class = Class::Handle(closure.clazz());
   EXPECT_EQ(closure_class.id(), kClosureCid);
   const Function& closure_function = Function::Handle(closure.function());
@@ -2709,6 +2730,9 @@ ISOLATE_UNIT_TEST_CASE(Code) {
 // Test for immutability of generated instructions. The test crashes with a
 // segmentation fault when writing into it.
 ISOLATE_UNIT_TEST_CASE(CodeImmutability) {
+  bool stack_trace_collection_enabled =
+      MallocHooks::stack_trace_collection_enabled();
+  MallocHooks::set_stack_trace_collection_enabled(false);
   extern void GenerateIncrement(Assembler * assembler);
   Assembler _assembler_;
   GenerateIncrement(&_assembler_);
@@ -2726,6 +2750,8 @@ ISOLATE_UNIT_TEST_CASE(CodeImmutability) {
     // TODO(regis, fschneider): Should this be FATAL() instead?
     OS::DebugBreak();
   }
+  MallocHooks::set_stack_trace_collection_enabled(
+      stack_trace_collection_enabled);
 }
 
 
@@ -2793,10 +2819,14 @@ ISOLATE_UNIT_TEST_CASE(ExceptionHandlers) {
   exception_handlers ^= ExceptionHandlers::New(kNumEntries);
   const bool kNeedsStackTrace = true;
   const bool kNoStackTrace = false;
-  exception_handlers.SetHandlerInfo(0, -1, 20u, kNeedsStackTrace, false);
-  exception_handlers.SetHandlerInfo(1, 0, 30u, kNeedsStackTrace, false);
-  exception_handlers.SetHandlerInfo(2, -1, 40u, kNoStackTrace, true);
-  exception_handlers.SetHandlerInfo(3, 1, 150u, kNoStackTrace, true);
+  exception_handlers.SetHandlerInfo(0, -1, 20u, kNeedsStackTrace, false,
+                                    TokenPosition::kNoSource, true);
+  exception_handlers.SetHandlerInfo(1, 0, 30u, kNeedsStackTrace, false,
+                                    TokenPosition::kNoSource, true);
+  exception_handlers.SetHandlerInfo(2, -1, 40u, kNoStackTrace, true,
+                                    TokenPosition::kNoSource, true);
+  exception_handlers.SetHandlerInfo(3, 1, 150u, kNoStackTrace, true,
+                                    TokenPosition::kNoSource, true);
 
   extern void GenerateIncrement(Assembler * assembler);
   Assembler _assembler_;
@@ -3008,8 +3038,10 @@ ISOLATE_UNIT_TEST_CASE(ICData) {
   const intptr_t id = 12;
   const intptr_t num_args_tested = 1;
   const String& target_name = String::Handle(Symbols::New(thread, "Thun"));
-  const Array& args_descriptor =
-      Array::Handle(ArgumentsDescriptor::New(1, Object::null_array()));
+  const intptr_t kTypeArgsLen = 0;
+  const intptr_t kNumArgs = 1;
+  const Array& args_descriptor = Array::Handle(
+      ArgumentsDescriptor::New(kTypeArgsLen, kNumArgs, Object::null_array()));
   ICData& o1 = ICData::Handle();
   o1 = ICData::New(function, target_name, args_descriptor, id, num_args_tested,
                    false);
@@ -3087,17 +3119,20 @@ ISOLATE_UNIT_TEST_CASE(SubtypeTestCache) {
   const Object& class_id_or_fun = Object::Handle(Smi::New(empty_class.id()));
   const TypeArguments& targ_0 = TypeArguments::Handle(TypeArguments::New(2));
   const TypeArguments& targ_1 = TypeArguments::Handle(TypeArguments::New(3));
-  cache.AddCheck(class_id_or_fun, targ_0, targ_1, Bool::True());
+  const TypeArguments& targ_2 = TypeArguments::Handle(TypeArguments::New(4));
+  cache.AddCheck(class_id_or_fun, targ_0, targ_1, targ_2, Bool::True());
   EXPECT_EQ(1, cache.NumberOfChecks());
   Object& test_class_id_or_fun = Object::Handle();
   TypeArguments& test_targ_0 = TypeArguments::Handle();
   TypeArguments& test_targ_1 = TypeArguments::Handle();
+  TypeArguments& test_targ_2 = TypeArguments::Handle();
   Bool& test_result = Bool::Handle();
   cache.GetCheck(0, &test_class_id_or_fun, &test_targ_0, &test_targ_1,
-                 &test_result);
+                 &test_targ_2, &test_result);
   EXPECT_EQ(class_id_or_fun.raw(), test_class_id_or_fun.raw());
   EXPECT_EQ(targ_0.raw(), test_targ_0.raw());
   EXPECT_EQ(targ_1.raw(), test_targ_1.raw());
+  EXPECT_EQ(targ_2.raw(), test_targ_2.raw());
   EXPECT_EQ(Bool::True().raw(), test_result.raw());
 }
 
@@ -3174,6 +3209,16 @@ ISOLATE_UNIT_TEST_CASE(EqualsIgnoringPrivate) {
   // Private mismatch 2.
   mangled_name = OneByteString::New("foo@12345");
   bare_name = OneByteString::New("food");
+  EXPECT(!String::EqualsIgnoringPrivateKey(mangled_name, bare_name));
+
+  // Private mixin application match.
+  mangled_name = OneByteString::New("_M1@12345&_M2@12345&_M3@12345");
+  bare_name = OneByteString::New("_M1&_M2&_M3");
+  EXPECT(String::EqualsIgnoringPrivateKey(mangled_name, bare_name));
+
+  // Private mixin application mismatch.
+  mangled_name = OneByteString::New("_M1@12345&_M2@12345&_M3@12345");
+  bare_name = OneByteString::New("_M1&_M2&_M4");
   EXPECT(!String::EqualsIgnoringPrivateKey(mangled_name, bare_name));
 
   // Private constructor match.
@@ -3308,14 +3353,14 @@ TEST_CASE(StackTraceFormat) {
                "Unhandled exception:\n"
                "MyException\n"
                "#0      baz (test-lib:2:3)\n"
-               "#1      _OtherClass._OtherClass._named (test-lib:7:5)\n"
+               "#1      new _OtherClass._named (test-lib:7:5)\n"
                "#2      globalVar= (test-lib:12:7)\n"
                "#3      _bar (test-lib:16:3)\n"
                "#4      MyClass.field (test-lib:25:5)\n"
                "#5      MyClass.foo.fooHelper (test-lib:30:7)\n"
                "#6      MyClass.foo (test-lib:32:14)\n"
-               "#7      MyClass.MyClass.<anonymous closure> (test-lib:21:12)\n"
-               "#8      MyClass.MyClass (test-lib:21:18)\n"
+               "#7      new MyClass.<anonymous closure> (test-lib:21:12)\n"
+               "#8      new MyClass (test-lib:21:18)\n"
                "#9      main.<anonymous closure> (test-lib:37:14)\n"
                "#10     main (test-lib:37:24)");
 }
@@ -3337,7 +3382,8 @@ ISOLATE_UNIT_TEST_CASE(WeakProperty_PreserveCrossGen) {
     key ^= OneByteString::null();
     value ^= OneByteString::null();
   }
-  isolate->heap()->CollectAllGarbage();
+  isolate->heap()->CollectGarbage(Heap::kNew);
+  isolate->heap()->CollectGarbage(Heap::kOld);
   // Weak property key and value should survive due to cross-generation
   // pointers.
   EXPECT(weak.key() != Object::null());
@@ -3355,7 +3401,8 @@ ISOLATE_UNIT_TEST_CASE(WeakProperty_PreserveCrossGen) {
     key ^= OneByteString::null();
     value ^= OneByteString::null();
   }
-  isolate->heap()->CollectAllGarbage();
+  isolate->heap()->CollectGarbage(Heap::kNew);
+  isolate->heap()->CollectGarbage(Heap::kOld);
   // Weak property key and value should survive due to cross-generation
   // pointers.
   EXPECT(weak.key() != Object::null());
@@ -3408,7 +3455,8 @@ ISOLATE_UNIT_TEST_CASE(WeakProperty_PreserveCrossGen) {
     key ^= OneByteString::null();
     value ^= OneByteString::null();
   }
-  isolate->heap()->CollectAllGarbage();
+  isolate->heap()->CollectGarbage(Heap::kNew);
+  isolate->heap()->CollectGarbage(Heap::kOld);
   // Weak property key and value should survive due to cross-generation
   // pointers.
   EXPECT(weak.key() != Object::null());
@@ -3425,7 +3473,8 @@ ISOLATE_UNIT_TEST_CASE(WeakProperty_PreserveCrossGen) {
     key ^= OneByteString::null();
     value ^= OneByteString::null();
   }
-  isolate->heap()->CollectAllGarbage();
+  isolate->heap()->CollectGarbage(Heap::kNew);
+  isolate->heap()->CollectGarbage(Heap::kOld);
   // Weak property key and value should survive due to cross-generation
   // pointers.
   EXPECT(weak.key() != Object::null());
@@ -3817,7 +3866,7 @@ ISOLATE_UNIT_TEST_CASE(FindInvocationDispatcherFunctionIndex) {
   // Add invocation dispatcher.
   const String& invocation_dispatcher_name =
       String::Handle(Symbols::New(thread, "myMethod"));
-  const Array& args_desc = Array::Handle(ArgumentsDescriptor::New(1));
+  const Array& args_desc = Array::Handle(ArgumentsDescriptor::New(0, 1));
   Function& invocation_dispatcher = Function::Handle();
   invocation_dispatcher ^= cls.GetInvocationDispatcher(
       invocation_dispatcher_name, args_desc,

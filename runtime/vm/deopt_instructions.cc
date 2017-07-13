@@ -73,7 +73,7 @@ DeoptContext::DeoptContext(const StackFrame* frame,
       function.HasOptionalParameters() ? 0 : function.num_fixed_parameters();
 
 // The fixed size section of the (fake) Dart frame called via a stub by the
-// optimized function contains FP, PP (ARM and MIPS only), PC-marker and
+// optimized function contains FP, PP (ARM only), PC-marker and
 // return-address. This section is copied as well, so that its contained
 // values can be updated before returning to the deoptimized function.
 // Note: on DBC stack grows upwards unlike on all other architectures.
@@ -345,6 +345,42 @@ void DeoptContext::FillDestFrame() {
 }
 
 
+intptr_t* DeoptContext::CatchEntryState(intptr_t num_vars) {
+  const Code& code = Code::Handle(code_);
+  const TypedData& deopt_info = TypedData::Handle(deopt_info_);
+  GrowableArray<DeoptInstr*> deopt_instructions;
+  const Array& deopt_table = Array::Handle(code.deopt_info_array());
+  ASSERT(!deopt_table.IsNull());
+  DeoptInfo::Unpack(deopt_table, deopt_info, &deopt_instructions);
+
+  intptr_t* state = new intptr_t[2 * num_vars + 1];
+  state[0] = num_vars;
+
+  Function& function = Function::Handle(zone(), code.function());
+  intptr_t params =
+      function.HasOptionalParameters() ? 0 : function.num_fixed_parameters();
+  for (intptr_t i = 0; i < num_vars; i++) {
+#if defined(TARGET_ARCH_DBC)
+    const intptr_t len = deopt_instructions.length();
+    intptr_t slot = i < params ? i : i + kParamEndSlotFromFp;
+    DeoptInstr* instr = deopt_instructions[len - 1 - slot];
+    intptr_t dest_index = kNumberOfCpuRegisters - 1 - i;
+#else
+    const intptr_t len = deopt_instructions.length();
+    intptr_t slot =
+        i < params ? i : i + kParamEndSlotFromFp - kFirstLocalSlotFromFp;
+    DeoptInstr* instr = deopt_instructions[len - 1 - slot];
+    intptr_t dest_index = i - params;
+#endif
+    CatchEntryStatePair p = instr->ToCatchEntryStatePair(this, dest_index);
+    state[1 + 2 * i] = p.src;
+    state[2 + 2 * i] = p.dest;
+  }
+
+  return state;
+}
+
+
 static void FillDeferredSlots(DeoptContext* deopt_context,
                               DeferredSlot** slot_list) {
   DeferredSlot* slot = *slot_list;
@@ -380,7 +416,8 @@ intptr_t DeoptContext::MaterializeDeferredObjects() {
   // Since this is the only step where GC can occur during deoptimization,
   // use it to report the source line where deoptimization occured.
   if (FLAG_trace_deoptimization || FLAG_trace_deoptimization_verbose) {
-    DartFrameIterator iterator;
+    DartFrameIterator iterator(Thread::Current(),
+                               StackFrameIterator::kNoCrossThreadIteration);
     StackFrame* top_frame = iterator.NextFrame();
     ASSERT(top_frame != NULL);
     const Code& code = Code::Handle(top_frame->LookupDartCode());
@@ -485,6 +522,11 @@ class DeoptConstantInstr : public DeoptInstr {
     *reinterpret_cast<RawObject**>(dest_addr) = obj.raw();
   }
 
+  CatchEntryStatePair ToCatchEntryStatePair(DeoptContext* deopt_context,
+                                            intptr_t dest_slot) {
+    return CatchEntryStatePair::FromConstant(object_table_index_, dest_slot);
+  }
+
  private:
   const intptr_t object_table_index_;
 
@@ -511,6 +553,12 @@ class DeoptWordInstr : public DeoptInstr {
 
   void Execute(DeoptContext* deopt_context, intptr_t* dest_addr) {
     *dest_addr = source_.Value<intptr_t>(deopt_context);
+  }
+
+  CatchEntryStatePair ToCatchEntryStatePair(DeoptContext* deopt_context,
+                                            intptr_t dest_slot) {
+    return CatchEntryStatePair::FromMove(source_.StackSlot(deopt_context),
+                                         dest_slot);
   }
 
  private:
@@ -1329,6 +1377,111 @@ void DeoptTable::GetEntry(const Array& table,
   *offset ^= table.At(i);
   *info ^= table.At(i + 1);
   *reason ^= table.At(i + 2);
+}
+
+
+intptr_t DeoptInfo::FrameSize(const TypedData& packed) {
+  NoSafepointScope no_safepoint;
+  typedef ReadStream::Raw<sizeof(intptr_t), intptr_t> Reader;
+  ReadStream read_stream(reinterpret_cast<uint8_t*>(packed.DataAddr(0)),
+                         packed.LengthInBytes());
+  return Reader::Read(&read_stream);
+}
+
+
+intptr_t DeoptInfo::NumMaterializations(
+    const GrowableArray<DeoptInstr*>& unpacked) {
+  intptr_t num = 0;
+  while (unpacked[num]->kind() == DeoptInstr::kMaterializeObject) {
+    num++;
+  }
+  return num;
+}
+
+
+void DeoptInfo::UnpackInto(const Array& table,
+                           const TypedData& packed,
+                           GrowableArray<DeoptInstr*>* unpacked,
+                           intptr_t length) {
+  NoSafepointScope no_safepoint;
+  typedef ReadStream::Raw<sizeof(intptr_t), intptr_t> Reader;
+  ReadStream read_stream(reinterpret_cast<uint8_t*>(packed.DataAddr(0)),
+                         packed.LengthInBytes());
+  const intptr_t frame_size = Reader::Read(&read_stream);  // Skip frame size.
+  USE(frame_size);
+
+  const intptr_t suffix_length = Reader::Read(&read_stream);
+  if (suffix_length != 0) {
+    ASSERT(suffix_length > 1);
+    const intptr_t info_number = Reader::Read(&read_stream);
+
+    TypedData& suffix = TypedData::Handle();
+    Smi& offset = Smi::Handle();
+    Smi& reason_and_flags = Smi::Handle();
+    DeoptTable::GetEntry(table, info_number, &offset, &suffix,
+                         &reason_and_flags);
+    UnpackInto(table, suffix, unpacked, suffix_length);
+  }
+
+  while ((read_stream.PendingBytes() > 0) && (unpacked->length() < length)) {
+    const intptr_t instruction = Reader::Read(&read_stream);
+    const intptr_t from_index = Reader::Read(&read_stream);
+    unpacked->Add(DeoptInstr::Create(instruction, from_index));
+  }
+}
+
+
+void DeoptInfo::Unpack(const Array& table,
+                       const TypedData& packed,
+                       GrowableArray<DeoptInstr*>* unpacked) {
+  ASSERT(unpacked->is_empty());
+
+  // Pass kMaxInt32 as the length to unpack all instructions from the
+  // packed stream.
+  UnpackInto(table, packed, unpacked, kMaxInt32);
+
+  unpacked->Reverse();
+}
+
+
+const char* DeoptInfo::ToCString(const Array& deopt_table,
+                                 const TypedData& packed) {
+#define FORMAT "[%s]"
+  GrowableArray<DeoptInstr*> deopt_instrs;
+  Unpack(deopt_table, packed, &deopt_instrs);
+
+  // Compute the buffer size required.
+  intptr_t len = 1;  // Trailing '\0'.
+  for (intptr_t i = 0; i < deopt_instrs.length(); i++) {
+    len += OS::SNPrint(NULL, 0, FORMAT, deopt_instrs[i]->ToCString());
+  }
+
+  // Allocate the buffer.
+  char* buffer = Thread::Current()->zone()->Alloc<char>(len);
+
+  // Layout the fields in the buffer.
+  intptr_t index = 0;
+  for (intptr_t i = 0; i < deopt_instrs.length(); i++) {
+    index += OS::SNPrint((buffer + index), (len - index), FORMAT,
+                         deopt_instrs[i]->ToCString());
+  }
+
+  return buffer;
+#undef FORMAT
+}
+
+
+// Returns a bool so it can be asserted.
+bool DeoptInfo::VerifyDecompression(const GrowableArray<DeoptInstr*>& original,
+                                    const Array& deopt_table,
+                                    const TypedData& packed) {
+  GrowableArray<DeoptInstr*> unpacked;
+  Unpack(deopt_table, packed, &unpacked);
+  ASSERT(unpacked.length() == original.length());
+  for (intptr_t i = 0; i < unpacked.length(); ++i) {
+    ASSERT(unpacked[i]->Equals(*original[i]));
+  }
+  return true;
 }
 
 }  // namespace dart

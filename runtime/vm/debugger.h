@@ -260,6 +260,7 @@ class ActivationFrame : public ZoneAllocated {
     kRegular,
     kAsyncSuspensionMarker,
     kAsyncCausal,
+    kAsyncActivation,
   };
 
   ActivationFrame(uword pc,
@@ -273,6 +274,8 @@ class ActivationFrame : public ZoneAllocated {
   ActivationFrame(uword pc, const Code& code);
 
   explicit ActivationFrame(Kind kind);
+
+  explicit ActivationFrame(const Closure& async_activation);
 
   uword pc() const { return pc_; }
   uword fp() const { return fp_; }
@@ -325,26 +328,44 @@ class ActivationFrame : public ZoneAllocated {
   const Context& GetSavedCurrentContext();
   RawObject* GetAsyncOperation();
 
-  RawObject* Evaluate(const String& expr);
+  RawObject* Evaluate(const String& expr,
+                      const GrowableObjectArray& names,
+                      const GrowableObjectArray& values);
 
   // Print the activation frame into |jsobj|. if |full| is false, script
   // and local variable objects are only references. if |full| is true,
   // the complete script, function, and, local variable objects are included.
   void PrintToJSONObject(JSONObject* jsobj, bool full = false);
 
+  RawObject* GetAsyncAwaiter();
+  RawObject* GetCausalStack();
+
+  bool HandlesException(const Instance& exc_obj);
+
  private:
   void PrintToJSONObjectRegular(JSONObject* jsobj, bool full);
   void PrintToJSONObjectAsyncCausal(JSONObject* jsobj, bool full);
   void PrintToJSONObjectAsyncSuspensionMarker(JSONObject* jsobj, bool full);
-
+  void PrintToJSONObjectAsyncActivation(JSONObject* jsobj, bool full);
   void PrintContextMismatchError(intptr_t ctx_slot,
                                  intptr_t frame_ctx_level,
                                  intptr_t var_ctx_level);
+  void PrintDescriptorsError(const char* message);
 
   intptr_t TryIndex();
+  intptr_t DeoptId();
   void GetPcDescriptors();
   void GetVarDescriptors();
   void GetDescIndices();
+
+  RawObject* GetAsyncContextVariable(const String& name);
+  RawObject* GetAsyncStreamControllerStreamAwaiter(const Object& stream);
+  RawObject* GetAsyncStreamControllerStream();
+  RawObject* GetAsyncCompleterAwaiter(const Object& completer);
+  RawObject* GetAsyncCompleter();
+  void ExtractTokenPositionFromAsyncClosure();
+
+  bool IsAsyncMachinery() const;
 
   static const char* KindToCString(Kind kind) {
     switch (kind) {
@@ -354,6 +375,8 @@ class ActivationFrame : public ZoneAllocated {
         return "AsyncCausal";
       case kAsyncSuspensionMarker:
         return "AsyncSuspensionMarker";
+      case kAsyncActivation:
+        return "AsyncActivation";
       default:
         UNREACHABLE();
         return "";
@@ -375,6 +398,7 @@ class ActivationFrame : public ZoneAllocated {
   bool token_pos_initialized_;
   TokenPosition token_pos_;
   intptr_t try_index_;
+  intptr_t deopt_id_;
 
   intptr_t line_number_;
   intptr_t column_number_;
@@ -440,6 +464,8 @@ class Debugger {
   void NotifyIsolateCreated();
   void Shutdown();
 
+  void OnIsolateRunnable();
+
   void NotifyCompilation(const Function& func);
   void NotifyDoneLoading();
 
@@ -466,15 +492,21 @@ class Debugger {
                                                   intptr_t line_number,
                                                   intptr_t column_number);
 
-
   void RemoveBreakpoint(intptr_t bp_id);
   Breakpoint* GetBreakpointById(intptr_t id);
+
+  void MaybeAsyncStepInto(const Closure& async_op);
+  void AsyncStepInto(const Closure& async_op);
+
+  void Continue();
 
   bool SetResumeAction(ResumeAction action,
                        intptr_t frame_index = 1,
                        const char** error = NULL);
 
   bool IsStepping() const { return resume_action_ != kContinue; }
+
+  bool IsSingleStepping() const { return resume_action_ == kStepInto; }
 
   bool IsPaused() const { return pause_event_ != NULL; }
 
@@ -518,6 +550,9 @@ class Debugger {
 
   DebuggerStackTrace* AsyncCausalStackTrace();
   DebuggerStackTrace* CurrentAsyncCausalStackTrace();
+
+  DebuggerStackTrace* AwaiterStackTrace();
+  DebuggerStackTrace* CurrentAwaiterStackTrace();
 
   // Returns a debugger stack trace corresponding to a dart.core.StackTrace.
   // Frames corresponding to invisible functions are omitted. It is not valid
@@ -576,6 +611,8 @@ class Debugger {
   // Callback to the debugger to continue frame rewind, post-deoptimization.
   void RewindPostDeopt();
 
+  static DebuggerStackTrace* CollectAwaiterReturnStackTrace();
+
  private:
   RawError* PauseRequest(ServiceEvent::EventKind kind);
 
@@ -597,7 +634,10 @@ class Debugger {
                              TokenPosition start_pos,
                              TokenPosition end_pos,
                              GrowableObjectArray* function_list);
-  RawFunction* FindBestFit(const Script& script, TokenPosition token_pos);
+  bool FindBestFit(const Script& script,
+                   TokenPosition token_pos,
+                   TokenPosition last_token_pos,
+                   Function* best_fit);
   RawFunction* FindInnermostClosure(const Function& function,
                                     TokenPosition token_pos);
   TokenPosition ResolveBreakpointPos(const Function& func,
@@ -610,6 +650,8 @@ class Debugger {
                                     TokenPosition last_token_pos,
                                     intptr_t requested_line,
                                     intptr_t requested_column);
+  bool RemoveBreakpointFromTheList(intptr_t bp_id, BreakpointLocation** list);
+  Breakpoint* GetBreakpointByIdInTheList(intptr_t id, BreakpointLocation* list);
   void RemoveUnlinkedCodeBreakpoints();
   void UnlinkCodeBreakpoints(BreakpointLocation* bpt_location);
   BreakpointLocation* GetLatentBreakpoint(const String& url,
@@ -625,14 +667,18 @@ class Debugger {
   CodeBreakpoint* GetCodeBreakpoint(uword breakpoint_address);
 
   void SyncBreakpointLocation(BreakpointLocation* loc);
+  void PrintBreakpointsListToJSONArray(BreakpointLocation* sbpt,
+                                       JSONArray* jsarr) const;
 
   ActivationFrame* TopDartFrame() const;
-  static ActivationFrame* CollectDartFrame(Isolate* isolate,
-                                           uword pc,
-                                           StackFrame* frame,
-                                           const Code& code,
-                                           const Array& deopt_frame,
-                                           intptr_t deopt_frame_offset);
+  static ActivationFrame* CollectDartFrame(
+      Isolate* isolate,
+      uword pc,
+      StackFrame* frame,
+      const Code& code,
+      const Array& deopt_frame,
+      intptr_t deopt_frame_offset,
+      ActivationFrame::Kind kind = ActivationFrame::kRegular);
   static RawArray* DeoptimizeToArray(Thread* thread,
                                      StackFrame* frame,
                                      const Code& code);
@@ -668,7 +714,8 @@ class Debugger {
                              bool skip_next_step = false);
 
   void CacheStackTraces(DebuggerStackTrace* stack_trace,
-                        DebuggerStackTrace* async_causal_stack_trace);
+                        DebuggerStackTrace* async_causal_stack_trace,
+                        DebuggerStackTrace* awaiter_stack_trace);
   void ClearCachedStackTraces();
 
 
@@ -680,6 +727,12 @@ class Debugger {
   void RewindToOptimizedFrame(StackFrame* frame,
                               const Code& code,
                               intptr_t post_deopt_frame_index);
+
+  void ResetSteppingFramePointers();
+  bool SteppedForSyntheticAsyncBreakpoint() const;
+  void CleanupSyntheticAsyncBreakpoint();
+  void RememberTopFrameAwaiter();
+  void SetAsyncSteppingFramePointer();
 
   Isolate* isolate_;
   Dart_Port isolate_id_;  // A unique ID for the isolate in the debugger.
@@ -714,11 +767,15 @@ class Debugger {
   // Current stack trace. Valid only while IsPaused().
   DebuggerStackTrace* stack_trace_;
   DebuggerStackTrace* async_causal_stack_trace_;
+  DebuggerStackTrace* awaiter_stack_trace_;
 
   // When stepping through code, only pause the program if the top
   // frame corresponds to this fp value, or if the top frame is
   // lower on the stack.
   uword stepping_fp_;
+  // Used to track the current async/async* function.
+  uword async_stepping_fp_;
+  RawObject* top_frame_awaiter_;
 
   // If we step while at a breakpoint, we would hit the same pc twice.
   // We use this field to let us skip the next single-step after a

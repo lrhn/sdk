@@ -4,55 +4,39 @@
 
 library fasta.dill_library_builder;
 
-import 'package:kernel/ast.dart' show
-    Class,
-    ExpressionStatement,
-    Field,
-    FunctionNode,
-    Let,
-    Library,
-    ListLiteral,
-    Member,
-    Procedure,
-    StaticGet;
+import 'package:kernel/ast.dart'
+    show Class, Field, Library, ListLiteral, Member, StaticGet, Typedef;
 
-import '../errors.dart' show
-    internalError;
+import '../problems.dart' show unimplemented;
 
-import '../kernel/kernel_builder.dart' show
-    Builder,
-    KernelInvalidTypeBuilder,
-    KernelTypeBuilder,
-    LibraryBuilder;
+import '../kernel/kernel_builder.dart'
+    show
+        Builder,
+        InvalidTypeBuilder,
+        KernelInvalidTypeBuilder,
+        KernelTypeBuilder,
+        LibraryBuilder,
+        Scope;
 
-import '../kernel/redirecting_factory_body.dart' show
-    RedirectingFactoryBody;
+import '../kernel/redirecting_factory_body.dart' show RedirectingFactoryBody;
 
-import 'dill_class_builder.dart' show
-    DillClassBuilder;
+import 'dill_class_builder.dart' show DillClassBuilder;
 
-import 'dill_member_builder.dart' show
-    DillMemberBuilder;
+import 'dill_member_builder.dart' show DillMemberBuilder;
 
-import 'dill_loader.dart' show
-    DillLoader;
+import 'dill_loader.dart' show DillLoader;
+
+import 'dill_typedef_builder.dart' show DillFunctionTypeAliasBuilder;
 
 class DillLibraryBuilder extends LibraryBuilder<KernelTypeBuilder, Library> {
   final Uri uri;
-
-  final Map<String, Builder> members = <String, Builder>{};
-
-  // TODO(ahe): Some export information needs to be serialized.
-  final Map<String, Builder> exports = <String, Builder>{};
 
   final DillLoader loader;
 
   Library library;
 
-  DillLibraryBuilder(Uri uri, this.loader)
-      : uri = uri, super(uri);
-
-  get scope => internalError("Scope not supported");
+  DillLibraryBuilder(this.uri, this.loader)
+      : super(uri, new Scope.top(), new Scope.top());
 
   Uri get fileUri => uri;
 
@@ -63,19 +47,9 @@ class DillLibraryBuilder extends LibraryBuilder<KernelTypeBuilder, Library> {
     cls.constructors.forEach(classBulder.addMember);
     for (Field field in cls.fields) {
       if (field.name.name == "_redirecting#") {
-        // This is a hack / work around for storing redirecting constructors in
-        // dill files. See `buildFactoryConstructor` in
-        // [package:kernel/analyzer/ast_from_analyzer.dart]
-        // (../../../../kernel/lib/analyzer/ast_from_analyzer.dart).
         ListLiteral initializer = field.initializer;
         for (StaticGet get in initializer.expressions) {
-          Procedure factory = get.target;
-          FunctionNode function = factory.function;
-          ExpressionStatement statement = function.body;
-          Let let = statement.expression;
-          StaticGet getTarget = let.variable.initializer;
-          function.body = new RedirectingFactoryBody(getTarget.target)
-              ..parent = function;
+          RedirectingFactoryBody.restoreFromDill(get.target);
         }
         initializer.expressions.clear();
       } else {
@@ -87,8 +61,9 @@ class DillLibraryBuilder extends LibraryBuilder<KernelTypeBuilder, Library> {
   void addMember(Member member) {
     String name = member.name.name;
     if (name == "_exports#") {
+      // TODO(ahe): Add this to exportScope.
       // This is a hack / work around for storing exports in dill files. See
-      // [compile_platform.dart](../compile_platform.dart).
+      // [compile_platform_dartk.dart](../analyzer/compile_platform_dartk.dart).
     } else {
       addBuilder(name, new DillMemberBuilder(member, this), member.fileOffset);
     }
@@ -96,23 +71,48 @@ class DillLibraryBuilder extends LibraryBuilder<KernelTypeBuilder, Library> {
 
   Builder addBuilder(String name, Builder builder, int charOffset) {
     if (name == null || name.isEmpty) return null;
-    members[name] = builder;
+    bool isSetter = builder.isSetter;
+    if (isSetter) {
+      scopeBuilder.addSetter(name, builder);
+    } else {
+      scopeBuilder.addMember(name, builder);
+    }
     if (!name.startsWith("_")) {
-      exports[name] = builder;
+      if (isSetter) {
+        exportScopeBuilder.addSetter(name, builder);
+      } else {
+        exportScopeBuilder.addMember(name, builder);
+      }
     }
     return builder;
   }
 
-  bool addToExportScope(String name, Builder member) {
-    return internalError("Not implemented yet.");
+  void addTypedef(Typedef typedef) {
+    var typedefBuilder = new DillFunctionTypeAliasBuilder(typedef, this);
+    addBuilder(typedef.name, typedefBuilder, typedef.fileOffset);
   }
 
-  void addToScope(String name, Builder member) {
-    internalError("Not implemented yet.");
+  @override
+  void addToScope(String name, Builder member, int charOffset, bool isImport) {
+    unimplemented("addToScope", charOffset, fileUri);
   }
 
-  KernelInvalidTypeBuilder buildAmbiguousBuilder(
-      String name, Builder builder, Builder other, int charOffset) {
+  @override
+  Builder buildAmbiguousBuilder(
+      String name, Builder builder, Builder other, int charOffset,
+      {bool isExport: false, bool isImport: false}) {
+    if (builder == other) return builder;
+    if (builder is InvalidTypeBuilder) return builder;
+    if (other is InvalidTypeBuilder) return other;
+    // For each entry mapping key `k` to declaration `d` in `NS` an entry
+    // mapping `k` to `d` is added to the exported namespace of `L` unless a
+    // top-level declaration with the name `k` exists in `L`.
+    if (builder.parent == this) return builder;
     return new KernelInvalidTypeBuilder(name, charOffset, fileUri);
+  }
+
+  @override
+  String get fullNameForErrors {
+    return library.name ?? "<library '${library.fileUri}'>";
   }
 }

@@ -5,6 +5,8 @@
 library analyzer_cli.test.formatter;
 
 import 'package:analyzer/analyzer.dart';
+import 'package:analyzer/src/generated/engine.dart';
+import 'package:analyzer_cli/src/ansi.dart' as ansi;
 import 'package:analyzer_cli/src/error_formatter.dart';
 import 'package:test/test.dart' hide ErrorFormatter;
 import 'package:typed_mock/typed_mock.dart';
@@ -13,44 +15,58 @@ import 'mocks.dart';
 
 main() {
   group('reporter', () {
-    var out = new StringBuffer();
-    var stats = new AnalysisStats();
+    StringBuffer out;
+    AnalysisStats stats;
+    MockCommandLineOptions options;
+    ErrorFormatter reporter;
 
-    setUp(() => stats.init());
-    tearDown(() => out.clear());
+    setUp(() {
+      ansi.runningTests = true;
 
-    // Options
-    var options = new MockCommandLineOptions();
-    when(options.enableTypeChecks).thenReturn(false);
-    when(options.hintsAreFatal).thenReturn(false);
-    when(options.machineFormat).thenReturn(false);
-    when(options.verbose).thenReturn(false);
+      out = new StringBuffer();
+      stats = new AnalysisStats();
 
-    var reporter = new ErrorFormatter(out, options, stats);
+      options = new MockCommandLineOptions();
+      when(options.enableTypeChecks).thenReturn(false);
+      when(options.infosAreFatal).thenReturn(false);
+      when(options.machineFormat).thenReturn(false);
+      when(options.verbose).thenReturn(false);
+      when(options.color).thenReturn(false);
+
+      reporter = new HumanErrorFormatter(out, options, stats);
+    });
+
+    tearDown(() {
+      ansi.runningTests = false;
+    });
 
     test('error', () {
-      var error = mockError(ErrorType.SYNTACTIC_ERROR, ErrorSeverity.ERROR);
+      AnalysisErrorInfo error =
+          mockError(ErrorType.SYNTACTIC_ERROR, ErrorSeverity.ERROR);
       reporter.formatErrors([error]);
+      reporter.flush();
 
       expect(out.toString().trim(),
-          '[error] MSG at /foo/bar/baz.dart:3:3 (mock_code).');
+          'error • MSG at /foo/bar/baz.dart:3:3 • mock_code');
     });
 
     test('hint', () {
-      var error = mockError(ErrorType.HINT, ErrorSeverity.INFO);
+      AnalysisErrorInfo error = mockError(ErrorType.HINT, ErrorSeverity.INFO);
       reporter.formatErrors([error]);
+      reporter.flush();
 
       expect(out.toString().trim(),
-          '[hint] MSG at /foo/bar/baz.dart:3:3 (mock_code).');
+          'hint • MSG at /foo/bar/baz.dart:3:3 • mock_code');
     });
 
     test('stats', () {
-      var error = mockError(ErrorType.HINT, ErrorSeverity.INFO);
+      AnalysisErrorInfo error = mockError(ErrorType.HINT, ErrorSeverity.INFO);
       reporter.formatErrors([error]);
+      reporter.flush();
       stats.print(out);
       expect(
           out.toString().trim(),
-          '[hint] MSG at /foo/bar/baz.dart:3:3 (mock_code).\n'
+          'hint • MSG at /foo/bar/baz.dart:3:3 • mock_code\n'
           '1 hint found.');
     });
   });
@@ -74,6 +90,7 @@ MockAnalysisErrorInfo mockError(ErrorType type, ErrorSeverity severity) {
   when(code.name).thenReturn('mock_code');
   when(error.errorCode).thenReturn(code);
   when(error.message).thenReturn('MSG');
+  when(error.offset).thenReturn(20);
   var source = new MockSource();
   when(source.fullName).thenReturn('/foo/bar/baz.dart');
   when(error.source).thenReturn(source);

@@ -16,7 +16,9 @@ import '../constants/expressions.dart';
 import '../elements/resolution_types.dart';
 import '../elements/common.dart';
 import '../elements/elements.dart';
+import '../elements/entities.dart';
 import '../elements/modelx.dart' show FunctionSignatureX;
+import '../elements/names.dart';
 import '../elements/visitor.dart';
 import '../io/source_file.dart';
 import '../ordered_typeset.dart';
@@ -274,7 +276,8 @@ abstract class AnalyzableElementMixin implements AnalyzableElement, ElementZ {
   TreeElements get treeElements => _unsupported('treeElements');
 }
 
-abstract class AstElementMixinZ implements AstElement, ElementZ {
+abstract class AstElementMixinZ<N extends Node>
+    implements AstElement, ElementZ {
   ResolvedAst _resolvedAst;
 
   // TODO(johnniwinther): This is needed for the token invariant assertion. Find
@@ -286,18 +289,18 @@ abstract class AstElementMixinZ implements AstElement, ElementZ {
   bool get hasResolvedAst => _resolvedAst != null;
 
   @override
-  get node => _unsupported('node');
+  N get node => _unsupported('node');
 
   @override
   ResolvedAst get resolvedAst {
-    assert(invariant(this, _resolvedAst != null,
-        message: "ResolvedAst has not been set for $this."));
+    assert(_resolvedAst != null,
+        failedAt(this, "ResolvedAst has not been set for $this."));
     return _resolvedAst;
   }
 
   void set resolvedAst(ResolvedAst value) {
-    assert(invariant(this, _resolvedAst == null,
-        message: "ResolvedAst has already been set for $this."));
+    assert(_resolvedAst == null,
+        failedAt(this, "ResolvedAst has already been set for $this."));
     _resolvedAst = value;
   }
 }
@@ -397,6 +400,7 @@ class AbstractFieldElementZ extends ElementZ
   bool get isTopLevel => _canonicalElement.isTopLevel;
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class LibraryElementZ extends DeserializedElementZ
     with AnalyzableElementMixin, ContainerMixin, LibraryElementCommon
     implements LibraryElement {
@@ -758,11 +762,12 @@ abstract class StaticMemberMixin implements DeserializedElementZ {
   bool get isClassMember => true;
 }
 
-abstract class TypedElementMixin implements DeserializedElementZ, TypedElement {
-  ResolutionDartType _type;
+abstract class TypedElementMixin<T extends ResolutionDartType>
+    implements DeserializedElementZ, TypedElement {
+  T _type;
 
   @override
-  ResolutionDartType get type {
+  T get type {
     if (_type == null) {
       _type = _decoder.getType(Key.TYPE);
     }
@@ -770,7 +775,7 @@ abstract class TypedElementMixin implements DeserializedElementZ, TypedElement {
   }
 
   @override
-  ResolutionDartType computeType(Resolution resolution) => type;
+  T computeType(Resolution resolution) => type;
 }
 
 abstract class ParametersMixin
@@ -850,6 +855,9 @@ abstract class ParametersMixin
     }
     return _parameters;
   }
+
+  ParameterStructure get parameterStructure =>
+      functionSignature.parameterStructure;
 }
 
 abstract class FunctionTypedElementMixin
@@ -916,6 +924,7 @@ abstract class ClassElementMixin
   }
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class ClassElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
@@ -924,11 +933,11 @@ class ClassElementZ extends DeserializedElementZ
         class_members.ClassMemberMixin,
         ContainerMixin,
         LibraryMemberMixin,
-        TypeDeclarationMixin<ResolutionInterfaceType>,
+        TypeDeclarationMixin,
         ClassElementMixin
     implements ClassElement {
   bool _isObject;
-  ResolutionDartType _supertype;
+  ResolutionInterfaceType _supertype;
   OrderedTypeSet _allSupertypesAndSelf;
   Link<ResolutionDartType> _interfaces;
   ResolutionFunctionType _callType;
@@ -961,7 +970,7 @@ class ClassElementZ extends DeserializedElementZ
               .subst(typeVariables, mixinElement.typeVariables);
         }
         _supertype = supertype;
-        _allSupertypesAndSelf = new OrderedTypeSetBuilder(this)
+        _allSupertypesAndSelf = new ResolutionOrderedTypeSetBuilder(this)
             .createOrderedTypeSet(_supertype, _interfaces);
         _callType = _decoder.getType(Key.CALL_TYPE, isOptional: true);
       }
@@ -1015,6 +1024,10 @@ class ClassElementZ extends DeserializedElementZ
     // TODO(johnniwinther): Why can't this always be computed in ensureResolved?
     return _callType;
   }
+
+  ResolutionInterfaceType get thisType => super.thisType;
+
+  ResolutionInterfaceType get rawType => super.rawType;
 }
 
 abstract class MixinApplicationElementMixin
@@ -1046,7 +1059,8 @@ class UnnamedMixinApplicationElementZ extends ElementZ
         ClassElementCommon,
         ClassElementMixin,
         class_members.ClassMemberMixin,
-        TypeDeclarationMixin<ResolutionInterfaceType>,
+        // ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_MIXIN
+        TypeDeclarationMixin,
         AnalyzableElementMixin,
         AstElementMixinZ,
         MixinApplicationElementCommon,
@@ -1169,7 +1183,7 @@ class UnnamedMixinApplicationElementZ extends ElementZ
   @override
   OrderedTypeSet get allSupertypesAndSelf {
     if (_allSupertypesAndSelf == null) {
-      _allSupertypesAndSelf = new OrderedTypeSetBuilder(this)
+      _allSupertypesAndSelf = new ResolutionOrderedTypeSetBuilder(this)
           .createOrderedTypeSet(supertype, interfaces);
     }
     return _allSupertypesAndSelf;
@@ -1197,6 +1211,7 @@ class UnnamedMixinApplicationElementZ extends ElementZ
   SourceSpan get sourcePosition => subclass.sourcePosition;
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class EnumClassElementZ extends ClassElementZ implements EnumClassElement {
   List<FieldElement> _enumValues;
 
@@ -1206,7 +1221,7 @@ class EnumClassElementZ extends ClassElementZ implements EnumClassElement {
   bool get isEnumClass => true;
 
   @override
-  List<FieldElement> get enumValues {
+  List<EnumConstantElement> get enumValues {
     if (_enumValues == null) {
       _enumValues = _decoder.getElements(Key.FIELDS);
     }
@@ -1214,14 +1229,15 @@ class EnumClassElementZ extends ClassElementZ implements EnumClassElement {
   }
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 abstract class ConstructorElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<FunctionExpression>,
         ClassMemberMixin,
         FunctionTypedElementMixin,
         ParametersMixin,
-        TypedElementMixin,
+        TypedElementMixin<ResolutionFunctionType>,
         MemberElementMixin,
         ConstructorElementCommon
     implements
@@ -1301,7 +1317,7 @@ abstract class ConstructorElementZ extends DeserializedElementZ
   PrefixElement get redirectionDeferredPrefix => null;
 
   @override
-  ResolutionInterfaceType computeEffectiveTargetType(
+  ResolutionDartType computeEffectiveTargetType(
           ResolutionInterfaceType newType) =>
       newType;
 }
@@ -1411,10 +1427,11 @@ class RedirectingFactoryConstructorElementZ extends ConstructorElementZ {
   }
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class ForwardingConstructorElementZ extends ElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ
+        AstElementMixinZ<FunctionExpression>
     implements
         ConstructorElement,
         // TODO(johnniwinther): Sort out whether a constructor is a method.
@@ -1436,7 +1453,7 @@ class ForwardingConstructorElementZ extends ElementZ
   AsyncMarker get asyncMarker => AsyncMarker.SYNC;
 
   @override
-  ResolutionInterfaceType computeEffectiveTargetType(
+  ResolutionDartType computeEffectiveTargetType(
       ResolutionInterfaceType newType) {
     return enclosingClass.thisType.substByContext(newType);
   }
@@ -1470,6 +1487,11 @@ class ForwardingConstructorElementZ extends ElementZ
     // TODO(johnniwinther): Ensure that the function signature (and with it the
     // function type) substitutes type variables correctly.
     return definingConstructor.functionSignature;
+  }
+
+  @override
+  ParameterStructure get parameterStructure {
+    return functionSignature.parameterStructure;
   }
 
   @override
@@ -1573,7 +1595,7 @@ abstract class MemberElementMixin
 abstract class FieldElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<VariableDefinitions>,
         TypedElementMixin,
         MemberElementMixin
     implements FieldElement {
@@ -1628,6 +1650,7 @@ class StaticFieldElementZ extends FieldElementZ
   StaticFieldElementZ(ObjectDecoder decoder) : super(decoder);
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class EnumConstantElementZ extends StaticFieldElementZ
     implements EnumConstantElement {
   EnumConstantElementZ(ObjectDecoder decoder) : super(decoder);
@@ -1640,13 +1663,14 @@ class InstanceFieldElementZ extends FieldElementZ
   InstanceFieldElementZ(ObjectDecoder decoder) : super(decoder);
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 abstract class FunctionElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<FunctionExpression>,
         ParametersMixin,
         FunctionTypedElementMixin,
-        TypedElementMixin,
+        TypedElementMixin<ResolutionFunctionType>,
         MemberElementMixin
     implements MethodElement {
   FunctionElementZ(ObjectDecoder decoder) : super(decoder);
@@ -1694,7 +1718,7 @@ abstract class LocalExecutableMixin
   Element get enclosingElement => executableContext;
 
   @override
-  Element get enclosingClass => memberContext.enclosingClass;
+  ClassElementZ get enclosingClass => memberContext.enclosingClass;
 
   @override
   ExecutableElement get executableContext {
@@ -1725,15 +1749,18 @@ abstract class LocalExecutableMixin
   TreeElements get treeElements => memberContext.treeElements;
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 class LocalFunctionElementZ extends DeserializedElementZ
     with
         LocalExecutableMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<FunctionExpression>,
         ParametersMixin,
         FunctionTypedElementMixin,
-        TypedElementMixin
+        TypedElementMixin<ResolutionFunctionType>
     implements LocalFunctionElement {
   LocalFunctionElementZ(ObjectDecoder decoder) : super(decoder);
+
+  MethodElement callMethod;
 
   @override
   accept(ElementVisitor visitor, arg) {
@@ -1749,13 +1776,14 @@ class LocalFunctionElementZ extends DeserializedElementZ
   }
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 abstract class GetterElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<FunctionExpression>,
         FunctionTypedElementMixin,
         ParametersMixin,
-        TypedElementMixin,
+        TypedElementMixin<ResolutionFunctionType>,
         MemberElementMixin
     implements GetterElement {
   AbstractFieldElement abstractField;
@@ -1794,13 +1822,14 @@ class InstanceGetterElementZ extends GetterElementZ
   InstanceGetterElementZ(ObjectDecoder decoder) : super(decoder);
 }
 
+// ignore: STRONG_MODE_INVALID_METHOD_OVERRIDE_FROM_BASE
 abstract class SetterElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<FunctionExpression>,
         FunctionTypedElementMixin,
         ParametersMixin,
-        TypedElementMixin,
+        TypedElementMixin<ResolutionFunctionType>,
         MemberElementMixin
     implements SetterElement {
   AbstractFieldElement abstractField;
@@ -1837,11 +1866,11 @@ class InstanceSetterElementZ extends SetterElementZ
   InstanceSetterElementZ(ObjectDecoder decoder) : super(decoder);
 }
 
-abstract class TypeDeclarationMixin<T extends GenericType>
+abstract class TypeDeclarationMixin
     implements ElementZ, TypeDeclarationElement {
   List<ResolutionDartType> _typeVariables;
-  T _rawType;
-  T _thisType;
+  GenericType _rawType;
+  GenericType _thisType;
   Name _memberName;
 
   Name get memberName {
@@ -1862,7 +1891,7 @@ abstract class TypeDeclarationMixin<T extends GenericType>
     }
   }
 
-  T _createType(List<ResolutionDartType> typeArguments);
+  GenericType _createType(List<ResolutionDartType> typeArguments);
 
   @override
   List<ResolutionDartType> get typeVariables {
@@ -1871,19 +1900,19 @@ abstract class TypeDeclarationMixin<T extends GenericType>
   }
 
   @override
-  T get rawType {
+  GenericType get rawType {
     _ensureTypes();
     return _rawType;
   }
 
   @override
-  T get thisType {
+  GenericType get thisType {
     _ensureTypes();
     return _thisType;
   }
 
   @override
-  T computeType(Resolution resolution) => thisType;
+  GenericType computeType(Resolution resolution) => thisType;
 
   @override
   bool get isResolved => true;
@@ -1892,10 +1921,10 @@ abstract class TypeDeclarationMixin<T extends GenericType>
 class TypedefElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<Node>,
         LibraryMemberMixin,
         ParametersMixin,
-        TypeDeclarationMixin<ResolutionTypedefType>
+        TypeDeclarationMixin
     implements TypedefElement {
   ResolutionDartType _alias;
 
@@ -1931,10 +1960,17 @@ class TypedefElementZ extends DeserializedElementZ
 
   @override
   void checkCyclicReference(Resolution resolution) {}
+
+  ResolutionTypedefType get thisType => super.thisType;
+
+  ResolutionTypedefType get rawType => super.rawType;
 }
 
 class TypeVariableElementZ extends DeserializedElementZ
-    with AnalyzableElementMixin, AstElementMixinZ, TypedElementMixin
+    with
+        AnalyzableElementMixin,
+        AstElementMixinZ<Node>,
+        TypedElementMixin<ResolutionTypeVariableType>
     implements TypeVariableElement {
   GenericElement _typeDeclaration;
   ResolutionTypeVariableType _type;
@@ -1967,7 +2003,7 @@ class TypeVariableElementZ extends DeserializedElementZ
   Element get enclosingElement => typeDeclaration;
 
   @override
-  Element get enclosingClass => typeDeclaration;
+  ClassElementZ get enclosingClass => typeDeclaration;
 
   @override
   int get index => _decoder.getInt(Key.INDEX);
@@ -1992,7 +2028,7 @@ class TypeVariableElementZ extends DeserializedElementZ
 }
 
 class SyntheticTypeVariableElementZ extends ElementZ
-    with AnalyzableElementMixin, AstElementMixinZ
+    with AnalyzableElementMixin, AstElementMixinZ<Node>
     implements TypeVariableElement {
   final TypeDeclarationElement typeDeclaration;
   final int index;
@@ -2025,8 +2061,8 @@ class SyntheticTypeVariableElementZ extends ElementZ
 
   @override
   ResolutionTypeVariableType get type {
-    assert(invariant(this, _type != null,
-        message: "Type variable type has not been set on $this."));
+    assert(_type != null,
+        failedAt(this, "Type variable type has not been set on $this."));
     return _type;
   }
 
@@ -2037,11 +2073,11 @@ class SyntheticTypeVariableElementZ extends ElementZ
   Element get enclosingElement => typeDeclaration;
 
   @override
-  Element get enclosingClass => typeDeclaration;
+  ClassElementZ get enclosingClass => typeDeclaration;
 
   ResolutionDartType get bound {
-    assert(invariant(this, _bound != null,
-        message: "Type variable bound has not been set on $this."));
+    assert(_bound != null,
+        failedAt(this, "Type variable bound has not been set on $this."));
     return _bound;
   }
 
@@ -2056,7 +2092,10 @@ class SyntheticTypeVariableElementZ extends ElementZ
 }
 
 abstract class ParameterElementZ extends DeserializedElementZ
-    with AnalyzableElementMixin, AstElementMixinZ, TypedElementMixin
+    with
+        AnalyzableElementMixin,
+        AstElementMixinZ<VariableDefinitions>,
+        TypedElementMixin
     implements ParameterElement {
   FunctionElement _functionDeclaration;
   ConstantExpression _constant;
@@ -2112,7 +2151,7 @@ abstract class ParameterElementZ extends DeserializedElementZ
   Expression initializer;
 
   @override
-  Node node;
+  VariableDefinitions node;
 
   @override
   bool get isNamed => _decoder.getBool(Key.IS_NAMED);
@@ -2173,12 +2212,14 @@ class InitializingFormalElementZ extends LocalParameterElementZ
 
   @override
   bool get isLocal => true;
+
+  ConstructorElementZ get functionDeclaration => super.functionDeclaration;
 }
 
 class LocalVariableElementZ extends DeserializedElementZ
     with
         AnalyzableElementMixin,
-        AstElementMixinZ,
+        AstElementMixinZ<VariableDefinitions>,
         LocalExecutableMixin,
         TypedElementMixin
     implements LocalVariableElement {
@@ -2398,6 +2439,7 @@ class MetadataAnnotationZ implements MetadataAnnotation {
   @override
   MetadataAnnotation ensureResolved(Resolution resolution) {
     // Do nothing.
+    return this;
   }
 
   @override

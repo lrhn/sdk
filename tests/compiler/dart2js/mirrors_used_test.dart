@@ -16,15 +16,19 @@ import 'package:compiler/src/apiimpl.dart' show CompilerImpl;
 import 'package:compiler/src/constants/values.dart'
     show ConstantValue, TypeConstantValue;
 
-import 'package:compiler/src/elements/elements.dart' show Element, Elements;
+import 'package:compiler/src/elements/elements.dart'
+    show ClassElement, Elements;
 
 import 'package:compiler/src/js_backend/js_backend.dart' show JavaScriptBackend;
+import 'package:compiler/src/js_backend/mirrors_analysis.dart';
 
 import 'package:compiler/src/js_emitter/full_emitter/emitter.dart' as full
     show Emitter;
 
 import 'package:compiler/src/old_to_new_api.dart'
     show LegacyCompilerDiagnostics;
+
+import 'package:compiler/src/universe/world_builder.dart';
 
 void expectOnlyVerboseInfo(Uri uri, int begin, int end, String message, kind) {
   if (kind.name == 'verbose info') {
@@ -52,7 +56,8 @@ void main() {
     CompilerImpl compiler = result.compiler;
     JavaScriptBackend backend = compiler.backend;
     print('');
-    List generatedCode = Elements.sortedByPosition(backend.generatedCode.keys);
+    List generatedCode =
+        Elements.sortedByPosition(new List.from(backend.generatedCode.keys));
     for (var element in generatedCode) {
       print(element);
     }
@@ -63,7 +68,7 @@ void main() {
     // 2. Some code was refactored, and there are more methods.
     // Either situation could be problematic, but in situation 2, it is often
     // acceptable to increase [expectedMethodCount] a little.
-    int expectedMethodCount = 476;
+    int expectedMethodCount = 477;
     Expect.isTrue(
         generatedCode.length <= expectedMethodCount,
         'Too many compiled methods: '
@@ -83,16 +88,19 @@ void main() {
     ]; // The name of Foo.instanceMethod.
 
     // We always include the names of some native classes.
-    List<Element> nativeClasses = [
-      compiler.commonElements.intClass,
-      compiler.commonElements.doubleClass,
-      compiler.commonElements.numClass,
-      compiler.commonElements.stringClass,
-      compiler.commonElements.boolClass,
-      compiler.commonElements.nullClass,
-      compiler.commonElements.listClass
+    List<ClassElement> nativeClasses = [
+      compiler.resolution.commonElements.intClass,
+      compiler.resolution.commonElements.doubleClass,
+      compiler.resolution.commonElements.numClass,
+      compiler.resolution.commonElements.stringClass,
+      compiler.resolution.commonElements.boolClass,
+      compiler.resolution.commonElements.nullClass,
+      compiler.resolution.commonElements.listClass
     ];
-    Iterable<String> nativeNames = nativeClasses.map(backend.namer.className);
+    Iterable<String> nativeNames =
+        // `backend.namer.className` returns a Name, but a String is required.
+        // ignore: ARGUMENT_TYPE_NOT_ASSIGNABLE
+        nativeClasses.map((c) => backend.namer.className(c));
     expectedNames = expectedNames.map(backend.namer.asName).toList();
     expectedNames.addAll(nativeNames);
 
@@ -105,32 +113,52 @@ void main() {
       ..addAll(fullEmitter.mangledGlobalFieldNames.keys);
     Expect.setEquals(new Set.from(expectedNames), recordedNames);
 
-    for (var library in compiler.libraryLoader.libraries) {
+    for (dynamic library in compiler.libraryLoader.libraries) {
       library.forEachLocalMember((member) {
-        if (library == compiler.mainApp && member.name == 'Foo') {
-          Expect.isTrue(
-              compiler.backend.mirrorsData.isAccessibleByReflection(member),
-              '$member');
-          member.forEachLocalMember((classMember) {
+        if (member.isClass) {
+          if (library ==
+                  compiler.frontendStrategy.elementEnvironment.mainLibrary &&
+              member.name == 'Foo') {
             Expect.isTrue(
                 compiler.backend.mirrorsData
-                    .isAccessibleByReflection(classMember),
-                '$classMember');
-          });
+                    .isClassAccessibleByReflection(member),
+                '$member');
+            member.forEachLocalMember((classMember) {
+              Expect.isTrue(
+                  compiler.backend.mirrorsData
+                      .isMemberAccessibleByReflection(classMember),
+                  '$classMember');
+            });
+          } else {
+            Expect.isFalse(
+                compiler.backend.mirrorsData
+                    .isClassAccessibleByReflection(member),
+                '$member');
+          }
+        } else if (member.isTypedef) {
+          Expect.isFalse(
+              compiler.backend.mirrorsData
+                  .isTypedefAccessibleByReflection(member),
+              '$member');
         } else {
           Expect.isFalse(
-              compiler.backend.mirrorsData.isAccessibleByReflection(member),
+              compiler.backend.mirrorsData
+                  .isMemberAccessibleByReflection(member),
               '$member');
         }
       });
     }
 
     int metadataCount = 0;
-    Set<ConstantValue> compiledConstants = backend.constants.compiledConstants;
+    CodegenWorldBuilderImpl codegenWorldBuilder = compiler.codegenWorldBuilder;
+    Set<ConstantValue> compiledConstants =
+        codegenWorldBuilder.compiledConstants;
     // Make sure that most of the metadata constants aren't included in the
     // generated code.
-    backend.processMetadata(compiler.enqueuer.resolution.processedEntities,
-        (metadata) {
+    MirrorsResolutionAnalysisImpl mirrorsResolutionAnalysis =
+        backend.mirrorsResolutionAnalysis;
+    mirrorsResolutionAnalysis.processMetadata(
+        compiler.enqueuer.resolution.processedEntities, (metadata) {
       ConstantValue constant =
           backend.constants.getConstantValueForMetadata(metadata);
       Expect.isFalse(

@@ -7,6 +7,7 @@ library dart._runtime;
 import 'dart:async';
 import 'dart:collection';
 
+import 'dart:_debugger' show stackTraceMapper;
 import 'dart:_foreign_helper' show JS, JSExportName, rest, spread;
 import 'dart:_interceptors' show JSArray;
 import 'dart:_js_helper'
@@ -29,13 +30,16 @@ part 'types.dart';
 part 'errors.dart';
 part 'generators.dart';
 part 'operations.dart';
+part 'profile.dart';
 part 'utils.dart';
 
 // TODO(vsm): Move polyfill code to dart:html.
 // Note, native extensions are registered onto types in dart.global.
 // This polyfill needs to run before the corresponding dart:html code is run.
 @JSExportName('global')
-final global_ = JS('', '''
+final global_ = JS(
+    '',
+    '''
   function () {
     if (typeof NodeList !== "undefined") {
       // TODO(vsm): Do we still need these?
@@ -62,7 +66,10 @@ final global_ = JS('', '''
         window.AudioSourceNode = MediaElementAudioSourceNode.__proto__;
       }
       if (typeof FontFaceSet == "undefined") {
-        window.FontFaceSet = document.fonts.__proto__.constructor;
+        // CSS Font Loading is not supported on Edge.
+        if (typeof document.fonts != "undefined") {
+          window.FontFaceSet = document.fonts.__proto__.constructor;
+        }
       }
       if (typeof MemoryInfo == "undefined") {
         if (typeof window.performance.memory != "undefined") {
@@ -81,10 +88,35 @@ final global_ = JS('', '''
       if (typeof SourceBufferList == "undefined") {
         window.SourceBufferList = new MediaSource().sourceBuffers.constructor;
       }
+      if (typeof SpeechRecognition == "undefined") {
+        window.SpeechRecognition = window.webkitSpeechRecognition;
+        window.SpeechRecognitionError = window.webkitSpeechRecognitionError;
+        window.SpeechRecognitionEvent = window.webkitSpeechRecognitionEvent;
+      }
     }
+
     var globalState = (typeof window != "undefined") ? window
       : (typeof global != "undefined") ? global
       : (typeof self != "undefined") ? self : {};
+
+    // These settings must be configured before the application starts so that
+    // user code runs with the correct configuration.
+    let settings = 'ddcSettings' in globalState ? globalState.ddcSettings : {};
+    $trapRuntimeErrors(
+        'trapRuntimeErrors' in settings ? settings.trapRuntimeErrors : true);
+    $ignoreWhitelistedErrors(
+        'ignoreWhitelistedErrors' in settings ?
+            settings.ignoreWhitelistedErrors : true);
+
+    $ignoreAllErrors(
+        'ignoreAllErrors' in settings ?settings.ignoreAllErrors : false);
+
+    $failForWeakModeIsChecks(
+        'failForWeakModeIsChecks' in settings ?
+            settings.failForWeakModeIsChecks : true);
+    $trackProfile(
+        'trackProfile' in settings ? settings.trackProfile : false);
+
     return globalState;
   }()
 ''');

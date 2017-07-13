@@ -38,7 +38,7 @@ class BenchmarkBase {
     run();
   }
 
-  // Exercices the benchmark. By default invokes [run] 10 times.
+  // Exercises the benchmark. By default invokes [run] 10 times.
   void exercise() {
     for (int i = 0; i < 10; i++) {
       run();
@@ -48,7 +48,7 @@ class BenchmarkBase {
   // Not measured setup code executed prior to the benchmark runs.
   void setup() {}
 
-  // Not measures teardown code executed after the benchark runs.
+  // Not measures teardown code executed after the benchmark runs.
   void teardown() {}
 
   // Measures the score for this benchmark by executing it repeately until

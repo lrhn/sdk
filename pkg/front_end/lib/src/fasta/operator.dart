@@ -56,26 +56,77 @@ Operator operatorFromString(String string) {
 
 String operatorToString(Operator operator) {
   switch (operator) {
-    case Operator.add: return "+";
-    case Operator.bitwiseAnd: return "&";
-    case Operator.bitwiseNot: return "~";
-    case Operator.bitwiseOr: return "|";
-    case Operator.bitwiseXor: return "^";
-    case Operator.divide: return "/";
-    case Operator.equals: return "==";
-    case Operator.greaterThan: return ">";
-    case Operator.greaterThanEquals: return ">=";
-    case Operator.indexGet: return "[]";
-    case Operator.indexSet: return "[]=";
-    case Operator.leftShift: return "<<";
-    case Operator.lessThan: return "<";
-    case Operator.lessThanEquals: return "<=";
-    case Operator.modulo: return "%";
-    case Operator.multiply: return "*";
-    case Operator.rightShift: return ">>";
-    case Operator.subtract: return "-";
-    case Operator.truncatingDivide: return "~/";
-    case Operator.unaryMinus: return "unary-";
+    case Operator.add:
+      return "+";
+    case Operator.bitwiseAnd:
+      return "&";
+    case Operator.bitwiseNot:
+      return "~";
+    case Operator.bitwiseOr:
+      return "|";
+    case Operator.bitwiseXor:
+      return "^";
+    case Operator.divide:
+      return "/";
+    case Operator.equals:
+      return "==";
+    case Operator.greaterThan:
+      return ">";
+    case Operator.greaterThanEquals:
+      return ">=";
+    case Operator.indexGet:
+      return "[]";
+    case Operator.indexSet:
+      return "[]=";
+    case Operator.leftShift:
+      return "<<";
+    case Operator.lessThan:
+      return "<";
+    case Operator.lessThanEquals:
+      return "<=";
+    case Operator.modulo:
+      return "%";
+    case Operator.multiply:
+      return "*";
+    case Operator.rightShift:
+      return ">>";
+    case Operator.subtract:
+      return "-";
+    case Operator.truncatingDivide:
+      return "~/";
+    case Operator.unaryMinus:
+      return "unary-";
   }
   return null;
+}
+
+int operatorRequiredArgumentCount(Operator operator) {
+  switch (operator) {
+    case Operator.bitwiseNot:
+    case Operator.unaryMinus:
+      return 0;
+
+    case Operator.add:
+    case Operator.bitwiseAnd:
+    case Operator.bitwiseOr:
+    case Operator.bitwiseXor:
+    case Operator.divide:
+    case Operator.equals:
+    case Operator.greaterThan:
+    case Operator.greaterThanEquals:
+    case Operator.indexGet:
+    case Operator.leftShift:
+    case Operator.lessThan:
+    case Operator.lessThanEquals:
+    case Operator.modulo:
+    case Operator.multiply:
+    case Operator.rightShift:
+    case Operator.subtract:
+    case Operator.truncatingDivide:
+      return 1;
+
+    case Operator.indexSet:
+      return 2;
+  }
+  return -1;
 }

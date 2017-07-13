@@ -22,9 +22,9 @@ namespace dart {
 
 bool StackFrame::IsStubFrame() const {
   ASSERT(!(IsEntryFrame() || IsExitFrame()));
-#if !defined(TARGET_OS_WINDOWS)
-  // On Windows, the profiler calls this from a separate thread where
-  // Thread::Current() is NULL, so we cannot create a NoSafepointScope.
+#if !defined(HOST_OS_WINDOWS) && !defined(HOST_OS_FUCHSIA)
+  // On Windows and Fuchsia, the profiler calls this from a separate thread
+  // where Thread::Current() is NULL, so we cannot create a NoSafepointScope.
   NoSafepointScope no_safepoint;
 #endif
   RawCode* code = GetCodeObject();
@@ -39,15 +39,16 @@ const char* StackFrame::ToCString() const {
   ASSERT(thread_ == Thread::Current());
   Zone* zone = Thread::Current()->zone();
   if (IsDartFrame()) {
-    const Code& code = Code::Handle(LookupDartCode());
+    const Code& code = Code::Handle(zone, LookupDartCode());
     ASSERT(!code.IsNull());
-    const Object& owner = Object::Handle(code.owner());
+    const Object& owner = Object::Handle(zone, code.owner());
     ASSERT(!owner.IsNull());
     if (owner.IsFunction()) {
+      const char* opt = code.is_optimized() ? "*" : "";
       const Function& function = Function::Cast(owner);
       return zone->PrintToString(
-          "[%-8s : sp(%#" Px ") fp(%#" Px ") pc(%#" Px ") %s ]", GetName(),
-          sp(), fp(), pc(), function.ToFullyQualifiedCString());
+          "[%-8s : sp(%#" Px ") fp(%#" Px ") pc(%#" Px ") %s%s ]", GetName(),
+          sp(), fp(), pc(), opt, function.ToFullyQualifiedCString());
     } else {
       return zone->PrintToString(
           "[%-8s : sp(%#" Px ") fp(%#" Px ") pc(%#" Px ") %s ]", GetName(),
@@ -67,7 +68,6 @@ void ExitFrame::VisitObjectPointers(ObjectPointerVisitor* visitor) {
 
 
 void EntryFrame::VisitObjectPointers(ObjectPointerVisitor* visitor) {
-  ASSERT(thread() == Thread::Current());
   // Visit objects between SP and (FP - callee_save_area).
   ASSERT(visitor != NULL);
 #if !defined(TARGET_ARCH_DBC)
@@ -85,7 +85,6 @@ void EntryFrame::VisitObjectPointers(ObjectPointerVisitor* visitor) {
 
 
 void StackFrame::VisitObjectPointers(ObjectPointerVisitor* visitor) {
-  ASSERT(thread() == Thread::Current());
   ASSERT(visitor != NULL);
   // NOTE: This code runs while GC is in progress and runs within
   // a NoHandleScope block. Hence it is not ok to use regular Zone or
@@ -97,10 +96,6 @@ void StackFrame::VisitObjectPointers(ObjectPointerVisitor* visitor) {
   Code code;
   code = GetCodeObject();
   if (!code.IsNull()) {
-    // Visit the code object.
-    RawObject* raw_code = code.raw();
-    visitor->VisitPointer(&raw_code);
-
     // Optimized frames have a stack map. We need to visit the frame based
     // on the stack map.
     Array maps;
@@ -223,9 +218,9 @@ RawCode* StackFrame::LookupDartCode() const {
 // We add a no gc scope to ensure that the code below does not trigger
 // a GC as we are handling raw object references here. It is possible
 // that the code is called while a GC is in progress, that is ok.
-#if !defined(TARGET_OS_WINDOWS)
-  // On Windows, the profiler calls this from a separate thread where
-  // Thread::Current() is NULL, so we cannot create a NoSafepointScope.
+#if !defined(HOST_OS_WINDOWS) && !defined(HOST_OS_FUCHSIA)
+  // On Windows and Fuchsia, the profiler calls this from a separate thread
+  // where Thread::Current() is NULL, so we cannot create a NoSafepointScope.
   NoSafepointScope no_safepoint;
 #endif
   RawCode* code = GetCodeObject();
@@ -250,13 +245,15 @@ RawCode* StackFrame::GetCodeObject() const {
 bool StackFrame::FindExceptionHandler(Thread* thread,
                                       uword* handler_pc,
                                       bool* needs_stacktrace,
-                                      bool* has_catch_all) const {
+                                      bool* has_catch_all,
+                                      bool* is_optimized) const {
   REUSABLE_CODE_HANDLESCOPE(thread);
   Code& code = reused_code_handle.Handle();
   code = LookupDartCode();
   if (code.IsNull()) {
     return false;  // Stub frames do not have exception handlers.
   }
+  *is_optimized = code.is_optimized();
   HandlerInfoCache* cache = thread->isolate()->handler_info_cache();
   ExceptionHandlerInfo* info = cache->Lookup(pc());
   if (info != NULL) {
@@ -347,30 +344,33 @@ static void UnpoisonStack(uword fp) {
 }
 
 
-StackFrameIterator::StackFrameIterator(bool validate, Thread* thread)
-    : validate_(validate),
+StackFrameIterator::StackFrameIterator(ValidationPolicy validation_policy,
+                                       Thread* thread,
+                                       CrossThreadPolicy cross_thread_policy)
+    : validate_(validation_policy == kValidateFrames),
       entry_(thread),
       exit_(thread),
       frames_(thread),
       current_frame_(NULL),
       thread_(thread) {
-  ASSERT((thread_ == Thread::Current()) ||
-         OS::AllowStackFrameIteratorFromAnotherThread());
+  ASSERT(cross_thread_policy == kAllowCrossThreadIteration ||
+         thread_ == Thread::Current());
   SetupLastExitFrameData();  // Setup data for last exit frame.
 }
 
 
 StackFrameIterator::StackFrameIterator(uword last_fp,
-                                       bool validate,
-                                       Thread* thread)
-    : validate_(validate),
+                                       ValidationPolicy validation_policy,
+                                       Thread* thread,
+                                       CrossThreadPolicy cross_thread_policy)
+    : validate_(validation_policy == kValidateFrames),
       entry_(thread),
       exit_(thread),
       frames_(thread),
       current_frame_(NULL),
       thread_(thread) {
-  ASSERT((thread_ == Thread::Current()) ||
-         OS::AllowStackFrameIteratorFromAnotherThread());
+  ASSERT(cross_thread_policy == kAllowCrossThreadIteration ||
+         thread_ == Thread::Current());
   frames_.fp_ = last_fp;
   frames_.sp_ = 0;
   frames_.pc_ = 0;
@@ -381,16 +381,17 @@ StackFrameIterator::StackFrameIterator(uword last_fp,
 StackFrameIterator::StackFrameIterator(uword fp,
                                        uword sp,
                                        uword pc,
-                                       bool validate,
-                                       Thread* thread)
-    : validate_(validate),
+                                       ValidationPolicy validation_policy,
+                                       Thread* thread,
+                                       CrossThreadPolicy cross_thread_policy)
+    : validate_(validation_policy == kValidateFrames),
       entry_(thread),
       exit_(thread),
       frames_(thread),
       current_frame_(NULL),
       thread_(thread) {
-  ASSERT((thread_ == Thread::Current()) ||
-         OS::AllowStackFrameIteratorFromAnotherThread());
+  ASSERT(cross_thread_policy == kAllowCrossThreadIteration ||
+         thread_ == Thread::Current());
   frames_.fp_ = fp;
   frames_.sp_ = sp;
   frames_.pc_ = pc;
@@ -510,6 +511,10 @@ InlinedFunctionsIterator::InlinedFunctionsIterator(const Code& code, uword pc)
   ASSERT(code_.is_optimized());
   ASSERT(pc_ != 0);
   ASSERT(code.ContainsInstructionAt(pc));
+#if defined(DART_PRECOMPILED_RUNTIME)
+  ASSERT(deopt_info_.IsNull());
+  function_ = code_.function();
+#else
   ICData::DeoptReasonId deopt_reason = ICData::kDeoptUnknown;
   uint32_t deopt_flags = 0;
   deopt_info_ = code_.GetDeoptInfoAtPc(pc, &deopt_reason, &deopt_flags);
@@ -528,6 +533,7 @@ InlinedFunctionsIterator::InlinedFunctionsIterator(const Code& code, uword pc)
     object_table_ = code_.GetObjectPool();
     Advance();
   }
+#endif  // defined(DART_PRECOMPILED_RUNTIME)
 }
 
 
@@ -536,6 +542,11 @@ void InlinedFunctionsIterator::Advance() {
   // functions if any and iterate over them.
   ASSERT(!Done());
 
+#if defined(DART_PRECOMPILED_RUNTIME)
+  ASSERT(deopt_info_.IsNull());
+  SetDone();
+  return;
+#else
   if (deopt_info_.IsNull()) {
     SetDone();
     return;
@@ -551,6 +562,7 @@ void InlinedFunctionsIterator::Advance() {
     }
   }
   SetDone();
+#endif  // defined(DART_PRECOMPILED_RUNTIME)
 }
 
 
@@ -578,7 +590,9 @@ intptr_t InlinedFunctionsIterator::GetDeoptFpOffset() const {
 
 #if defined(DEBUG)
 void ValidateFrames() {
-  StackFrameIterator frames(StackFrameIterator::kValidateFrames);
+  StackFrameIterator frames(StackFrameIterator::kValidateFrames,
+                            Thread::Current(),
+                            StackFrameIterator::kNoCrossThreadIteration);
   StackFrame* frame = frames.NextFrame();
   while (frame != NULL) {
     frame = frames.NextFrame();

@@ -4,23 +4,32 @@
 
 library fasta.compiler_command_line;
 
-import 'dart:io' show
-    exit;
+import 'dart:io' show exit;
 
-import 'command_line.dart' show
-    CommandLine,
-    argumentError;
+import 'command_line.dart' show CommandLine, deprecated_argumentError;
 
-import 'compiler_context.dart' show
-    CompilerContext;
+import 'compiler_context.dart' show CompilerContext;
+
+import 'package:kernel/target/targets.dart'
+    show Target, getTarget, TargetFlags, targets;
+
+import 'fasta_codes.dart'
+    show
+        Message,
+        messageFastaUsageLong,
+        messageFastaUsageShort,
+        templateUnspecified;
 
 const Map<String, dynamic> optionSpecification = const <String, dynamic>{
   "--compile-sdk": Uri,
   "--fatal": ",",
   "--output": Uri,
+  "-o": Uri,
   "--packages": Uri,
   "--platform": Uri,
-  "-o": Uri,
+  "--sdk": Uri,
+  "--target": String,
+  "-t": String,
 };
 
 class CompilerCommandLine extends CommandLine {
@@ -28,18 +37,25 @@ class CompilerCommandLine extends CommandLine {
 
   CompilerCommandLine(String programName, List<String> arguments)
       : programName = programName,
-        super(arguments, specification: optionSpecification,
+        super(arguments,
+            specification: optionSpecification,
             usage: computeUsage(programName, false));
 
   bool get verify => options.containsKey("--verify");
 
   bool get dumpIr => options.containsKey("--dump-ir");
 
+  bool get excludeSource => options.containsKey("--exclude-source");
+
   bool get help {
     return options.containsKey("--help") ||
         options.containsKey("-h") ||
         options.containsKey("/h") ||
         options.containsKey("/?");
+  }
+
+  bool get setExitCodeOnProblem {
+    return options.containsKey("--set-exit-code-on-problem");
   }
 
   void validate() {
@@ -49,13 +65,33 @@ class CompilerCommandLine extends CommandLine {
     }
 
     if (options.containsKey("-o") && options.containsKey("--output")) {
-      return argumentError(usage, "Can't specify both '-o' and '--output'.");
+      return deprecated_argumentError(
+          usage, "Can't specify both '-o' and '--output'.");
     }
-    if (programName == "compile_platform" && arguments.length != 2) {
-      return argumentError(usage, "Expected two arguments.");
+    if (options.containsKey("-t") && options.containsKey("--target")) {
+      return deprecated_argumentError(
+          usage, "Can't specify both '-t' and '--target'.");
+    }
+    if (options.containsKey("--compile-sdk") &&
+        options.containsKey("--platform")) {
+      return deprecated_argumentError(
+          usage, "Can't specify both '--compile-sdk' and '--platform'.");
+    }
+    if (programName == "compile_platform" && arguments.length != 3) {
+      return deprecated_argumentError(usage, "Expected three arguments.");
     } else if (arguments.isEmpty) {
-      return argumentError(usage, "No Dart file specified.");
+      return deprecated_argumentError(usage, "No Dart file specified.");
     }
+
+    Target target =
+        getTarget(targetName, new TargetFlags(strongMode: strongMode));
+    if (target == null) {
+      return deprecated_argumentError(
+          usage,
+          "Target '${targetName}' not recognized. "
+          "Valid targets are:\n  ${targets.keys.join("\n  ")}");
+    }
+    options["target"] = target;
   }
 
   Uri get output {
@@ -72,7 +108,7 @@ class CompilerCommandLine extends CommandLine {
 
   Uri get packages => options["--packages"] ?? Uri.base.resolve(".packages");
 
-  Uri get sdk => options["--compile-sdk"];
+  Uri get sdk => options["--sdk"] ?? options["--compile-sdk"];
 
   Set<String> get fatal {
     return new Set<String>.from(options["--fatal"] ?? <String>[]);
@@ -83,6 +119,14 @@ class CompilerCommandLine extends CommandLine {
   bool get warningsAreFatal => fatal.contains("warnings");
 
   bool get nitsAreFatal => fatal.contains("nits");
+
+  bool get strongMode => options.containsKey("--strong-mode");
+
+  String get targetName {
+    return options["-t"] ?? options["--target"] ?? "vm_fasta";
+  }
+
+  Target get target => options["target"];
 
   static dynamic withGlobalOptions(String programName, List<String> arguments,
       dynamic f(CompilerContext context)) {
@@ -95,10 +139,12 @@ class CompilerCommandLine extends CommandLine {
   }
 }
 
-String computeUsage(String programName, bool verbose) {
+Message computeUsage(String programName, bool verbose) {
   String basicUsage = "Usage: $programName [options] dartfile\n";
   String summary;
-  String options = (verbose ? allOptions : frequentOptions).trim();
+  String options =
+      (verbose ? messageFastaUsageLong.message : messageFastaUsageShort.message)
+          .trim();
   switch (programName) {
     case "outline":
       summary =
@@ -119,9 +165,9 @@ String computeUsage(String programName, bool verbose) {
       break;
 
     case "compile_platform":
-      summary =
-          "Compiles Dart SDK platform to the Dill/Kernel IR format.";
-      basicUsage = "Usage: $programName [options] patched_sdk output\n";
+      summary = "Compiles Dart SDK platform to the Dill/Kernel IR format.";
+      basicUsage = "Usage: $programName [options] patched_sdk fullOutput "
+          "outlineOutput\n";
   }
   StringBuffer sb = new StringBuffer(basicUsage);
   if (summary != null) {
@@ -130,55 +176,6 @@ String computeUsage(String programName, bool verbose) {
     sb.writeln();
   }
   sb.write(options);
-  return "$sb";
+  // TODO(ahe): Don't use [templateUnspecified].
+  return templateUnspecified.withArguments("$sb");
 }
-
-const String frequentOptions = """
-Frequently used options:
-
-  -o <file> Generate the output into <file>.
-  -h        Display this message (add -v for information about all options).
-""";
-
-const String allOptions = """
-Supported options:
-
-  -o <file>, --out=<file>
-    Generate the output into <file>.
-
-  -h, /h, /?, --help
-    Display this message (add -v for information about all options).
-
-  -v, --verbose
-    Display verbose information.
-
-  --
-    Stop option parsing, the rest of the command line is assumed to be
-    file names or arguments to the Dart program.
-
-  --packages=<file>
-    Use package resolution configuration <file>, which should contain a mapping
-    of package names to paths.
-
-  --platform=<file>
-    Read the SDK platform from <file>, which should be in Dill/Kernel IR format
-    and contain the Dart SDK.
-
-  --verify
-    Check that the generated output is free of various problems. This is mostly
-    useful for developers of this compiler or Kernel transformations.
-
-  --dump-ir
-    Print compiled libraries in Kernel source notation.
-
-  --compile-sdk=<patched_sdk>
-    Compile the SDK from scratch instead of reading it from 'platform.dill'.
-
-  --fatal=errors
-  --fatal=warnings
-  --fatal=nits
-    Makes messages of the given kinds fatal, that is, immediately stop the
-    compiler with a non-zero exit-code. In --verbose mode, also display an
-    internal stack trace from the compiler. Multiple kinds can be separated by
-    commas, for example, --fatal=errors,warnings.
-""";

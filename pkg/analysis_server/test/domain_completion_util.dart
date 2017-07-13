@@ -2,15 +2,15 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.domain.completion;
-
 import 'dart:async';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_constants.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
 import 'package:analysis_server/src/constants.dart';
 import 'package:analysis_server/src/domain_completion.dart';
 import 'package:analysis_server/src/provisional/completion/dart/completion_dart.dart';
-import 'package:analysis_server/src/services/index/index.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:test/test.dart';
 
 import 'analysis_abstract.dart';
@@ -77,11 +77,6 @@ class AbstractCompletionDomainTest extends AbstractAnalysisTest {
     expect(id.isNotEmpty, isTrue);
   }
 
-  @override
-  Index createIndex() {
-    return createMemoryIndex();
-  }
-
   Future getSuggestions() async {
     await waitForTasksFinished();
 
@@ -109,7 +104,7 @@ class AbstractCompletionDomainTest extends AbstractAnalysisTest {
       expect(allSuggestions.containsKey(id), isFalse);
       allSuggestions[id] = params.results;
       _getResultsCompleter(id).complete(null);
-    } else if (notification.event == SERVER_ERROR) {
+    } else if (notification.event == SERVER_NOTIFICATION_ERROR) {
       fail('server error: ${notification.toJson()}');
     }
   }

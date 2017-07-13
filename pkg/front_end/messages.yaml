@@ -1,0 +1,800 @@
+# Copyright (c) 2017, the Dart project authors.  Please see the AUTHORS file
+# for details. All rights reserved. Use of this source code is governed by a
+# BSD-style license that can be found in the LICENSE file.
+
+# Each entry in this map corresponds to a diagnostic message. Ideally, each
+# entry contains three parts:
+#
+# 1. A message template (template).
+#
+# 2. A suggestion for how to correct the problem (tip).
+#
+# 3. Examples that produce the message (one of expression, statement,
+#    declaration, member, script, or bytes).
+#
+# A message shouldn't indicate which kind of diagnostic it is, for example,
+# warning or error. Tools are expected to prepend "Warning: ", or "Error: ",
+# and should be allowed to change the kind of diagnostic without affecting the
+# message. For example, an error might be turned into a warning by the tool.
+#
+# A message used for internal errors should have key that starts with
+# "InternalProblem". This way, UX review can prioritize it accordingly.
+#
+# In addition, an entry can contain an analyzer error code (analyzerCode) and a
+# dart2js error code (dart2jsCode).
+#
+# For dart2js, there's a few special error codes:
+#
+# - `*ignored*` this error is ignored by dart2js (normally a recoverable parser
+#   error that dart2js reports in later phase for historical reasons).
+#
+# - `*fatal*` this is an error that is considered fatal by dart2js (normally a
+#   recoverable parser error that dart2js can't reliably recover from).
+#
+# ## Parameter Substitution in Template and Tip
+#
+# The fields `template` and `tip` are subject to parameter substitution. When
+# the compiler reports a problem, it may also specify a map with the following
+# keys to be substituted into the message:
+#
+# `#character` a Unicode character.
+#
+# `#unicode` a Unicode short identifier (U+xxxx). We use this to represent code
+#  units or code points.
+#
+# `#name` a name (a string).
+#
+# `#name2` another name (a string).
+#
+# `#number` a number (an integer).
+#
+# `#lexeme` a token. The token's `lexeme` property is used.
+#
+# `#string` a string.
+#
+# `#string2` another string.
+#
+# `#uri` a Uri.
+
+AsciiControlCharacter:
+  template: "The control character #unicode can only be used in strings and comments."
+  dart2jsCode: BAD_INPUT_CHARACTER
+  analyzerCode: ILLEGAL_CHARACTER
+  expression: "\x1b 1"
+
+NonAsciiIdentifier:
+  template: "The non-ASCII character '#character' (#unicode) can't be used in identifiers, only in strings and comments."
+  tip: "Try using an US-ASCII letter, a digit, '_' (an underscore), or '$' (a dollar sign)."
+  analyzerCode: ILLEGAL_CHARACTER
+  dart2jsCode: BAD_INPUT_CHARACTER
+  expression: "å"
+
+NonAsciiWhitespace:
+  template: "The non-ASCII space character #unicode can only be used in strings and comments."
+  analyzerCode: ILLEGAL_CHARACTER
+  dart2jsCode: BAD_INPUT_CHARACTER
+  expression: "\u2028 1"
+
+Encoding:
+  template: "Unable to decode bytes as UTF-8."
+  dart2jsCode: "*fatal*"
+  bytes: [255]
+
+EmptyNamedParameterList:
+  template: "Named parameter lists cannot be empty."
+  tip: "Try adding a named parameter to the list."
+  dart2jsCode: EMPTY_NAMED_PARAMETER_LIST
+  script: >
+    foo({}) {}
+
+    main() {
+      foo();
+    }
+
+EmptyOptionalParameterList:
+  template: "Optional parameter lists cannot be empty."
+  tip: "Try adding an optional parameter to the list."
+  dart2jsCode: EMPTY_OPTIONAL_PARAMETER_LIST
+  script: >
+    foo([]) {}
+
+    main() {
+      foo();
+    }
+
+ExpectedBlockToSkip:
+  template: "Expected a function body or '=>'."
+  # TODO(ahe): In some scenarios, we can suggest removing the 'static' keyword.
+  tip: "Try adding {}."
+  dart2jsCode: NATIVE_OR_BODY_EXPECTED
+  script: "main();"
+
+ExpectedBody:
+  template: "Expected a function body or '=>'."
+  # TODO(ahe): In some scenarios, we can suggest removing the 'static' keyword.
+  tip: "Try adding {}."
+  dart2jsCode: BODY_EXPECTED
+  script: "main();"
+
+ExpectedButGot:
+  template: "Expected '#string' before this."
+  # Consider the second example below: the parser expects a ')' before 'y', but
+  # a ',' would also have worked. We don't have enough information to give a
+  # good suggestion.
+  tip: DONT_KNOW_HOW_TO_FIX,
+  dart2jsCode: MISSING_TOKEN_BEFORE_THIS
+  script:
+    - "main() => true ? 1;"
+    - "main() => foo(x: 1 y: 2);"
+
+ExpectedClassBody:
+  template: "Expected a class body, but got '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+ExpectedClassBodyToSkip: ExpectedClassBody
+
+ExpectedDeclaration:
+  template: "Expected a declaration, but got '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+ExpectedExpression:
+  template: "Expected an expression, but got '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+ExpectedFunctionBody:
+  template: "Expected a function body, but got '#lexeme'."
+  dart2jsCode: NATIVE_OR_FATAL
+
+ExpectedHexDigit:
+  template: "A hex digit (0-9 or A-F) must follow '0x'."
+  # No tip, seems obvious from the error message.
+  analyzerCode: MISSING_HEX_DIGIT
+  dart2jsCode: HEX_DIGIT_EXPECTED
+  script: >
+    main() {
+      var i = 0x;
+    }
+
+ExpectedIdentifier:
+  template: "'#lexeme' is a reserved word and can't be used here."
+  tip: "Try using a different name."
+  dart2jsCode: EXPECTED_IDENTIFIER
+  script: "do() {} main() {}"
+
+ExpectedOpenParens:
+  template: "Expected '('."
+  dart2jsCode: GENERIC
+
+ExpectedString:
+  template: "Expected a String, but got '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+ExpectedType:
+  template: "Expected a type, but got '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+ExtraneousModifier:
+  template: "Can't have modifier '#lexeme' here."
+  tip: "Try removing '#lexeme'."
+  dart2jsCode: EXTRANEOUS_MODIFIER
+  script:
+    - "var String foo; main(){}"
+    - "var set foo; main(){}"
+    - "var final foo; main(){}"
+    - "var var foo; main(){}"
+    - "var const foo; main(){}"
+    - "var abstract foo; main(){}"
+    - "var static foo; main(){}"
+    - "var external foo; main(){}"
+    - "get var foo; main(){}"
+    - "set var foo; main(){}"
+    - "final var foo; main(){}"
+    - "var var foo; main(){}"
+    - "const var foo; main(){}"
+    - "abstract var foo; main(){}"
+    - "static var foo; main(){}"
+    - "external var foo; main(){}"
+    - "set foo; main(){}"
+    - "abstract foo; main(){}"
+    - "static foo; main(){}"
+    - "external foo; main(){}"
+
+InvalidAwaitFor:
+  template: "'await' is only supported in methods with an 'async' or 'async*' body modifier."
+  tip: "Try adding 'async' or 'async*' to the method body or removing the 'await' keyword."
+  dart2jsCode: INVALID_AWAIT_FOR
+  script: >
+    main(o) sync* {
+      await for (var e in o) {}
+    }
+
+InvalidSyncModifier:
+  template: "Invalid modifier 'sync'."
+  tip: "Try replacing 'sync' with 'sync*'."
+  dart2jsCode: INVALID_SYNC_MODIFIER
+  script: "main() sync {}"
+
+InvalidVoid:
+  template: "Type 'void' can't be used here because it isn't a return type."
+  tip: "Try removing 'void' keyword or replace it with 'var', 'final', or a type."
+  dart2jsCode: VOID_NOT_ALLOWED
+  script:
+    - "void x; main() {}"
+    - "foo(void x) {} main() { foo(null); }"
+
+MissingExponent:
+  template: "Numbers in exponential notation should always contain an exponent (an integer number with an optional sign)."
+  tip: "Make sure there is an exponent, and remove any whitespace before it."
+  analyzerCode: MISSING_DIGIT
+  dart2jsCode: EXPONENT_MISSING
+  script: >
+    main() {
+      var i = 1e;
+    }
+
+PositionalParameterWithEquals:
+  template: "Positional optional parameters can't use ':' to specify a default value."
+  tip: "Try replacing ':' with '='."
+  dart2jsCode: POSITIONAL_PARAMETER_WITH_EQUALS
+  script: >
+    main() {
+      foo([a: 1]) => print(a);
+      foo(2);
+    }
+
+RequiredParameterWithDefault:
+  template: "Non-optional parameters can't have a default value."
+  tip: "Try removing the default value or making the parameter optional."
+  dart2jsCode: REQUIRED_PARAMETER_WITH_DEFAULT
+  script:
+    - >
+      main() {
+        foo(a: 1) => print(a);
+        foo(2);
+      }
+    - >
+      main() {
+        foo(a = 1) => print(a);
+        foo(2);
+      }
+
+StackOverflow:
+  template: "Stack overflow."
+  dart2jsCode: GENERIC
+
+UnexpectedDollarInString:
+  template: "A '$' has special meaning inside a string, and must be followed by an identifier or an expression in curly braces ({})."
+  tip: "Try adding a backslash (\\) to escape the '$'."
+  dart2jsCode: MALFORMED_STRING_LITERAL
+  script:
+    - >
+      main() {
+        return '$';
+      }
+    - >
+      main() {
+        return "$";
+      }
+    - >
+      main() {
+        return '''$''';
+      }
+    - >
+      main() {
+        return """$""";
+      }
+
+UnexpectedToken:
+  template: "Unexpected token '#lexeme'."
+  dart2jsCode: "*fatal*"
+
+UnmatchedToken:
+  template: "Can't find '#string' to match '#lexeme'."
+  dart2jsCode: UNMATCHED_TOKEN
+  script:
+    - "main("
+    - "main(){"
+    - "main(){[}"
+
+UnsupportedPrefixPlus:
+  template: "'+' is not a prefix operator. "
+  tip: "Try removing '+'."
+  dart2jsCode: UNSUPPORTED_PREFIX_PLUS
+  script: "main() => +2;  // No longer a valid way to write '2'"
+
+UnterminatedComment:
+  template: "Comment starting with '/*' must end with '*/'."
+  analyzerCode: UNTERMINATED_MULTI_LINE_COMMENT
+  dart2jsCode: UNTERMINATED_COMMENT
+  script:
+    main() {
+    }
+    /*
+
+UnterminatedString:
+  template: "String must end with #string."
+  analyzerCode: UNTERMINATED_STRING_LITERAL
+  dart2jsCode: UNTERMINATED_STRING
+  script:
+    - >
+      main() {
+        return '
+      ;
+      }
+    - >
+      main() {
+        return \"
+      ;
+      }
+    - >
+      main() {
+        return r'
+      ;
+      }
+    - >
+      main() {
+        return r\"
+      ;
+      }
+    - >
+      main() => '''
+    - >
+      main() => \"\"\"
+    - >
+      main() => r'''
+    - >
+      main() => r\"\"\"
+
+UnterminatedToken:
+  # This is a fall-back message that shouldn't happen.
+  template: "Incomplete token."
+  dart2jsCode: UNTERMINATED_TOKEN
+
+Unspecified:
+  template: "#string"
+  dart2jsCode: GENERIC
+
+AbstractNotSync:
+  template: "Abstract methods can't use 'async', 'async*', or 'sync*'."
+  dart2jsCode: "*ignored*"
+
+AsyncAsIdentifier:
+  analyzerCode: ASYNC_KEYWORD_USED_AS_IDENTIFIER
+  template: "'async' can't be used as an identifier in 'async', 'async*', or 'sync*' methods."
+  dart2jsCode: GENERIC
+
+AwaitAsIdentifier:
+  template: "'await' can't be used as an identifier in 'async', 'async*', or 'sync*' methods."
+  dart2jsCode: "*ignored*"
+
+AwaitNotAsync:
+  template: "'await' can only be used in 'async' or 'async*' methods."
+  dart2jsCode: "*ignored*"
+
+BuiltInIdentifierAsType:
+  template: "Can't use '#lexeme' as a type."
+  analyzerCode: EXPECTED_TYPE_NAME
+  dart2jsCode: EXTRANEOUS_MODIFIER
+
+BuiltInIdentifierInDeclaration:
+  template: "Can't use '#lexeme' as a name here."
+  dart2jsCode: GENERIC
+
+AwaitForNotAsync:
+  template: "Asynchronous for-loop can only be used in 'async' or 'async*' methods."
+  dart2jsCode: "*ignored*"
+
+FactoryNotSync:
+  template: "Factories can't use 'async', 'async*', or 'sync*'."
+  dart2jsCode: "*ignored*"
+
+GeneratorReturnsValue:
+  template: "'sync*' and 'async*' can't return a value."
+  dart2jsCode: "*ignored*"
+
+InvalidInlineFunctionType:
+  template: "Invalid inline function type."
+  tip: "Try changing the inline function type (as in 'int f()') to a prefixed function type using the `Function` keyword (as in 'int Function() f')."
+  dart2jsCode: INVALID_INLINE_FUNCTION_TYPE
+  declaration: "typedef F = Function(int f(String x)); main() { F f; }"
+
+SetterNotSync:
+  template: "Setters can't use 'async', 'async*', or 'sync*'."
+  dart2jsCode: "*ignored*"
+
+YieldAsIdentifier:
+  template: "'yield' can't be used as an identifier in 'async', 'async*', or 'sync*' methods."
+  dart2jsCode: "*ignored*"
+
+YieldNotGenerator:
+  template: "'yield' can only be used in 'sync*' or 'async*' methods."
+  dart2jsCode: "*ignored*"
+
+OnlyTry:
+  template: "Try block should be followed by 'on', 'catch', or 'finally' block."
+  tip: "Did you forget to add a 'finally' block?"
+  statement: "try {}"
+  dart2jsCode: "*ignored*"
+
+TypeAfterVar:
+  template: "Can't have both a type and 'var'."
+  tip: "Try removing 'var.'"
+  dart2jsCode: EXTRANEOUS_MODIFIER
+
+TypeRequired:
+  template: "A type or modifier is required here."
+  tip: "Try adding a type, 'var', 'const', or 'final'."
+
+AssertExtraneousArgument:
+  template: "`assert` can't have more than two arguments."
+  dart2jsCode: "*fatal*"
+
+AssertAsExpression:
+  template: "`assert` can't be used as an expression."
+  dart2jsCode: "*fatal*"
+
+FunctionTypeDefaultValue:
+  template: "Can't have a default value in a function type."
+  dart2jsCode: "*ignored*"
+
+PrivateNamedParameter:
+  template: "An optional named parameter can't start with '_'."
+  dart2jsCode: "*ignored*"
+
+NoFormals:
+  template: "A function should have formal parameters."
+  tip: "Try adding '()' after '#lexeme', or add 'get' before '#lexeme' to declare a getter."
+  dart2jsCode: "*ignored*"
+
+GetterWithFormals:
+  template: "A getter can't have formal parameters."
+  tip: "Try removing '(...)'."
+  dart2jsCode: "*ignored*"
+
+CatchSyntax:
+  template: "'catch' must be followed by '(identifier)' or '(identifier, identifier)'."
+  tip: "No types are needed, the first is given by 'on', the second is always 'StackTrace'."
+  dart2jsCode: "*ignored*"
+
+SuperNullAware:
+  template: "'super' can't be null."
+  tip: "Try replacing '?.' with '.'"
+  dart2jsCode: "*ignored*"
+
+ConstFieldWithoutInitializer:
+  template: "A 'const' field must be initialized."
+  tip: "Try adding '= <initializer>'."
+  dart2jsCode: "*ignored*"
+
+FinalFieldWithoutInitializer:
+  template: "A 'final' field must be initialized."
+  tip: "Try adding '= <initializer>'."
+  dart2jsCode: "*ignored*"
+
+MetadataTypeArguments:
+  template: "An annotation (metadata) can't use type arguments."
+  dart2jsCode: "*ignored*"
+
+ConstructorNotFound:
+  template: "Couldn't find constructor '#name'."
+
+RedirectionTargetNotFound:
+  template: "Redirection constructor target not found: '#name'"
+
+CyclicTypedef:
+  template: "The typedef '#name' has a reference to itself."
+
+TypeNotFound:
+  template: "Type '#name' not found."
+
+NonInstanceTypeVariableUse:
+  template: "Can only use type variables in instance methods."
+
+GetterNotFound:
+  template: "Getter not found: '#name'."
+
+SetterNotFound:
+  template: "Setter not found: '#name'."
+
+MethodNotFound:
+  template: "Method not found: '#name'."
+
+AbstractClassInstantiation:
+  template: "The class '#name' is abstract and can't be instantiated."
+
+ListLiteralTooManyTypeArguments:
+  template: "Too many type arguments on List literal."
+
+ListLiteralTypeArgumentMismatch:
+  template: "Map literal requires two type arguments."
+
+NotAType:
+  template: "'#name' isn't a type."
+
+FastaUsageShort:
+  template: >-
+    Frequently used options:
+
+      -o <file> Generate the output into <file>.
+      -h        Display this message (add -v for information about all options).
+
+FastaUsageLong:
+  template: >-
+    Supported options:
+
+      -o <file>, --output=<file>
+        Generate the output into <file>.
+
+      -h, /h, /?, --help
+        Display this message (add -v for information about all options).
+
+      -v, --verbose
+        Display verbose information.
+
+      --
+        Stop option parsing, the rest of the command line is assumed to be
+        file names or arguments to the Dart program.
+
+      --packages=<file>
+        Use package resolution configuration <file>, which should contain a mapping
+        of package names to paths.
+
+      --platform=<file>
+        Read the SDK platform from <file>, which should be in Dill/Kernel IR format
+        and contain the Dart SDK.
+
+      --target=none|vm|vmcc|vmreify|flutter
+        Specify the target configuration.
+
+      --verify
+        Check that the generated output is free of various problems. This is mostly
+        useful for developers of this compiler or Kernel transformations.
+
+      --dump-ir
+        Print compiled libraries in Kernel source notation.
+
+      --exclude-source
+        Do not include source code in the dill file.
+
+      --compile-sdk=<patched_sdk>
+        Compile the SDK from scratch instead of reading it from 'platform.dill'.
+
+      --sdk=<patched_sdk>
+        Location of the SDK sources for use when compiling additional platform
+        libraries.
+
+      --fatal=errors
+      --fatal=warnings
+      --fatal=nits
+        Makes messages of the given kinds fatal, that is, immediately stop the
+        compiler with a non-zero exit-code. In --verbose mode, also display an
+        internal stack trace from the compiler. Multiple kinds can be separated by
+        commas, for example, --fatal=errors,warnings.
+
+FastaCLIArgumentRequired:
+  template: "Expected value after '#name'."
+
+NamedFunctionExpression:
+  template: "A function expression can't have a name."
+  dart2jsCode: "*ignored*"
+
+ReturnTypeFunctionExpression:
+  template: "A function expression can't have a return type."
+  dart2jsCode: "*ignored*"
+
+InternalProblemUnhandled:
+  template: "Unhandled #string in #string2."
+
+InternalProblemUnimplemented:
+  template: "Unimplemented #string."
+
+InternalProblemUnexpected:
+  template: "Expected '#string', but got '#string2'."
+
+InternalProblemUnsupported:
+  template: "Unsupported operation: '#name'."
+
+InternalProblemSuperclassNotFound:
+  template: "Superclass not found '#name'."
+
+InternalProblemNotFound:
+  template: "Couldn't find '#name'."
+
+InternalProblemNotFoundIn:
+  template: "Couldn't find '#name' in '#name2'."
+
+InternalProblemPrivateConstructorAccess:
+  template: "Can't access private constructor '#name'."
+
+InternalProblemConstructorNotFound:
+  template: "No constructor named '#name' in '#uri'."
+
+InternalProblemExtendingUnmodifiableScope:
+  template: "Can't extend an unmodifiable scope."
+
+InternalProblemPreviousTokenNotFound:
+  template: "Couldn't find previous token."
+
+InternalProblemStackNotEmpty:
+  template: "#name.stack isn't empty:\n  #string"
+
+InternalProblemAlreadyInitialized:
+  template: "Attempt to set initializer on field without initializer."
+
+InternalProblemBodyOnAbstractMethod:
+  template: "Attempting to set body on abstract method."
+
+InternalVerificationError:
+  template: "Verification of the generated program failed: #string."
+
+LocalDefinitionHidesExport:
+  template: "Local definition of '#name' hides export from '#uri'."
+
+LocalDefinitionHidesImport:
+  template: "Local definition of '#name' hides import from '#uri'."
+
+ExportHidesExport:
+  template: "Export of '#name' (from '#uri') hides export from '#uri2'."
+
+ImportHidesImport:
+  template: "Import of '#name' (from '#uri') hides import from '#uri2'."
+
+DuplicatedExport:
+  template: "'#name' is exported from both '#uri' and '#uri2'."
+
+DuplicatedImport:
+  template: "'#name' is imported from both '#uri' and '#uri2'."
+
+CyclicClassHierarchy:
+  template: "'#name' is a supertype of itself via '#string'."
+
+ExtendingEnum:
+  template: "'#name' is an enum and can't be extended or implemented."
+
+ExtendingRestricted:
+  template: "'#name' is restricted and can't be extended or implemented."
+
+NoUnnamedConstructorInObject:
+  template: "'Object' has no unnamed constructor."
+
+IllegalMixinDueToConstructors:
+  template: "Can't use '#name' as a mixin because it has constructors."
+
+IllegalMixinDueToConstructorsCause:
+  template: "This constructor prevents using '#name' as a mixin."
+
+ConflictsWithConstructor:
+  template: "Conflicts with constructor '#name'."
+
+ConflictsWithFactory:
+  template: "Conflicts with factory '#name'."
+
+ConflictsWithMember:
+  template: "Conflicts with member '#name'."
+
+ConflictsWithSetter:
+  template: "Conflicts with setter '#name'."
+
+ConflictsWithTypeVariable:
+  template: "Conflicts with type variable '#name'."
+
+ConflictsWithTypeVariableCause:
+  template:  "This is the type variable."
+
+IllegalMixin:
+  template: "The type '#name' can't be mixed in."
+
+OverrideTypeVariablesMismatch:
+  template: "Declared type variables of '#name' doesn't match those on overridden method '#name2'."
+
+OverrideMismatchNamedParameter:
+  template: "The method '#name' doesn't have the named parameter '#name2' of overriden method '#name3'."
+
+OverrideFewerNamedArguments:
+  template: "The method '#name' has fewer named arguments than those of overridden method '#name2'."
+
+OverrideFewerPositionalArguments:
+  template: "The method '#name' has fewer positional arguments than those of overridden method '#name2'."
+
+OverrideMoreRequiredArguments:
+  template: "The method '#name' has more required arguments than those of overridden method '#name2'."
+
+IllegalMethodName:
+  template: "'#name' isn't a legal method name."
+  tip: "Did you mean '#name2'?"
+
+ConstConstructorWithBody:
+  template: "A const constructor can't have a body."
+
+PartOfSelf:
+  template: "A file can't be a part of itself."
+
+TypeVariableDuplicatedName:
+  template: "A type variable can't have the same name as another."
+
+TypeVariableDuplicatedNameCause:
+  template: "The other type variable named '#name'."
+
+TypeVariableSameNameAsEnclosing:
+  template: "A type variable can't have the same name as its enclosing declaration."
+
+EnumDeclartionEmpty:
+  template: "An enum declaration can't be empty."
+
+ExternalMethodWithBody:
+  template: "An external method can't have a body."
+
+OperatorWithOptionalFormals:
+  template: "An operator can't have optional parameters."
+
+PlatformPrivateLibraryAccess:
+  template: "Can't access platform private library."
+
+TypedefNotFunction:
+  template: "Can't create typedef from non-function type."
+
+PartTwice:
+  template: "Can't use '#uri' as a part more than once."
+
+MissingPartOf:
+  template: "Can't use '#uri' as a part, because it has no 'part of' declaration."
+
+SupertypeIsFunction:
+  template: "Can't use a function type as supertype."
+
+DeferredPrefixDuplicated:
+  template: "Can't use the name '#name' for a deferred library, as the name is used elsewhere."
+
+DeferredPrefixDuplicatedCause:
+  template: "'#name' is used here."
+
+TypeArgumentsOnTypeVariable:
+  template: "Can't use type arguments with type variable '#name'."
+
+DuplicatedDefinition:
+  template: "Duplicated definition of '#name'."
+
+DuplicatedName:
+  template: "Duplicated name: '#name'."
+
+DuplicatedParameterName:
+  template: "Duplicated parameter name '#name'."
+
+DuplicatedParameterNameCause:
+  template: "Other parameter named '#name'."
+
+EnumConstantSameNameAsEnclosing:
+  template: "Name of enum constant '#name' can't be the same as the enum's own name."
+
+OperatorParameterMismatch:
+  template: "Operator '#name' must have exactly #number parameters."
+
+SupertypeIsIllegal:
+  template: "The type '#name' can't be used as supertype."
+
+SupertypeIsTypeVariable:
+  template: "The type variable '#name' can't be used as supertype."
+
+PartOfLibraryNameMismatch:
+  template: "Using '#uri' as part of '#name' but its 'part of' declaration says '#name2'."
+
+PartOfUseUri:
+  template: "Using '#uri' as part of '#uri2' but its 'part of' declaration says '#name'."
+  tip: "Try changing the 'part of' declaration to use a relative file name."
+
+PartOfUriMismatch:
+  template: "Using '#uri' as part of '#uri2' but its 'part of' declaration says '#string'."
+
+MissingMain:
+  template: "No 'main' method found."
+  tip: "Try adding a method named 'main' to your program."
+  dart2jsCode: MISSING_MAIN
+
+MissingInputFile:
+  template: "Input file not found: #string."
+
+MissingSdkRoot:
+  template: "SDK root directory not found: #string."
+
+MissingSdkSummary:
+  template: "SDK summary not found: #string."

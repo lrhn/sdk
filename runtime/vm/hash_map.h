@@ -27,7 +27,7 @@ class BaseDirectChainedHashMap : public B {
 
   BaseDirectChainedHashMap(const BaseDirectChainedHashMap& other);
 
-  ~BaseDirectChainedHashMap() {
+  virtual ~BaseDirectChainedHashMap() {
     allocator_->template Free<HashMapListElement>(array_, array_size_);
     allocator_->template Free<HashMapListElement>(lists_, lists_size_);
   }
@@ -39,10 +39,13 @@ class BaseDirectChainedHashMap : public B {
       typename KeyValueTrait::Key key) const;
 
   typename KeyValueTrait::Pair* Lookup(typename KeyValueTrait::Key key) const;
+  bool HasKey(typename KeyValueTrait::Key key) const {
+    return Lookup(key) != NULL;
+  }
 
   bool IsEmpty() const { return count_ == 0; }
 
-  void Clear() {
+  virtual void Clear() {
     if (!IsEmpty()) {
       count_ = 0;
       InitArray(array_, array_size_);
@@ -175,8 +178,8 @@ BaseDirectChainedHashMap<KeyValueTrait, B, Allocator>::Iterator::Next() {
   if (array_index_ < map_.array_size_) {
     // If we're not in the middle of a list, find the next array slot.
     if (list_index_ == kNil) {
-      while (KeyValueTrait::ValueOf(map_.array_[array_index_].kv) == kNoValue &&
-             array_index_ < map_.array_size_) {
+      while ((array_index_ < map_.array_size_) &&
+             KeyValueTrait::ValueOf(map_.array_[array_index_].kv) == kNoValue) {
         array_index_++;
       }
       if (array_index_ < map_.array_size_) {
@@ -378,6 +381,10 @@ class DirectChainedHashMap
   DirectChainedHashMap()
       : BaseDirectChainedHashMap<KeyValueTrait, ValueObject>(
             ASSERT_NOTNULL(Thread::Current()->zone())) {}
+
+  explicit DirectChainedHashMap(Zone* zone)
+      : BaseDirectChainedHashMap<KeyValueTrait, ValueObject>(
+            ASSERT_NOTNULL(zone)) {}
 };
 
 

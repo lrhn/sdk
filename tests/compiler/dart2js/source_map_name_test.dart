@@ -82,17 +82,19 @@ main() {
     CompilationResult result =
         await runCompiler(memorySourceFiles: {'main.dart': SOURCE});
     Compiler compiler = result.compiler;
+    LibraryElement mainApp =
+        compiler.frontendStrategy.elementEnvironment.mainLibrary;
 
     Element lookup(String name) {
       Element element;
       int dotPosition = name.indexOf('.');
       if (dotPosition != -1) {
         String clsName = name.substring(0, dotPosition);
-        ClassElement cls = compiler.mainApp.find(clsName);
+        ClassElement cls = mainApp.find(clsName);
         Expect.isNotNull(cls, "Class '$clsName' not found.");
         element = cls.localLookup(name.substring(dotPosition + 1));
       } else {
-        element = compiler.mainApp.find(name);
+        element = mainApp.find(name);
       }
       Expect.isNotNull(element, "Element '$name' not found.");
       return element;
@@ -103,11 +105,11 @@ main() {
       if (lookupName == null) {
         lookupName = expectedName;
       }
-      var element = lookup(lookupName);
+      dynamic element = lookup(lookupName);
       check(element, expectedName);
       if (element.isConstructor) {
         var constructorBody =
-            element.enclosingClass.lookupBackendMember(element.name);
+            element.enclosingClass.lookupConstructorBody(element.name);
         Expect.isNotNull(
             element, "Constructor body '${element.name}' not found.");
         check(constructorBody, expectedName);

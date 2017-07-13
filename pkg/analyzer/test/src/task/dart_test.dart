@@ -27,6 +27,7 @@ import 'package:analyzer/src/task/strong/ast_properties.dart' as strong_ast;
 import 'package:analyzer/task/dart.dart';
 import 'package:analyzer/task/general.dart';
 import 'package:analyzer/task/model.dart';
+import 'package:front_end/src/scanner/scanner.dart' as fe;
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -63,7 +64,6 @@ main() {
     defineReflectiveTests(LibraryUnitErrorsTaskTest);
     defineReflectiveTests(ParseDartTaskTest);
     defineReflectiveTests(PartiallyResolveUnitReferencesTaskTest);
-    defineReflectiveTests(ReferencedNamesBuilderTest);
     defineReflectiveTests(ResolveDirectiveElementsTaskTest);
     defineReflectiveTests(ResolveInstanceFieldsInUnitTaskTest);
     defineReflectiveTests(ResolveLibraryTaskTest);
@@ -185,7 +185,7 @@ f() {
         <ConstantEvaluationTarget>[
       unitElement.accessors.firstWhere((e) => e.isGetter).variable,
       unitElement.types[0].fields[0],
-      unitElement.functions[0].localVariables[0],
+      findLocalVariable(unit, 'z'),
       unitElement.types[0].constructors[0],
       resolutionMap.elementAnnotationForAnnotation(annotation),
       unitElement.types[0].constructors[0].parameters[0]
@@ -870,8 +870,35 @@ part of my_lib;
 part of my_lib;
 '''
     });
-    _assertErrorsWithCodes(
-        [ResolverErrorCode.MISSING_LIBRARY_DIRECTIVE_WITH_PART]);
+    if (context.analysisOptions.enableUriInPartOf) {
+      // TODO(28522)
+      // Should report that names are wrong.
+    } else {
+      _assertErrorsWithCodes(
+          [ResolverErrorCode.MISSING_LIBRARY_DIRECTIVE_WITH_PART]);
+    }
+  }
+
+  test_perform_error_missingLibraryDirectiveWithPart_noCommon() {
+    _performBuildTask({
+      '/lib.dart': '''
+part 'partA.dart';
+part 'partB.dart';
+''',
+      '/partA.dart': '''
+part of libA;
+        ''',
+      '/partB.dart': '''
+part of libB;
+'''
+    });
+    if (context.analysisOptions.enableUriInPartOf) {
+      // TODO(28522)
+      // Should report that names are wrong.
+    } else {
+      _assertErrorsWithCodes(
+          [ResolverErrorCode.MISSING_LIBRARY_DIRECTIVE_WITH_PART]);
+    }
   }
 
   test_perform_error_partDoesNotExist() {
@@ -2891,10 +2918,7 @@ class M {}
         '/test.dart',
         '''
 var X = 1;
-
-var Y = () {
-  return 1 + X;
-};
+var Y = () => 1 + X;
 ''');
     computeResult(new LibrarySpecificUnit(source, source), RESOLVED_UNIT8,
         matcher: isInferStaticVariableTypesInUnitTask);
@@ -2902,9 +2926,8 @@ var Y = () {
     TopLevelVariableDeclaration declaration = unit.declarations[1];
     FunctionExpression function =
         declaration.variables.variables[0].initializer;
-    BlockFunctionBody body = function.body;
-    ReturnStatement statement = body.block.statements[0];
-    Expression expression = statement.expression;
+    ExpressionFunctionBody body = function.body;
+    Expression expression = body.expression;
     InterfaceType intType = context.typeProvider.intType;
     expect(expression.staticType, intType);
   }
@@ -3150,7 +3173,7 @@ class ParseDartTaskTest extends _AbstractDartTaskTest {
     _performParseTask(r'''
 part of lib;
 class B {}''');
-    expect(outputs, hasLength(11));
+    expect(outputs, hasLength(10));
     expect(outputs[EXPLICITLY_IMPORTED_LIBRARIES], hasLength(0));
     expect(outputs[EXPORTED_LIBRARIES], hasLength(0));
     _assertHasCore(outputs[IMPORTED_LIBRARIES], 1);
@@ -3158,7 +3181,6 @@ class B {}''');
     expect(outputs[LIBRARY_SPECIFIC_UNITS], hasLength(1));
     expect(outputs[PARSE_ERRORS], hasLength(0));
     expect(outputs[PARSED_UNIT], isNotNull);
-    expect(outputs[REFERENCED_NAMES], isNotNull);
     expect(outputs[REFERENCED_SOURCES], hasLength(2));
     expect(outputs[SOURCE_KIND], SourceKind.PART);
     expect(outputs[UNITS], hasLength(1));
@@ -3186,7 +3208,7 @@ part 'test.dart';
 
   test_perform_doesNotExist() {
     _performParseTask(null);
-    expect(outputs, hasLength(11));
+    expect(outputs, hasLength(10));
     expect(outputs[EXPLICITLY_IMPORTED_LIBRARIES], hasLength(0));
     expect(outputs[EXPORTED_LIBRARIES], hasLength(0));
     _assertHasCore(outputs[IMPORTED_LIBRARIES], 1);
@@ -3194,7 +3216,6 @@ part 'test.dart';
     expect(outputs[LIBRARY_SPECIFIC_UNITS], hasLength(1));
     expect(outputs[PARSE_ERRORS], hasLength(0));
     expect(outputs[PARSED_UNIT], isNotNull);
-    expect(outputs[REFERENCED_NAMES], isNotNull);
     expect(outputs[REFERENCED_SOURCES], hasLength(2));
     expect(outputs[SOURCE_KIND], SourceKind.LIBRARY);
     expect(outputs[UNITS], hasLength(1));
@@ -3215,7 +3236,7 @@ import '://invaliduri.dart';
 export '${a}lib3.dart';
 part 'part.dart';
 class A {}''');
-    expect(outputs, hasLength(11));
+    expect(outputs, hasLength(10));
     expect(outputs[EXPLICITLY_IMPORTED_LIBRARIES], hasLength(1));
     expect(outputs[EXPORTED_LIBRARIES], hasLength(0));
     _assertHasCore(outputs[IMPORTED_LIBRARIES], 2);
@@ -3223,7 +3244,6 @@ class A {}''');
     expect(outputs[LIBRARY_SPECIFIC_UNITS], hasLength(2));
     expect(outputs[PARSE_ERRORS], hasLength(2));
     expect(outputs[PARSED_UNIT], isNotNull);
-    expect(outputs[REFERENCED_NAMES], isNotNull);
     expect(outputs[REFERENCED_SOURCES], hasLength(4));
     expect(outputs[SOURCE_KIND], SourceKind.LIBRARY);
     expect(outputs[UNITS], hasLength(2));
@@ -3236,15 +3256,19 @@ import 'lib2.dart';
 export 'lib3.dart';
 part 'part.dart';
 class A {''');
-    expect(outputs, hasLength(11));
+    expect(outputs, hasLength(10));
     expect(outputs[EXPLICITLY_IMPORTED_LIBRARIES], hasLength(1));
     expect(outputs[EXPORTED_LIBRARIES], hasLength(1));
     _assertHasCore(outputs[IMPORTED_LIBRARIES], 2);
     expect(outputs[INCLUDED_PARTS], hasLength(1));
     expect(outputs[LIBRARY_SPECIFIC_UNITS], hasLength(2));
-    expect(outputs[PARSE_ERRORS], hasLength(1));
+    if (fe.Scanner.useFasta) {
+      // Missing closing brace error is reported by the Fasta scanner.
+      expect(outputs[PARSE_ERRORS], hasLength(0));
+    } else {
+      expect(outputs[PARSE_ERRORS], hasLength(1));
+    }
     expect(outputs[PARSED_UNIT], isNotNull);
-    expect(outputs[REFERENCED_NAMES], isNotNull);
     expect(outputs[REFERENCED_SOURCES], hasLength(5));
     expect(outputs[SOURCE_KIND], SourceKind.LIBRARY);
     expect(outputs[UNITS], hasLength(2));
@@ -3374,7 +3398,7 @@ part 'test.dart';
     _performParseTask(r'''
 part of lib;
 class B {}''');
-    expect(outputs, hasLength(11));
+    expect(outputs, hasLength(10));
     expect(outputs[EXPLICITLY_IMPORTED_LIBRARIES], hasLength(0));
     expect(outputs[EXPORTED_LIBRARIES], hasLength(0));
     _assertHasCore(outputs[IMPORTED_LIBRARIES], 1);
@@ -3382,7 +3406,6 @@ class B {}''');
     expect(outputs[LIBRARY_SPECIFIC_UNITS], hasLength(1));
     expect(outputs[PARSE_ERRORS], hasLength(0));
     expect(outputs[PARSED_UNIT], isNotNull);
-    expect(outputs[REFERENCED_NAMES], isNotNull);
     expect(outputs[REFERENCED_SOURCES], hasLength(2));
     expect(outputs[SOURCE_KIND], SourceKind.PART);
     expect(outputs[UNITS], hasLength(1));
@@ -3566,466 +3589,6 @@ class C {
 }
 
 @reflectiveTest
-class ReferencedNamesBuilderTest extends _AbstractDartTaskTest {
-  void setUp() {
-    super.setUp();
-    context.analysisOptions = new AnalysisOptionsImpl()..strongMode = true;
-  }
-
-  test_class_constructor() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  U.named(A a, B b) {
-    C c = null;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B']));
-  }
-
-  test_class_extendedUsedUnnamedConstructorNames() {
-    ReferencedNames info = _computeReferencedNames('''
-class U1 extends A {
-  U1() : super();
-}
-class U2 extends p.B {
-  U2() : super();
-}
-class U3 extends p.C {
-  U3() : super.named();
-}
-''');
-    expect(
-        info.extendedUsedUnnamedConstructorNames, unorderedEquals(['A', 'B']));
-  }
-
-  test_class_field() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  A f = new B();
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['B']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B']));
-  }
-
-  test_class_getter() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  A get a => new B();
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['B']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A']));
-  }
-
-  test_class_members() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  int a;
-  int get b;
-  set c(_) {}
-  m(D d) {
-    a;
-    b;
-    c = 1;
-    m();
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['int', 'D']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['int', 'D']));
-  }
-
-  test_class_members_dontHideQualified() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  int a;
-  int get b;
-  set c(_) {}
-  m(D d) {
-    d.a;
-    d.b;
-    d.c;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['int', 'D', 'a', 'b', 'c']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['int', 'D']));
-  }
-
-  test_class_method() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  A m(B p) {
-    C v = 0;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B']));
-  }
-
-  test_class_method_localVariables() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  A m() {
-    B b = null;
-    b;
-    {
-      C c = null;
-      b;
-      c;
-    }
-    d;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'd']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A']));
-  }
-
-  test_class_method_parameters() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  m(A a) {
-    a;
-    b;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'b']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A']));
-  }
-
-  test_class_method_typeParameters() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  A m<T>(B b, T t) {
-    C c = 0;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B']));
-  }
-
-  test_class_setter() {
-    ReferencedNames info = _computeReferencedNames('''
-class U {
-  set a(A a) {
-    B b = null;
-  }
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A']));
-  }
-
-  test_class_typeParameters() {
-    ReferencedNames info = _computeReferencedNames('''
-class U<T> {
-  T f = new A<T>();
-}
-''');
-    expect(info.names, unorderedEquals(['A']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['A']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A']));
-  }
-
-  test_instantiatedNames_importPrefix() {
-    ReferencedNames info = _computeReferencedNames('''
-import 'a.dart' as p1;
-import 'b.dart' as p2;
-main() {
-  new p1.A();
-  new p1.A.c1();
-  new p1.B();
-  new p2.C();
-  new D();
-  new D.c2();
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'D', 'c1', 'c2']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['A', 'B', 'C', 'D']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['main']));
-    expect(info.userToDependsOn['main'], isEmpty);
-  }
-
-  test_localFunction() {
-    ReferencedNames info = _computeReferencedNames('''
-f(A a) {
-  g(B b) {}
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A']));
-  }
-
-  test_superToSubs_importPrefix() {
-    ReferencedNames info = _computeReferencedNames('''
-import 'a.dart' as p1;
-import 'b.dart' as p2;
-class U extends p1.A with p2.B implements p2.C {}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs['A'], unorderedEquals(['U']));
-    expect(info.superToSubs['B'], unorderedEquals(['U']));
-    expect(info.superToSubs['C'], unorderedEquals(['U']));
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B', 'C']));
-  }
-
-  test_topLevelVariable() {
-    ReferencedNames info = _computeReferencedNames('''
-A v = new B(c);
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'c']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['B']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['v']));
-    expect(info.userToDependsOn['v'], unorderedEquals(['A', 'B', 'c']));
-  }
-
-  test_topLevelVariable_multiple() {
-    ReferencedNames info = _computeReferencedNames('''
-A v1 = new B(c), v2 = new D<E>(f);
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'c', 'D', 'E', 'f']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['B', 'D']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['v1', 'v2']));
-    expect(info.userToDependsOn['v1'], unorderedEquals(['A', 'B', 'c']));
-    expect(info.userToDependsOn['v2'], unorderedEquals(['A', 'D', 'E', 'f']));
-  }
-
-  test_unit_classTypeAlias() {
-    ReferencedNames info = _computeReferencedNames('''
-class U = A with B implements C;
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs['A'], unorderedEquals(['U']));
-    expect(info.superToSubs['B'], unorderedEquals(['U']));
-    expect(info.superToSubs['C'], unorderedEquals(['U']));
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B', 'C']));
-  }
-
-  test_unit_classTypeAlias_typeParameters() {
-    ReferencedNames info = _computeReferencedNames('''
-class U<T1, T2 extends D> = A<T1> with B<T2> implements C<T1, T2>;
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'D']));
-    expect(info.superToSubs.keys, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs['A'], unorderedEquals(['U']));
-    expect(info.superToSubs['B'], unorderedEquals(['U']));
-    expect(info.superToSubs['C'], unorderedEquals(['U']));
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['U']));
-    expect(info.userToDependsOn['U'], unorderedEquals(['A', 'B', 'C', 'D']));
-  }
-
-  test_unit_function() {
-    ReferencedNames info = _computeReferencedNames('''
-A f(B b) {
-  C c = 0;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_function_doc() {
-    ReferencedNames info = _computeReferencedNames('''
-/**
- * Documentation [C.d] reference.
- */
-A f(B b) {}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'd']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_function_localFunctions() {
-    ReferencedNames info = _computeReferencedNames('''
-A f() {
-  B b = null;
-  C g() {}
-  g();
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A']));
-  }
-
-  test_unit_function_localsDontHideQualified() {
-    ReferencedNames info = _computeReferencedNames('''
-f(A a, B b) {
-  var v = 0;
-  a.v;
-  a.b;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'v', 'b']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_function_localVariables() {
-    ReferencedNames info = _computeReferencedNames('''
-A f() {
-  B b = null;
-  b;
-  {
-    C c = null;
-    b;
-    c;
-  }
-  d;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'd']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A']));
-  }
-
-  test_unit_function_parameters() {
-    ReferencedNames info = _computeReferencedNames('''
-A f(B b) {
-  C c = 0;
-  b;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_function_typeParameters() {
-    ReferencedNames info = _computeReferencedNames('''
-A f<T>(B b, T t) {
-  C c = 0;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['f']));
-    expect(info.userToDependsOn['f'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_functionTypeAlias() {
-    ReferencedNames info = _computeReferencedNames('''
-typedef A F(B B, C c(D d));
-''');
-    expect(info.names, unorderedEquals(['A', 'B', 'C', 'D']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['F']));
-    expect(info.userToDependsOn['F'], unorderedEquals(['A', 'B', 'C', 'D']));
-  }
-
-  test_unit_functionTypeAlias_typeParameters() {
-    ReferencedNames info = _computeReferencedNames('''
-typedef A F<T>(B b, T t);
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['F']));
-    expect(info.userToDependsOn['F'], unorderedEquals(['A', 'B']));
-  }
-
-  test_unit_getter() {
-    ReferencedNames info = _computeReferencedNames('''
-A get aaa {
-  return new B();
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, unorderedEquals(['B']));
-    expect(info.userToDependsOn.keys, unorderedEquals(['aaa']));
-    expect(info.userToDependsOn['aaa'], unorderedEquals(['A']));
-  }
-
-  test_unit_setter() {
-    ReferencedNames info = _computeReferencedNames('''
-set aaa(A a) {
-  B b = null;
-}
-''');
-    expect(info.names, unorderedEquals(['A', 'B']));
-    expect(info.superToSubs.keys, isEmpty);
-    expect(info.instantiatedNames, isEmpty);
-    expect(info.userToDependsOn.keys, unorderedEquals(['aaa']));
-    expect(info.userToDependsOn['aaa'], unorderedEquals(['A']));
-  }
-
-  ReferencedNames _computeReferencedNames(String code) {
-    Source source = newSource('/test.dart', code);
-    computeResult(source, REFERENCED_NAMES, matcher: isParseDartTask);
-    return outputs[REFERENCED_NAMES];
-  }
-}
-
-@reflectiveTest
 class ResolveDirectiveElementsTaskTest extends _AbstractDartTaskTest {
   test_perform() {
     List<Source> sources = newSources({
@@ -4097,7 +3660,9 @@ class A {}
     expect(outputs[CREATED_RESOLVED_UNIT9], isTrue);
   }
 
-  // Test inference of instance fields across units
+  /**
+   * Test inference of instance fields across units
+   */
   void test_perform_inference_cross_unit_instance() {
     List<Source> sources = newSources({
       '/a.dart': '''
@@ -4148,13 +3713,15 @@ class A {}
 
     // A.a2 should now be fully resolved and inferred.
     assertVariableDeclarationTypes(
-        AstFinder.getFieldInClass(unit0, "A", "a2"), intType, intType);
+        AstFinder.getFieldInClass(unit0, "A", "a2"), dynamicType, intType);
 
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit1, "B", "b2"), intType, intType);
   }
 
-  // Test inference of instance fields across units
+  /**
+   * Test inference of instance fields across units
+   */
   void test_perform_inference_cross_unit_instance_cyclic() {
     List<Source> sources = newSources({
       '/a.dart': '''
@@ -4196,7 +3763,9 @@ class A {}
         AstFinder.getFieldInClass(unit0, "A", "a2"), dynamicType, dynamicType);
   }
 
-  // Test inference of instance fields across units with cycles
+  /**
+   * Test inference of instance fields across units with cycles
+   */
   void test_perform_inference_cross_unit_static_instance() {
     List<Source> sources = newSources({
       '/a.dart': '''
@@ -4255,7 +3824,7 @@ class A {}
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit0, "A", "a1"), intType, intType);
     assertVariableDeclarationTypes(
-        AstFinder.getFieldInClass(unit0, "A", "a2"), intType, intType);
+        AstFinder.getFieldInClass(unit0, "A", "a2"), dynamicType, intType);
 
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit1, "B", "b1"), intType, intType);
@@ -4263,7 +3832,9 @@ class A {}
         AstFinder.getFieldInClass(unit1, "B", "b2"), intType, intType);
   }
 
-  // Test inference between static and instance fields
+  /**
+   * Test inference between static and instance fields
+   */
   void test_perform_inference_instance() {
     List<Source> sources = newSources({
       '/a.dart': '''
@@ -4755,11 +4326,14 @@ main() {
     CompilationUnit unit = outputs[RESOLVED_UNIT6];
     FunctionDeclaration mainDeclaration = unit.declarations[0];
     FunctionBody body = mainDeclaration.functionExpression.body;
-    FunctionElement main = mainDeclaration.element;
-    expectMutated(body, main.localVariables[0], false, false);
-    expectMutated(body, main.localVariables[1], false, true);
-    expectMutated(body, main.localVariables[2], true, true);
-    expectMutated(body, main.localVariables[3], true, true);
+    LocalVariableElement v1 = findLocalVariable(unit, 'v1');
+    LocalVariableElement v2 = findLocalVariable(unit, 'v2');
+    LocalVariableElement v3 = findLocalVariable(unit, 'v3');
+    LocalVariableElement v4 = findLocalVariable(unit, 'v4');
+    expectMutated(body, v1, false, false);
+    expectMutated(body, v2, false, true);
+    expectMutated(body, v3, true, true);
+    expectMutated(body, v4, true, true);
   }
 
   test_perform_parameter() {
@@ -4795,16 +4369,20 @@ class ScanDartTaskTest extends _AbstractDartTaskTest {
   test_ignore_info() {
     _performScanTask('''
 //ignore: error_code
+//ignore_for_file: error_code
 var x = '';
 foo(); // ignore:   error_code_2
 bar(); //ignore: error_code, error_code_2
+// ignore_for_file:  error_code_2, error_code_3
 ''');
 
     IgnoreInfo info = outputs[IGNORE_INFO];
     expect(info.ignores.keys, hasLength(3));
     expect(info.ignores[1].first, 'error_code');
-    expect(info.ignores[3].first, 'error_code_2');
-    expect(info.ignores[4], unorderedEquals(['error_code', 'error_code_2']));
+    expect(info.ignores[4].first, 'error_code_2');
+    expect(info.ignores[5], unorderedEquals(['error_code', 'error_code_2']));
+    expect(info.ignoreForFiles,
+        unorderedEquals(['error_code', 'error_code_2', 'error_code_3']));
   }
 
   test_perform_errors() {
@@ -4812,6 +4390,23 @@ bar(); //ignore: error_code, error_code_2
     expect(outputs, hasLength(4));
     expect(outputs[LINE_INFO], isNotNull);
     expect(outputs[SCAN_ERRORS], hasLength(1));
+    expect(outputs[TOKEN_STREAM], isNotNull);
+    IgnoreInfo ignoreInfo = outputs[IGNORE_INFO];
+    expect(ignoreInfo, isNotNull);
+    expect(ignoreInfo.hasIgnores, isFalse);
+  }
+
+  test_perform_library() {
+    _performScanTask(r'''
+library lib;
+import 'lib2.dart';
+export 'lib3.dart';
+part 'part.dart';
+class A {''');
+    expect(outputs, hasLength(4));
+    expect(outputs[LINE_INFO], isNotNull);
+    // Missing closing brace error is reported by the Fasta scanner.
+    expect(outputs[SCAN_ERRORS], hasLength(fe.Scanner.useFasta ? 1 : 0));
     expect(outputs[TOKEN_STREAM], isNotNull);
     IgnoreInfo ignoreInfo = outputs[IGNORE_INFO];
     expect(ignoreInfo, isNotNull);
@@ -4849,7 +4444,12 @@ bar(); //ignore: error_code, error_code_2
 
     computeResult(script, TOKEN_STREAM, matcher: isScanDartTask);
     expect(outputs[LINE_INFO], isNotNull);
-    expect(outputs[SCAN_ERRORS], isEmpty);
+    if (fe.Scanner.useFasta) {
+      // Missing closing brace error is reported by Fasta scanner.
+      expect(outputs[SCAN_ERRORS], hasLength(1));
+    } else {
+      expect(outputs[SCAN_ERRORS], isEmpty);
+    }
     Token tokenStream = outputs[TOKEN_STREAM];
     expect(tokenStream, isNotNull);
     expect(tokenStream.lexeme, 'void');
@@ -4979,9 +4579,10 @@ var tau = piFirst ? pi * 2 : 6.28;
     CompilationUnit unit2 = units[2];
 
     InterfaceType intType = context.typeProvider.intType;
+    DartType dynamicType = context.typeProvider.dynamicType;
 
     assertVariableDeclarationTypes(
-        AstFinder.getFieldInClass(unit0, "A", "a2"), intType, intType);
+        AstFinder.getFieldInClass(unit0, "A", "a2"), dynamicType, intType);
 
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit1, "B", "b2"), intType, intType);
@@ -4989,7 +4590,7 @@ var tau = piFirst ? pi * 2 : 6.28;
     List<Statement> statements =
         AstFinder.getStatementsInTopLevelFunction(unit2, "test1");
 
-    assertAssignmentStatementTypes(statements[1], intType, intType);
+    assertAssignmentStatementTypes(statements[1], intType, dynamicType);
   }
 
   // Test inference interactions between local variables and fields
@@ -5121,11 +4722,12 @@ var tau = piFirst ? pi * 2 : 6.28;
     CompilationUnit unit2 = units[2];
 
     InterfaceType intType = context.typeProvider.intType;
+    DartType dynamicType = context.typeProvider.dynamicType;
 
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit0, "A", "a1"), intType, intType);
     assertVariableDeclarationTypes(
-        AstFinder.getFieldInClass(unit0, "A", "a2"), intType, intType);
+        AstFinder.getFieldInClass(unit0, "A", "a2"), dynamicType, intType);
 
     assertVariableDeclarationTypes(
         AstFinder.getFieldInClass(unit1, "B", "b1"), intType, intType);
@@ -5136,7 +4738,7 @@ var tau = piFirst ? pi * 2 : 6.28;
         AstFinder.getStatementsInTopLevelFunction(unit2, "test1");
 
     assertAssignmentStatementTypes(statements[1], intType, intType);
-    assertAssignmentStatementTypes(statements[2], intType, intType);
+    assertAssignmentStatementTypes(statements[2], intType, dynamicType);
   }
 
   // Test inference across units (non-cyclic)

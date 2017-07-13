@@ -10,7 +10,7 @@ import 'package:analyzer/src/command_line/arguments.dart'
         ignoreUnrecognizedFlagsFlag;
 import 'package:analyzer/src/generated/source.dart' show Source;
 import 'package:analyzer/src/summary/package_bundle_reader.dart'
-    show InSummarySource;
+    show ConflictingSummaryException, InSummarySource;
 import 'package:args/args.dart' show ArgParser, ArgResults;
 import 'package:args/command_runner.dart' show UsageException;
 import 'package:path/path.dart' as path;
@@ -18,6 +18,8 @@ import 'package:path/path.dart' as path;
 import '../analyzer/context.dart' show AnalyzerOptions;
 import 'compiler.dart' show BuildUnit, CompilerOptions, ModuleCompiler;
 import 'module_builder.dart';
+
+const _binaryName = 'dartdevc';
 
 bool _verbose = false;
 
@@ -44,8 +46,13 @@ int compile(List<String> args, {void printFn(Object obj)}) {
   }
 
   _verbose = argResults['verbose'];
-  if (argResults['help']) {
+  if (argResults['help'] || args.isEmpty) {
     printFn(_usageMessage);
+    return 0;
+  }
+
+  if (argResults['version']) {
+    printFn('$_binaryName version ${_getVersion()}');
     return 0;
   }
 
@@ -56,6 +63,10 @@ int compile(List<String> args, {void printFn(Object obj)}) {
     // Incorrect usage, input file not found, etc.
     printFn(error);
     return 64;
+  } on ConflictingSummaryException catch (error) {
+    // Same input file appears in multiple provided summaries.
+    printFn(error);
+    return 65;
   } on CompileErrorException catch (error) {
     // Code has error(s) and failed to compile.
     printFn(error);
@@ -73,7 +84,7 @@ You can report this bug at:
     https://github.com/dart-lang/sdk/issues/labels/area-dev-compiler
 Please include the information below in your report, along with
 any other information that may help us track it down. Thanks!
-    dartdevc arguments: ${args.join(' ')}
+    $_binaryName arguments: ${args.join(' ')}
     dart --version: ${Platform.version}
 ```
 $error
@@ -87,10 +98,11 @@ ArgParser ddcArgParser({bool hide: true}) {
   var argParser = new ArgParser(allowTrailingOptions: true)
     ..addFlag('help',
         abbr: 'h',
-        help: 'Display this message.\n'
-            'Add --verbose to show hidden options.',
+        help: 'Display this message. Add --verbose to show hidden options.',
         negatable: false)
     ..addFlag('verbose', abbr: 'v', help: 'Verbose output.')
+    ..addFlag('version',
+        negatable: false, help: 'Print the $_binaryName version.')
     ..addFlag(ignoreUnrecognizedFlagsFlag,
         help: 'Ignore unrecognized command line flags.',
         defaultsTo: false,
@@ -98,10 +110,10 @@ ArgParser ddcArgParser({bool hide: true}) {
     ..addOption('out',
         abbr: 'o', allowMultiple: true, help: 'Output file (required).')
     ..addOption('module-root',
-        help: 'Root module directory.\n'
+        help: 'Root module directory. '
             'Generated module paths are relative to this root.')
     ..addOption('library-root',
-        help: 'Root of source files.\n'
+        help: 'Root of source files. '
             'Generated library names are relative to this root.');
   defineAnalysisArguments(argParser, hide: hide, ddc: true);
   addModuleFormatOptions(argParser, allowMultiple: true, hide: hide);
@@ -168,13 +180,21 @@ void _compile(ArgResults argResults, AnalyzerOptions analyzerOptions,
     modulePath = path.basenameWithoutExtension(firstOutPath);
   }
 
-  var unit = new BuildUnit(modulePath, libraryRoot, argResults.rest,
-      (source) => _moduleForLibrary(moduleRoot, source, compilerOpts));
+  var unit = new BuildUnit(
+      modulePath,
+      libraryRoot,
+      argResults.rest,
+      (source) =>
+          _moduleForLibrary(moduleRoot, source, analyzerOptions, compilerOpts));
 
   var module = compiler.compile(unit, compilerOpts);
   module.errors.forEach(printFn);
 
-  if (!module.isValid) throw new CompileErrorException();
+  if (!module.isValid) {
+    throw compilerOpts.unsafeForceCompile
+        ? new ForceCompileErrorException()
+        : new CompileErrorException();
+  }
 
   // Write JS file, as well as source map and summary (if requested).
   for (var i = 0; i < outPaths.length; i++) {
@@ -201,15 +221,21 @@ void _compile(ArgResults argResults, AnalyzerOptions analyzerOptions,
   }
 }
 
-String _moduleForLibrary(
-    String moduleRoot, Source source, CompilerOptions compilerOpts) {
+String _moduleForLibrary(String moduleRoot, Source source,
+    AnalyzerOptions analyzerOptions, CompilerOptions compilerOpts) {
   if (source is InSummarySource) {
     var summaryPath = source.summaryPath;
+
+    if (analyzerOptions.customSummaryModules.containsKey(summaryPath)) {
+      return analyzerOptions.customSummaryModules[summaryPath];
+    }
+
     var ext = '.${compilerOpts.summaryExtension}';
     if (path.isWithin(moduleRoot, summaryPath) && summaryPath.endsWith(ext)) {
       var buildUnitPath =
           summaryPath.substring(0, summaryPath.length - ext.length);
-      return path.relative(buildUnitPath, from: moduleRoot);
+      return path.url
+          .joinAll(path.split(path.relative(buildUnitPath, from: moduleRoot)));
     }
 
     _usageException('Imported file ${source.uri} is not within the module root '
@@ -224,8 +250,22 @@ String _moduleForLibrary(
 }
 
 String get _usageMessage =>
-    'Dart Development Compiler compiles Dart into a JavaScript module.'
-    '\n\n${ddcArgParser(hide: !_verbose).usage}';
+    'The Dart Development Compiler compiles Dart sources into a JavaScript '
+    'module.\n\n'
+    'Usage: $_binaryName [options...] <sources...>\n\n'
+    '${ddcArgParser(hide: !_verbose).usage}';
+
+String _getVersion() {
+  try {
+    // This is relative to bin/snapshot, so ../..
+    String versionPath = Platform.script.resolve('../../version').toFilePath();
+    File versionFile = new File(versionPath);
+    return versionFile.readAsStringSync().trim();
+  } catch (_) {
+    // This happens when the script is not running in the context of an SDK.
+    return "<unknown>";
+  }
+}
 
 void _usageException(String message) {
   throw new UsageException(message, _usageMessage);
@@ -234,4 +274,10 @@ void _usageException(String message) {
 /// Thrown when the input source code has errors.
 class CompileErrorException implements Exception {
   toString() => '\nPlease fix all errors before compiling (warnings are okay).';
+}
+
+/// Thrown when force compilation failed (probably due to static errors).
+class ForceCompileErrorException extends CompileErrorException {
+  toString() =>
+      '\nForce-compilation not successful. Please check static errors.';
 }

@@ -624,6 +624,16 @@ class as = A with B;''');
     verify([source]);
   }
 
+  test_builtInIdentifierAsPrefixName() async {
+    Source source = addSource("import 'dart:async' as abstract;");
+    await computeAnalysisResult(source);
+    assertErrors(source, [
+      CompileTimeErrorCode.BUILT_IN_IDENTIFIER_AS_PREFIX_NAME,
+      HintCode.UNUSED_IMPORT
+    ]);
+    verify([source]);
+  }
+
   test_builtInIdentifierAsType_formalParameter_field() async {
     Source source = addSource(r'''
 class A {
@@ -874,6 +884,23 @@ foo(var p) {
       break;
   }
 }''');
+    await computeAnalysisResult(source);
+    assertNoErrors(source);
+    verify([source]);
+  }
+
+  test_constConstructor_redirect_generic() async {
+    Source source = addSource(r'''
+class A<T> {
+  const A(T value) : this._(value);
+  const A._(T value) : value = value;
+  final T value;
+}
+
+void main(){
+  const A<int>(1);
+}
+''');
     await computeAnalysisResult(source);
     assertNoErrors(source);
     verify([source]);
@@ -2180,6 +2207,34 @@ class B extends A {
     verify([source]);
   }
 
+  test_extraPositionalArgumentsCouldBeNamed_const() async {
+    Source source = addSource(r'''
+class A {
+  const A({int x});
+}
+main() {
+  const A(0);
+}''');
+    await computeAnalysisResult(source);
+    assertErrors(source,
+        [CompileTimeErrorCode.EXTRA_POSITIONAL_ARGUMENTS_COULD_BE_NAMED]);
+    verify([source]);
+  }
+
+  test_extraPositionalArgumentsCouldBeNamed_const_super() async {
+    Source source = addSource(r'''
+class A {
+  const A({int x});
+}
+class B extends A {
+  const B() : super(0);
+}''');
+    await computeAnalysisResult(source);
+    assertErrors(source,
+        [CompileTimeErrorCode.EXTRA_POSITIONAL_ARGUMENTS_COULD_BE_NAMED]);
+    verify([source]);
+  }
+
   test_fieldFormalParameter_assignedInInitializer() async {
     Source source = addSource(r'''
 class A {
@@ -2722,6 +2777,26 @@ class B extends A implements A {}''');
 
   test_implementsSuperClass_Object() async {
     Source source = addSource("class A implements Object {}");
+    await computeAnalysisResult(source);
+    assertErrors(source, [CompileTimeErrorCode.IMPLEMENTS_SUPER_CLASS]);
+    verify([source]);
+  }
+
+  test_implementsSuperClass_Object_typeAlias() async {
+    Source source = addSource(r'''
+class M {}
+class A = Object with M implements Object;
+    ''');
+    await computeAnalysisResult(source);
+    assertErrors(source, [CompileTimeErrorCode.IMPLEMENTS_SUPER_CLASS]);
+    verify([source]);
+  }
+
+  test_implementsSuperClass_typeAlias() async {
+    Source source = addSource(r'''
+class A {}
+class M {}
+class B = A with M implements A;''');
     await computeAnalysisResult(source);
     assertErrors(source, [CompileTimeErrorCode.IMPLEMENTS_SUPER_CLASS]);
     verify([source]);
@@ -4736,14 +4811,33 @@ class B {
   final a;
 }
 var b = const B();''');
-    // TODO(paulberry): the error INVALID_CONSTAT is redundant and ought to be
-    // suppressed.
+    // TODO(scheglov): the error CONST_EVAL_THROWS_EXCEPTION is redundant and
+    // ought to be suppressed. Or not?
     await computeAnalysisResult(source);
     assertErrors(source, [
       CompileTimeErrorCode.NON_CONSTANT_VALUE_IN_INITIALIZER,
-      CompileTimeErrorCode.INVALID_CONSTANT
+      CompileTimeErrorCode.CONST_EVAL_THROWS_EXCEPTION
     ]);
     verify([source]);
+  }
+
+  test_nonConstValueInInitializer_instanceCreation_inDifferentFile() async {
+    resetWith(options: new AnalysisOptionsImpl()..strongMode = true);
+    Source source = addNamedSource(
+        '/a.dart',
+        r'''
+import 'b.dart';
+const v = const MyClass();
+''');
+    addNamedSource(
+        '/b.dart',
+        r'''
+class MyClass {
+  const MyClass([p = foo]);
+}
+''');
+    await computeAnalysisResult(source);
+    assertErrors(source, [CompileTimeErrorCode.CONST_EVAL_THROWS_EXCEPTION]);
   }
 
   test_nonConstValueInInitializer_redirecting() async {
@@ -5261,6 +5355,64 @@ f() {
     assertErrors(
         source, [CompileTimeErrorCode.PREFIX_IDENTIFIER_NOT_FOLLOWED_BY_DOT]);
     verify([source]);
+  }
+
+  test_privateCollisionInClassTypeAlias_mixinAndMixin() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C = Object with A, B;
+''');
+  }
+
+  test_privateCollisionInClassTypeAlias_mixinAndMixin_indirect() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C = Object with A;
+class D = C with B;
+''');
+  }
+
+  test_privateCollisionInClassTypeAlias_superclassAndMixin() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C = A with B;
+''');
+  }
+
+  test_privateCollisionInClassTypeAlias_superclassAndMixin_same() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C = A with A;
+''');
+  }
+
+  test_privateCollisionInMixinApplication_mixinAndMixin() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C extends Object with A, B {}
+''');
+  }
+
+  test_privateCollisionInMixinApplication_mixinAndMixin_indirect() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C extends Object with A {}
+class D extends C with B {}
+''');
+  }
+
+  test_privateCollisionInMixinApplication_superclassAndMixin() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C extends A with B {}
+''');
+  }
+
+  test_privateCollisionInMixinApplication_superclassAndMixin_same() {
+    return _privateCollisionInMixinApplicationTest('''
+import 'lib1.dart';
+class C extends A with A {}
+''');
   }
 
   test_privateOptionalParameter() async {
@@ -5848,6 +6000,23 @@ f() sync* {
     await computeAnalysisResult(source);
     assertErrors(source, [CompileTimeErrorCode.RETURN_IN_GENERATOR]);
     verify([source]);
+  }
+
+  test_deferredImportWithInvalidUri() async {
+    Source source = addSource(r'''
+import '[invalid uri]' deferred as p;
+main() {
+  p.loadLibrary();
+}''');
+    await computeAnalysisResult(source);
+    if (enableNewAnalysisDriver) {
+      assertErrors(source, [CompileTimeErrorCode.URI_DOES_NOT_EXIST]);
+    } else {
+      assertErrors(source, [
+        CompileTimeErrorCode.URI_DOES_NOT_EXIST,
+        StaticWarningCode.UNDEFINED_IDENTIFIER
+      ]);
+    }
   }
 
   test_sharedDeferredPrefix() async {
@@ -6494,5 +6663,25 @@ class A {
   Future<Null> _check_wrongNumberOfParametersForOperator1(String name) async {
     await _check_wrongNumberOfParametersForOperator(name, "");
     await _check_wrongNumberOfParametersForOperator(name, "a, b");
+  }
+
+  Future<Null> _privateCollisionInMixinApplicationTest(String testCode) async {
+    resetWith(options: new AnalysisOptionsImpl()..strongMode = true);
+    addNamedSource(
+        '/lib1.dart',
+        '''
+class A {
+  int _x;
+}
+
+class B {
+  int _x;
+}
+''');
+    Source source = addSource(testCode);
+    await computeAnalysisResult(source);
+    assertErrors(
+        source, [CompileTimeErrorCode.PRIVATE_COLLISION_IN_MIXIN_APPLICATION]);
+    verify([source]);
   }
 }

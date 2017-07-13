@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
 
 #include "bin/crypto.h"
 
@@ -20,7 +20,7 @@ bool Crypto::GetRandomBytes(intptr_t count, uint8_t* buffer) {
         (MX_CPRNG_DRAW_MAX_LEN < remaining) ? MX_CPRNG_DRAW_MAX_LEN : remaining;
     size_t res = 0;
     const mx_status_t status = mx_cprng_draw(buffer + read, len, &res);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
       return false;
     }
     read += res;
@@ -31,4 +31,4 @@ bool Crypto::GetRandomBytes(intptr_t count, uint8_t* buffer) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)

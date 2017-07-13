@@ -46,8 +46,10 @@ class ObjectPointerVisitor;
   V(IteratorParameter, ":iterator")                                            \
   V(_AsyncStarStreamController, "_AsyncStarStreamController")                  \
   V(_AsyncStarStreamControllerConstructor, "_AsyncStarStreamController.")      \
-  V(Controller, ":controller")                                                 \
+  V(ColonController, ":controller")                                            \
+  V(ControllerStream, ":controller_stream")                                    \
   V(Stream, "stream")                                                          \
+  V(_StreamImpl, "_StreamImpl")                                                \
   V(isPaused, "isPaused")                                                      \
   V(AddError, "addError")                                                      \
   V(AddStream, "addStream")                                                    \
@@ -64,7 +66,7 @@ class ObjectPointerVisitor;
   V(ImplicitClosure, "<implicit closure>")                                     \
   V(ClosureParameter, ":closure")                                              \
   V(TypeArgumentsParameter, ":type_arguments")                                 \
-  V(FunctionInstantiatorVar, ":function_instantiator_var")                     \
+  V(FunctionTypeArgumentsVar, ":function_type_arguments_var")                  \
   V(AssertionError, "_AssertionError")                                         \
   V(CastError, "_CastError")                                                   \
   V(TypeError, "_TypeError")                                                   \
@@ -122,11 +124,14 @@ class ObjectPointerVisitor;
   V(ClearAsyncThreadStackTrace, "_clearAsyncThreadStackTrace")                 \
   V(SetAsyncThreadStackTrace, "_setAsyncThreadStackTrace")                     \
   V(AsyncCatchHelper, "_asyncCatchHelper")                                     \
+  V(_CompleteOnAsyncReturn, "_completeOnAsyncReturn")                          \
   V(AsyncThenWrapperHelper, "_asyncThenWrapperHelper")                         \
   V(AsyncErrorWrapperHelper, "_asyncErrorWrapperHelper")                       \
+  V(AsyncStarMoveNextHelper, "_asyncStarMoveNextHelper")                       \
   V(AsyncStackTraceHelper, "_asyncStackTraceHelper")                           \
   V(AsyncAwaitHelper, "_awaitHelper")                                          \
   V(Await, "await")                                                            \
+  V(_Awaiter, "_awaiter")                                                      \
   V(AwaitTempVarPrefix, ":await_temp_var_")                                    \
   V(AwaitContextVar, ":await_ctx_var")                                         \
   V(AwaitJumpVar, ":await_jump_var")                                           \
@@ -218,8 +223,10 @@ class ObjectPointerVisitor;
   V(_RegExp, "_RegExp")                                                        \
   V(RegExp, "RegExp")                                                          \
   V(ColonMatcher, ":matcher")                                                  \
+  V(ColonStream, ":stream")                                                    \
   V(Object, "Object")                                                          \
   V(Int, "int")                                                                \
+  V(Int64, "_int64")                                                           \
   V(Double, "double")                                                          \
   V(Float32x4, "Float32x4")                                                    \
   V(Float64x2, "Float64x2")                                                    \
@@ -343,11 +350,6 @@ class ObjectPointerVisitor;
   V(_simpleInstanceOf, "_simpleInstanceOf")                                    \
   V(_simpleInstanceOfTrue, "_simpleInstanceOfTrue")                            \
   V(_simpleInstanceOfFalse, "_simpleInstanceOfFalse")                          \
-  V(_instanceOfSmi, "_instanceOfSmi")                                          \
-  V(_instanceOfNum, "_instanceOfNum")                                          \
-  V(_instanceOfInt, "_instanceOfInt")                                          \
-  V(_instanceOfDouble, "_instanceOfDouble")                                    \
-  V(_instanceOfString, "_instanceOfString")                                    \
   V(_as, "_as")                                                                \
   V(GetterPrefix, "get:")                                                      \
   V(ClosurizePrefix, "get:#")                                                  \
@@ -357,7 +359,7 @@ class ObjectPointerVisitor;
   V(DartScheme, "dart:")                                                       \
   V(DartSchemePrivate, "dart:_")                                               \
   V(DartNativeWrappers, "dart:nativewrappers")                                 \
-  V(DartNativeWrappersLibName, "dart.nativewrappers")                          \
+  V(DartNativeWrappersLibName, "nativewrappers")                               \
   V(DartCore, "dart:core")                                                     \
   V(DartCollection, "dart:collection")                                         \
   V(DartDeveloper, "dart:developer")                                           \
@@ -420,6 +422,7 @@ class ObjectPointerVisitor;
   V(removeLast, "removeLast")                                                  \
   V(add, "add")                                                                \
   V(ConstructorClosurePrefix, "new#")                                          \
+  V(ConstructorStacktracePrefix, "new ")                                       \
   V(_runExtension, "_runExtension")                                            \
   V(_runPendingImmediateCallback, "_runPendingImmediateCallback")              \
   V(DartLibrary, "dart.library.")                                              \
@@ -427,9 +430,14 @@ class ObjectPointerVisitor;
   V(_name, "_name")                                                            \
   V(_classRangeCheck, "_classRangeCheck")                                      \
   V(_classRangeCheckNegative, "_classRangeCheckNegative")                      \
+  V(_classRangeAssert, "_classRangeAssert")                                    \
+  V(_classIdEqualsAssert, "_classIdEqualsAssert")                              \
   V(GetRuntimeType, "get:runtimeType")                                         \
   V(HaveSameRuntimeType, "_haveSameRuntimeType")                               \
-  V(DartDeveloperCausalAsyncStacks, "dart.developer.causal_async_stacks")
+  V(PrependTypeArguments, "_prependTypeArguments")                             \
+  V(DartDeveloperCausalAsyncStacks, "dart.developer.causal_async_stacks")      \
+  V(_AsyncStarListenHelper, "_asyncStarListenHelper")                          \
+  V(GrowRegExpStack, "_growRegExpStack")
 
 
 // Contains a list of frequently used strings in a canonicalized form. This

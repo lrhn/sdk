@@ -15,23 +15,22 @@ main() {
   final events = new EventRepositoryMock();
   final notifs = new NotificationRepositoryMock();
   final repository = new PersistentHandlesRepositoryMock();
-  final instances = new InstanceRepositoryMock();
+  final objects = new ObjectRepositoryMock();
   test('instantiation', () {
-    final e = new PersistentHandlesPageElement(vm, isolate, events, notifs,
-                                               repository, instances);
+    final e = new PersistentHandlesPageElement(
+        vm, isolate, events, notifs, repository, objects);
     expect(e, isNotNull, reason: 'element correctly created');
     expect(e.isolate, equals(isolate));
   });
   test('elements created after attachment', () async {
     final repository = new PersistentHandlesRepositoryMock(
-      getter: expectAsync((i) async {
-        expect(i, equals(isolate));
-        return const PersistentHandlesMock();
-      }, count: 1)
-    );
-    final instances = new InstanceRepositoryMock();
-    final e = new PersistentHandlesPageElement(vm, isolate, events, notifs,
-                                               repository, instances);
+        getter: expectAsync((i) async {
+      expect(i, equals(isolate));
+      return const PersistentHandlesMock();
+    }, count: 1));
+    final objects = new ObjectRepositoryMock();
+    final e = new PersistentHandlesPageElement(
+        vm, isolate, events, notifs, repository, objects);
     document.body.append(e);
     await e.onRendered.first;
     expect(e.children.length, isNonZero, reason: 'has elements');

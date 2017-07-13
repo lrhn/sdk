@@ -27,7 +27,6 @@ import 'package:analyzer/src/generated/source.dart';
 import 'package:analyzer/src/generated/utilities_general.dart';
 import 'package:analyzer/src/plugin/engine_plugin.dart';
 import 'package:analyzer/src/services/lint.dart';
-import 'package:analyzer/src/summary/api_signature.dart';
 import 'package:analyzer/src/task/dart.dart';
 import 'package:analyzer/src/task/general.dart';
 import 'package:analyzer/src/task/html.dart';
@@ -36,6 +35,7 @@ import 'package:analyzer/src/task/options.dart';
 import 'package:analyzer/src/task/yaml.dart';
 import 'package:analyzer/task/dart.dart';
 import 'package:analyzer/task/model.dart';
+import 'package:front_end/src/base/api_signature.dart';
 import 'package:front_end/src/base/timestamped_data.dart';
 import 'package:html/dom.dart' show Document;
 import 'package:path/path.dart' as pathos;
@@ -331,8 +331,7 @@ abstract class AnalysisContext {
    * Perform work until the given [result] has been computed for the given
    * [target]. Return the computed value.
    */
-  Object/*=V*/ computeResult/*<V>*/(
-      AnalysisTarget target, ResultDescriptor/*<V>*/ result);
+  V computeResult<V>(AnalysisTarget target, ResultDescriptor<V> result);
 
   /**
    * Notifies the context that the client is going to stop using this context.
@@ -365,7 +364,7 @@ abstract class AnalysisContext {
    * See [setConfigurationData].
    */
   @deprecated
-  Object/*=V*/ getConfigurationData/*<V>*/(ResultDescriptor/*<V>*/ key);
+  V getConfigurationData<V>(ResultDescriptor<V> key);
 
   /**
    * Return the contents and timestamp of the given [source].
@@ -494,8 +493,7 @@ abstract class AnalysisContext {
    * If the corresponding [target] does not exist, or the [result] is not
    * computed yet, then the default value is returned.
    */
-  Object/*=V*/ getResult/*<V>*/(
-      AnalysisTarget target, ResultDescriptor/*<V>*/ result);
+  V getResult<V>(AnalysisTarget target, ResultDescriptor<V> result);
 
   /**
    * Return a list of the sources being analyzed in this context whose full path
@@ -1244,14 +1242,6 @@ abstract class AnalysisOptions {
   List<String> get excludePatterns;
 
   /**
-   * A flag indicating whether finer grained dependencies should be used
-   * instead of just source level dependencies.
-   *
-   * This option is experimental and subject to change.
-   */
-  bool get finerGrainedInvalidation;
-
-  /**
    * Return `true` if errors, warnings and hints should be generated for sources
    * that are implicitly being analyzed. The default value is `true`.
    */
@@ -1268,23 +1258,6 @@ abstract class AnalysisOptions {
    * based information and pub best practices).
    */
   bool get hint;
-
-  /**
-   * Return `true` if incremental analysis should be used.
-   */
-  bool get incremental;
-
-  /**
-   * A flag indicating whether incremental analysis should be used for API
-   * changes.
-   */
-  bool get incrementalApi;
-
-  /**
-   * A flag indicating whether validation should be performed after incremental
-   * analysis.
-   */
-  bool get incrementalValidation;
 
   /**
    * Return `true` if analysis is to generate lint warnings.
@@ -1422,7 +1395,7 @@ class AnalysisOptionsImpl implements AnalysisOptions {
   List<String> _excludePatterns;
 
   @override
-  bool enableUriInPartOf = false;
+  bool enableUriInPartOf = true;
 
   @override
   bool generateImplicitErrors = true;
@@ -1432,15 +1405,6 @@ class AnalysisOptionsImpl implements AnalysisOptions {
 
   @override
   bool hint = true;
-
-  @override
-  bool incremental = false;
-
-  @override
-  bool incrementalApi = false;
-
-  @override
-  bool incrementalValidation = false;
 
   @override
   bool lint = false;
@@ -1487,9 +1451,6 @@ class AnalysisOptionsImpl implements AnalysisOptions {
    */
   List<String> nonnullableTypes = NONNULLABLE_TYPES;
 
-  @override
-  bool finerGrainedInvalidation = false;
-
   /**
    * A flag indicating whether implicit dynamic type is allowed, on by default.
    *
@@ -1525,9 +1486,6 @@ class AnalysisOptionsImpl implements AnalysisOptions {
     generateImplicitErrors = options.generateImplicitErrors;
     generateSdkErrors = options.generateSdkErrors;
     hint = options.hint;
-    incremental = options.incremental;
-    incrementalApi = options.incrementalApi;
-    incrementalValidation = options.incrementalValidation;
     lint = options.lint;
     lintRules = options.lintRules;
     preserveComments = options.preserveComments;
@@ -1540,7 +1498,6 @@ class AnalysisOptionsImpl implements AnalysisOptions {
     }
     trackCacheDependencies = options.trackCacheDependencies;
     disableCacheFlushing = options.disableCacheFlushing;
-    finerGrainedInvalidation = options.finerGrainedInvalidation;
     patchPaths = options.patchPaths;
   }
 
@@ -1650,9 +1607,11 @@ class AnalysisOptionsImpl implements AnalysisOptions {
       ApiSignature buffer = new ApiSignature();
 
       // Append boolean flags.
+      buffer.addBool(enableAssertInitializer);
       buffer.addBool(enableLazyAssignmentOperators);
       buffer.addBool(enableStrictCallChecks);
       buffer.addBool(enableSuperMixins);
+      buffer.addBool(enableUriInPartOf);
       buffer.addBool(implicitCasts);
       buffer.addBool(implicitDynamic);
       buffer.addBool(strongMode);
@@ -1686,18 +1645,14 @@ class AnalysisOptionsImpl implements AnalysisOptions {
     enableStrictCallChecks = false;
     enableSuperMixins = false;
     enableTiming = false;
-    enableUriInPartOf = false;
+    enableUriInPartOf = true;
     _errorProcessors = null;
     _excludePatterns = null;
-    finerGrainedInvalidation = false;
     generateImplicitErrors = true;
     generateSdkErrors = false;
     hint = true;
     implicitCasts = true;
     implicitDynamic = true;
-    incremental = false;
-    incrementalApi = false;
-    incrementalValidation = false;
     lint = false;
     _lintRules = null;
     nonnullableTypes = NONNULLABLE_TYPES;
@@ -1717,6 +1672,21 @@ class AnalysisOptionsImpl implements AnalysisOptions {
     if (options is AnalysisOptionsImpl) {
       strongModeHints = options.strongModeHints;
     }
+  }
+
+  /**
+   * Return whether the given lists of lints are equal.
+   */
+  static bool compareLints(List<Linter> a, List<Linter> b) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].lintCode != b[i].lintCode) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -2563,19 +2533,29 @@ class ObsoleteSourceAnalysisException extends AnalysisException {
  */
 class PerformanceStatistics {
   /**
+   * The [PerformanceTag] for `package:analyzer`.
+   */
+  static PerformanceTag analyzer = new PerformanceTag('analyzer');
+
+  /**
    * The [PerformanceTag] for time spent in reading files.
    */
-  static PerformanceTag io = new PerformanceTag('io');
+  static PerformanceTag io = analyzer.createChild('io');
+
+  /**
+   * The [PerformanceTag] for general phases of analysis.
+   */
+  static PerformanceTag analysis = analyzer.createChild('analysis');
 
   /**
    * The [PerformanceTag] for time spent in scanning.
    */
-  static PerformanceTag scan = new PerformanceTag('scan');
+  static PerformanceTag scan = analyzer.createChild('scan');
 
   /**
    * The [PerformanceTag] for time spent in parsing.
    */
-  static PerformanceTag parse = new PerformanceTag('parse');
+  static PerformanceTag parse = analyzer.createChild('parse');
 
   /**
    * The [PerformanceTag] for time spent in resolving.
@@ -2585,17 +2565,17 @@ class PerformanceStatistics {
   /**
    * The [PerformanceTag] for time spent in error verifier.
    */
-  static PerformanceTag errors = new PerformanceTag('errors');
+  static PerformanceTag errors = analysis.createChild('errors');
 
   /**
    * The [PerformanceTag] for time spent in hints generator.
    */
-  static PerformanceTag hints = new PerformanceTag('hints');
+  static PerformanceTag hints = analysis.createChild('hints');
 
   /**
    * The [PerformanceTag] for time spent in linting.
    */
-  static PerformanceTag lint = new PerformanceTag('lint');
+  static PerformanceTag lints = analysis.createChild('lints');
 
   /**
    * The [PerformanceTag] for time spent computing cycles.
@@ -2603,34 +2583,9 @@ class PerformanceStatistics {
   static PerformanceTag cycles = new PerformanceTag('cycles');
 
   /**
-   * The [PerformanceTag] for time spent in other phases of analysis.
-   */
-  static PerformanceTag performAnalysis = new PerformanceTag('performAnalysis');
-
-  /**
-   * The [PerformanceTag] for time spent in the analysis task visitor after
-   * tasks are complete.
-   */
-  static PerformanceTag analysisTaskVisitor =
-      new PerformanceTag('analysisTaskVisitor');
-
-  /**
-   * The [PerformanceTag] for time spent in the getter
-   * AnalysisContextImpl.nextAnalysisTask.
-   */
-  static var nextTask = new PerformanceTag('nextAnalysisTask');
-
-  /**
-   * The [PerformanceTag] for time spent during otherwise not accounted parts
-   * incremental of analysis.
-   */
-  static PerformanceTag incrementalAnalysis =
-      new PerformanceTag('incrementalAnalysis');
-
-  /**
    * The [PerformanceTag] for time spent in summaries support.
    */
-  static PerformanceTag summary = new PerformanceTag('summary');
+  static PerformanceTag summary = analyzer.createChild('summary');
 
   /**
    * Statistics about cache consistency validation.

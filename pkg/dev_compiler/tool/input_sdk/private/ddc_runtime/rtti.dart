@@ -58,7 +58,7 @@ part of dart._runtime;
 fn(closure, t) {
   if (t == null) {
     // No type arguments, it's all dynamic
-    t = definiteFunctionType(JS('', '#', dynamic),
+    t = fnType(JS('', '#', dynamic),
         JS('', 'Array(#.length).fill(#)', closure, dynamic), JS('', 'void 0'));
   }
   tag(closure, t);
@@ -72,7 +72,8 @@ lazyFn(closure, computeType) {
 
 // TODO(vsm): How should we encode the runtime type?
 final _runtimeType = JS('', 'Symbol("_runtimeType")');
-final isNamedConstructor = JS('', 'Symbol("isNamedConstructor")');
+
+final _moduleName = JS('', 'Symbol("_moduleName")');
 
 _checkPrimitiveType(obj) {
   // TODO(jmesserly): JS is used to prevent type literal wrapping.  Is there a
@@ -109,8 +110,8 @@ _checkPrimitiveType(obj) {
 
 getFunctionType(obj) {
   // TODO(vsm): Encode this properly on the function for Dart-generated code.
-  var args = JS('', 'Array(#.length).fill(#)', obj, dynamic);
-  return definiteFunctionType(bottom, args, JS('', 'void 0'));
+  var args = JS('List', 'Array(#.length).fill(#)', obj, dynamic);
+  return fnType(bottom, args, JS('', 'void 0'));
 }
 
 /// Returns the runtime representation of the type of obj.
@@ -150,46 +151,22 @@ _nonPrimitiveRuntimeType(obj) {
 
 /// Given an internal runtime type object, wraps it in a `WrappedType` object
 /// that implements the dart:core Type interface.
-wrapType(type) {
+Type wrapType(type) {
   // If we've already wrapped this type once, use the previous wrapper. This
   // way, multiple references to the same type return an identical Type.
   if (JS('bool', '#.hasOwnProperty(#)', type, _typeObject)) {
     return JS('', '#[#]', type, _typeObject);
   }
-  return JS('', '#[#] = new #(#)', type, _typeObject, WrappedType, type);
-}
-
-var _lazyJSTypes = JS('', 'new Map()');
-
-lazyJSType(getJSTypeCallback, name) {
-  var key = JS('String', '#.toString()', getJSTypeCallback);
-  if (JS('bool', '#.has(#)', _lazyJSTypes, key)) {
-    return JS('', '#.get(#)', _lazyJSTypes, key);
-  }
-  var ret = JS('', 'new #(#, #)', LazyJSType, getJSTypeCallback, name);
-  JS('', '#.set(#, #)', _lazyJSTypes, key, ret);
-  return ret;
-}
-
-// TODO(jacobr): do not use the same LazyJSType object for anonymous JS types
-// from different libraries.
-lazyAnonymousJSType(name) {
-  if (JS('bool', '#.has(#)', _lazyJSTypes, name)) {
-    return JS('', '#.get(#)', _lazyJSTypes, name);
-  }
-  var ret = JS('', 'new #(null, #)', LazyJSType, name);
-  JS('', '#.set(#, #)', _lazyJSTypes, name, ret);
-  return ret;
+  return JS('Type', '#[#] = #', type, _typeObject, new WrappedType(type));
 }
 
 /// Given a WrappedType, return the internal runtime type object.
 unwrapType(WrappedType obj) => obj._wrappedType;
 
 _getRuntimeType(value) => JS('', '#[#]', value, _runtimeType);
-getIsNamedConstructor(value) => JS('', '#[#]', value, isNamedConstructor);
-// TODO(bmilligan): Define the symbol in rtti.dart instead of dart_library.js
-// and get rid of the call to dart_library in the JS here.
-getDartLibraryName(value) => JS('', '#[dart_library.dartLibraryName]', value);
+
+/// Return the module name for a raw library object.
+getModuleName(value) => JS('', '#[#]', value, _moduleName);
 
 /// Tag the runtime type of [value] to be type [t].
 void tag(value, t) {
@@ -197,10 +174,34 @@ void tag(value, t) {
 }
 
 void tagComputed(value, compute) {
-  JS('', '#(#, #, { get: # })', defineProperty, value, _runtimeType, compute);
+  defineGetter(value, _runtimeType, compute);
 }
 
 void tagLazy(value, compute) {
-  JS('', '#(#, #, { get: # })', defineLazyProperty, value, _runtimeType,
-      compute);
+  defineMemoizedGetter(value, _runtimeType, compute);
+}
+
+var _loadedModules = JS('', 'new Map()');
+var _loadedSourceMaps = JS('', 'new Map()');
+
+List getModuleNames() {
+  return JS('', 'Array.from(#.keys())', _loadedModules);
+}
+
+String getSourceMap(module) {
+  return JS('String', '#.get(#)', _loadedSourceMaps, module);
+}
+
+/// Return all library objects in the specified module.
+getModuleLibraries(String name) {
+  var module = JS('', '#.get(#)', _loadedModules, name);
+  if (module == null) return null;
+  JS('', '#[#] = #', module, _moduleName, name);
+  return module;
+}
+
+/// Track all libraries
+void trackLibraries(String moduleName, libraries, sourceMap) {
+  JS('', '#.set(#, #)', _loadedSourceMaps, moduleName, sourceMap);
+  JS('', '#.set(#, #)', _loadedModules, moduleName, libraries);
 }

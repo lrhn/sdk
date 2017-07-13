@@ -11,20 +11,18 @@
  * modified date of the output of a dart2js compilation is newer than
  *   - the dart application to compile (including it's dependencies)
  *   - the dart2js snapshot
- * Furtheremore it ensure that a compilations is not skipped if any of the
+ * Furthermore it ensures that a compilation is not skipped if any of the
  * necessary files could not be found (dart2js snapshots, previous dart2js
  * output (+deps file), dart application)
  */
 
 import 'package:expect/expect.dart';
-import 'package:path/path.dart';
 import 'dart:async';
 import 'dart:io';
+import '../../../tools/testing/dart/command.dart';
+import '../../../tools/testing/dart/command_output.dart';
 import '../../../tools/testing/dart/path.dart';
-import '../../../tools/testing/dart/test_suite.dart' as suite;
 import '../../../tools/testing/dart/test_runner.dart' as runner;
-import '../../../tools/testing/dart/test_options.dart' as options;
-import '../../../tools/testing/dart/status_file_parser.dart' as status;
 import '../../../tools/testing/dart/utils.dart';
 
 /**
@@ -38,12 +36,13 @@ class FileUtils {
   File testDart;
   File testSnapshot;
 
-  FileUtils({bool createJs,
-             bool createJsDeps,
-             bool createDart,
-             bool createSnapshot}) {
+  FileUtils(
+      {bool createJs,
+      bool createJsDeps,
+      bool createDart,
+      bool createSnapshot}) {
     tempDir = Directory.systemTemp
-                       .createTempSync('dart_skipping_dart2js_compilations');
+        .createTempSync('dart_skipping_dart2js_compilations');
     if (createJs) {
       testJs = _createFile(testJsFilePath);
       _writeToFile(testJs, "test.js content");
@@ -58,8 +57,8 @@ class FileUtils {
     }
     if (createJsDeps) {
       testJsDeps = _createFile(testJsDepsFilePath);
-      var path = suite.TestUtils.absolutePath(new Path(tempDir.path))
-          .append("test.dart");
+      var path =
+          TestUtils.absolutePath(new Path(tempDir.path)).append("test.dart");
       _writeToFile(testJsDeps, "file://$path");
     }
   }
@@ -80,28 +79,26 @@ class FileUtils {
   }
 
   Path get scriptOutputPath {
-    return suite.TestUtils.absolutePath(new Path(tempDir.path)
-        .append('created_if_command_did_run.txt'));
+    return TestUtils.absolutePath(
+        new Path(tempDir.path).append('created_if_command_did_run.txt'));
   }
 
   Path get testDartFilePath {
-    return suite.TestUtils.absolutePath(new Path(tempDir.path)
-        .append('test.dart'));
+    return TestUtils.absolutePath(new Path(tempDir.path).append('test.dart'));
   }
 
   Path get testJsFilePath {
-    return suite.TestUtils.absolutePath(new Path(tempDir.path)
-        .append('test.js'));
+    return TestUtils.absolutePath(new Path(tempDir.path).append('test.js'));
   }
 
   Path get testJsDepsFilePath {
-    return suite.TestUtils.absolutePath(new Path(tempDir.path)
-        .append('test.js.deps'));
+    return TestUtils
+        .absolutePath(new Path(tempDir.path).append('test.js.deps'));
   }
 
   Path get testSnapshotFilePath {
-    return suite.TestUtils.absolutePath(new Path(tempDir.path)
-        .append('test_dart2js.snapshot'));
+    return TestUtils
+        .absolutePath(new Path(tempDir.path).append('test_dart2js.snapshot'));
   }
 
   void touchFile(File file) {
@@ -111,7 +108,7 @@ class FileUtils {
   void _writeToFile(File file, String content) {
     if (content != null) {
       var fd = new File(file.resolveSymbolicLinksSync())
-                   .openSync(mode: FileMode.WRITE);
+          .openSync(mode: FileMode.WRITE);
       fd.writeStringSync(content);
       fd.closeSync();
     }
@@ -130,74 +127,75 @@ class FileUtils {
 
 class CommandCompletedHandler {
   FileUtils fileUtils;
-  DateTime _expectedTimestamp;
   bool _shouldHaveRun;
 
   CommandCompletedHandler(FileUtils this.fileUtils, bool this._shouldHaveRun);
 
-  void processCompletedTest(runner.CommandOutput output) {
-    Expect.isTrue(output.exitCode == 0);
-    Expect.isTrue(output.stderr.length == 0);
+  void processCompletedTest(CommandOutput output) {
+    Expect.equals(0, output.exitCode);
+    Expect.equals(0, output.stderr.length);
     if (_shouldHaveRun) {
-      Expect.isTrue(output.stdout.length == 0);
-      Expect.isTrue(new File(fileUtils.scriptOutputPath.toNativePath())
-          .existsSync());
+      Expect.equals(0, output.stdout.length);
+      Expect.isTrue(
+          new File(fileUtils.scriptOutputPath.toNativePath()).existsSync());
     } else {
-      Expect.isFalse(new File(fileUtils.scriptOutputPath.toNativePath())
-          .existsSync());
+      Expect.isFalse(
+          new File(fileUtils.scriptOutputPath.toNativePath()).existsSync());
     }
   }
 }
 
-runner.Command makeCompilationCommand(String testName, FileUtils fileUtils) {
-  var config = new options.TestOptionsParser().parse(['--timeout', '2'])[0];
+Command makeCompilationCommand(String testName, FileUtils fileUtils) {
   var createFileScript = Platform.script
-      .resolve('skipping_dart2js_compilations_helper.dart').toFilePath();
+      .resolve('skipping_dart2js_compilations_helper.dart')
+      .toFilePath();
   var executable = Platform.executable;
   var arguments = [createFileScript, fileUtils.scriptOutputPath.toNativePath()];
-  var bootstrapDeps = [
-      Uri.parse("file://${fileUtils.testSnapshotFilePath}")];
-  return runner.CommandBuilder.instance.getCompilationCommand(
-      'dart2js',
-      fileUtils.testJsFilePath.toNativePath(),
-      false,
-      bootstrapDeps,
-      executable,
-      arguments, {});
+  var bootstrapDeps = [Uri.parse("file://${fileUtils.testSnapshotFilePath}")];
+  return Command.compilation('dart2js', fileUtils.testJsFilePath.toNativePath(),
+      bootstrapDeps, executable, arguments, {},
+      alwaysCompile: false);
 }
 
 void main() {
   // This script is in [sdk]/tests/standalone/io.
-  suite.TestUtils.setDartDirUri(Platform.script.resolve('../../..'));
+  TestUtils.setDartDirUri(Platform.script.resolve('../../..'));
 
-  var fs_noTestJs = new FileUtils(createJs: false,
-                                  createJsDeps: true,
-                                  createDart: true,
-                                  createSnapshot: true);
-  var fs_noTestJsDeps = new FileUtils(createJs: true,
-                                      createJsDeps: false,
-                                      createDart: true,
-                                      createSnapshot: true);
-  var fs_noTestDart = new FileUtils(createJs: true,
-                                    createJsDeps: true,
-                                    createDart: false,
-                                    createSnapshot: true);
-  var fs_noTestSnapshot = new FileUtils(createJs: true,
-                                        createJsDeps: true,
-                                        createDart: true,
-                                        createSnapshot: false);
-  var fs_notUpToDate_snapshot = new FileUtils(createJs: true,
-                                              createJsDeps: true,
-                                              createDart: true,
-                                              createSnapshot: true);
-  var fs_notUpToDate_dart = new FileUtils(createJs: true,
-                                          createJsDeps: true,
-                                          createDart: true,
-                                          createSnapshot: true);
-  var fs_upToDate = new FileUtils(createJs: true,
-                                  createJsDeps: true,
-                                  createDart: true,
-                                  createSnapshot: true);
+  var fs_noTestJs = new FileUtils(
+      createJs: false,
+      createJsDeps: true,
+      createDart: true,
+      createSnapshot: true);
+  var fs_noTestJsDeps = new FileUtils(
+      createJs: true,
+      createJsDeps: false,
+      createDart: true,
+      createSnapshot: true);
+  var fs_noTestDart = new FileUtils(
+      createJs: true,
+      createJsDeps: true,
+      createDart: false,
+      createSnapshot: true);
+  var fs_noTestSnapshot = new FileUtils(
+      createJs: true,
+      createJsDeps: true,
+      createDart: true,
+      createSnapshot: false);
+  var fs_notUpToDate_snapshot = new FileUtils(
+      createJs: true,
+      createJsDeps: true,
+      createDart: true,
+      createSnapshot: true);
+  var fs_notUpToDate_dart = new FileUtils(
+      createJs: true,
+      createJsDeps: true,
+      createDart: true,
+      createSnapshot: true);
+  var fs_upToDate = new FileUtils(
+      createJs: true,
+      createJsDeps: true,
+      createDart: true,
+      createSnapshot: true);
   void cleanup() {
     fs_noTestJs.cleanup();
     fs_noTestJsDeps.cleanup();
@@ -217,11 +215,12 @@ void main() {
       var completedHandler = new CommandCompletedHandler(fileUtils, shouldRun);
       var command = makeCompilationCommand(name, fileUtils);
       var process = new runner.RunningProcess(command, 60);
-      return process.run().then((runner.CommandOutput output) {
+      return process.run().then((CommandOutput output) {
         completedHandler.processCompletedTest(output);
       });
     }
-    // We run the tests in sequence, so that if one of them failes we clean up
+
+    // We run the tests in sequence, so that if one of them fails we clean up
     // everything and throw.
     runTest("fs_noTestJs", fs_noTestJs, true).then((_) {
       return runTest("fs_noTestJsDeps", fs_noTestJsDeps, true);
@@ -245,6 +244,7 @@ void main() {
       cleanup();
     });
   }
+
   // We need to wait some time to make sure that the files we 'touch' get a
   // bigger timestamp than the old ones
   new Timer(new Duration(seconds: 1), touchFilesAndRunTests);

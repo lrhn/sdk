@@ -76,8 +76,6 @@ def GuessArchitecture():
     return 'arm'
   elif os_id.startswith('aarch64'):
     return 'arm64'
-  elif os_id.startswith('mips'):
-    return 'mips'
   elif '64' in os_id:
     return 'x64'
   elif (not os_id) or (not re.match('(x|i[3-6])86', os_id) is None):
@@ -252,11 +250,9 @@ ARCH_FAMILY = {
   'armv6': 'arm',
   'armv5te': 'arm',
   'arm64': 'arm',
-  'mips': 'mips',
   'simarm': 'ia32',
   'simarmv6': 'ia32',
   'simarmv5te': 'ia32',
-  'simmips': 'ia32',
   'simarm64': 'ia32',
   'simdbc': 'ia32',
   'simdbc64': 'ia32',
@@ -294,7 +290,6 @@ def GetBuildConf(mode, arch, conf_os=None):
     host_arch = ARCH_GUESS
     cross_build = ''
     if GetArchFamily(host_arch) != GetArchFamily(arch):
-      print "GetBuildConf: Cross-build of %s on %s\n" % (arch, host_arch)
       cross_build = 'X'
     return '%s%s%s' % (GetBuildMode(mode), cross_build, arch.upper())
 
@@ -405,7 +400,7 @@ def GetArchiveVersion():
   version = ReadVersionFile()
   if not version:
     raise 'Could not get the archive version, parsing the version file failed'
-  if version.channel == 'be':
+  if version.channel in ['be', 'integration']:
     return GetGitNumber()
   return GetSemanticSDKVersion()
 
@@ -621,9 +616,7 @@ def CheckedInSdkExecutable():
     name = 'dart.exe'
   elif GuessOS() == 'linux':
     arch = GuessArchitecture()
-    if arch == 'mips':
-      name = 'dart-mips'
-    elif arch == 'arm':
+    if arch == 'arm':
       name = 'dart-arm'
     elif arch == 'arm64':
       name = 'dart-arm64'
@@ -700,25 +693,50 @@ class UnexpectedCrash(object):
     self.binary = binary
 
   def __str__(self):
-    return "%s: %s %s" % (self.test, self.binary, self.pid)
+    return "Crash(%s: %s %s)" % (self.test, self.binary, self.pid)
 
+class SiteConfigBotoFileDisabler(object):
+  def __init__(self):
+    self._old_aws = None
+    self._old_boto = None
 
-class PosixCoredumpEnabler(object):
+  def __enter__(self):
+    self._old_aws = os.environ.get('AWS_CREDENTIAL_FILE', None)
+    self._old_boto = os.environ.get('BOTO_CONFIG', None)
+
+    if self._old_aws:
+      del os.environ['AWS_CREDENTIAL_FILE']
+    if self._old_boto:
+      del os.environ['BOTO_CONFIG']
+
+  def __exit__(self, *_):
+    if self._old_aws:
+      os.environ['AWS_CREDENTIAL_FILE'] = self._old_aws
+    if self._old_boto:
+      os.environ['BOTO_CONFIG'] = self._old_boto
+
+class PosixCoreDumpEnabler(object):
   def __init__(self):
     self._old_limits = None
 
   def __enter__(self):
     self._old_limits = resource.getrlimit(resource.RLIMIT_CORE)
-
-    # Bump core limits to unlimited if core_pattern is correctly configured.
-    if CheckLinuxCoreDumpPattern(fatal=False):
-      resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
+    resource.setrlimit(resource.RLIMIT_CORE, (-1, -1))
 
   def __exit__(self, *_):
     resource.setrlimit(resource.RLIMIT_CORE, self._old_limits)
-    CheckLinuxCoreDumpPattern(fatal=True)
 
-class WindowsCoredumpEnabler(object):
+class LinuxCoreDumpEnabler(PosixCoreDumpEnabler):
+  def __enter__(self):
+    # Bump core limits to unlimited if core_pattern is correctly configured.
+    if CheckLinuxCoreDumpPattern(fatal=False):
+      super(LinuxCoreDumpEnabler, self).__enter__()
+
+  def __exit__(self, *args):
+    CheckLinuxCoreDumpPattern(fatal=True)
+    super(LinuxCoreDumpEnabler, self).__exit__(*args)
+
+class WindowsCoreDumpEnabler(object):
   """Configure Windows Error Reporting to store crash dumps.
 
   The documentation can be found here:
@@ -761,7 +779,7 @@ class WindowsCoredumpEnabler(object):
           self.winreg.SetValueEx(wer, "Disabled", 0, self.winreg.REG_DWORD, 1)
 
           coredump_folder = os.path.join(
-              os.getcwd(), WindowsCoredumpEnabler.WINDOWS_COREDUMP_FOLDER)
+              os.getcwd(), WindowsCoreDumpEnabler.WINDOWS_COREDUMP_FOLDER)
 
           # Create the directory which will contain the dumps
           if not os.path.exists(coredump_folder):
@@ -812,9 +830,10 @@ class BaseCoreDumpArchiver(object):
   # test.dart will write a line for each unexpected crash into this file.
   _UNEXPECTED_CRASHES_FILE = "unexpected-crashes"
 
-  def __init__(self):
+  def __init__(self, search_dir):
     self._bucket = 'dart-temp-crash-archive'
     self._binaries_dir = os.getcwd()
+    self._search_dir = search_dir
 
   def __enter__(self):
     # Cleanup any stale files
@@ -832,8 +851,12 @@ class BaseCoreDumpArchiver(object):
           print '----> %s' % crash
 
         sys.stdout.flush()
-        self._archive(archive_crashes)
 
+        # We disable usage of the boto file installed on the bots due to an
+        # issue introduced by
+        # https://chrome-internal-review.googlesource.com/c/331136
+        with SiteConfigBotoFileDisabler():
+          self._archive(archive_crashes)
     finally:
       self._cleanup()
 
@@ -848,9 +871,20 @@ class BaseCoreDumpArchiver(object):
       else:
         missing.append(crash)
     self._upload(files)
+
     if missing:
-      raise Exception('Missing crash dumps for: %s' % ', '.join(
-          [str(c) for c in missing]))
+      self._report_missing_crashes(missing, throw=True)
+
+  def _report_missing_crashes(self, missing, throw=True):
+    missing_as_string = ', '.join([str(c) for c in missing])
+    other_files = list(glob.glob(os.path.join(self._search_dir, '*')))
+    print >> sys.stderr, (
+        "Could not find crash dumps for '%s' in search directory '%s'.\n"
+        "Existing files which *did not* match the pattern inside the search "
+        "directory are are:\n  %s"
+        % (missing_as_string, self._search_dir, '\n  '.join(other_files)))
+    if throw:
+      raise Exception('Missing crash dumps for: %s' % missing_as_string)
 
   def _upload(self, files):
     bot_utils = GetBotUtils()
@@ -909,16 +943,18 @@ class BaseCoreDumpArchiver(object):
       os.unlink(binary)
     return found
 
-class LinuxCoreDumpArchiver(BaseCoreDumpArchiver):
-  def __init__(self):
-    super(self.__class__, self).__init__()
-    self._search_dir = os.getcwd()
+class PosixCoreDumpArchiver(BaseCoreDumpArchiver):
+  def __init__(self, search_dir):
+    super(PosixCoreDumpArchiver, self).__init__(search_dir)
 
   def _cleanup(self):
-    found = super(self.__class__, self)._cleanup()
+    found = super(PosixCoreDumpArchiver, self)._cleanup()
     for core in glob.glob(os.path.join(self._search_dir, 'core.*')):
       found = True
-      os.unlink(core)
+      try:
+        os.unlink(core)
+      except:
+        pass
     return found
 
   def _find_coredump_file(self, crash):
@@ -926,14 +962,21 @@ class LinuxCoreDumpArchiver(BaseCoreDumpArchiver):
     if os.path.exists(core_filename):
       return core_filename
 
+class LinuxCoreDumpArchiver(PosixCoreDumpArchiver):
+  def __init__(self):
+    super(LinuxCoreDumpArchiver, self).__init__(os.getcwd())
+
+class MacOSCoreDumpArchiver(PosixCoreDumpArchiver):
+  def __init__(self):
+    super(MacOSCoreDumpArchiver, self).__init__('/cores')
+
 class WindowsCoreDumpArchiver(BaseCoreDumpArchiver):
   def __init__(self):
-    super(self.__class__, self).__init__()
-    self._search_dir = os.path.join(
-        os.getcwd(), WindowsCoredumpEnabler.WINDOWS_COREDUMP_FOLDER)
+    super(WindowsCoreDumpArchiver, self).__init__(os.path.join(
+        os.getcwd(), WindowsCoreDumpEnabler.WINDOWS_COREDUMP_FOLDER))
 
   def _cleanup(self):
-    found = super(self.__class__, self)._cleanup()
+    found = super(WindowsCoreDumpArchiver, self)._cleanup()
     for core in glob.glob(os.path.join(self._search_dir, '*')):
       found = True
       os.unlink(core)
@@ -944,10 +987,38 @@ class WindowsCoreDumpArchiver(BaseCoreDumpArchiver):
     for core_filename in glob.glob(pattern):
       return core_filename
 
+  def _report_missing_crashes(self, missing, throw=True):
+    # Let's only print the debugging information and not throw. We'll do more
+    # validation for werfault.exe and throw afterwards.
+    super(WindowsCoreDumpArchiver, self)._report_missing_crashes(missing, throw=False)
+
+    # Let's check again for the image execution options for werfault. Maybe
+    # puppet came a long during testing and reverted our change.
+    try:
+      import winreg
+    except ImportError:
+      import _winreg as winreg
+    for wowbit in [winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY]:
+      try:
+         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             WindowsCoreDumpEnabler.IMGEXEC_NAME,
+                             0,
+                             winreg.KEY_READ | wowbit) as handle:
+          raise Exception(
+              "Found werfault.exe was disabled. Probably by puppet. Too bad! "
+              "(For more information see https://crbug.com/691971)")
+      except OSError:
+        # If the open did not work the werfault.exe execution setting is as it
+        # should be.
+        pass
+
+    if throw:
+      missing_as_string = ', '.join([str(c) for c in missing])
+      raise Exception('Missing crash dumps for: %s' % missing_as_string)
+
 @contextlib.contextmanager
 def NooptCoreDumpArchiver():
   yield
-
 
 def CoreDumpArchiver(args):
   enabled = '--copy-coredumps' in args
@@ -957,10 +1028,13 @@ def CoreDumpArchiver(args):
 
   osname = GuessOS()
   if osname == 'linux':
-    return contextlib.nested(PosixCoredumpEnabler(),
+    return contextlib.nested(LinuxCoreDumpEnabler(),
                              LinuxCoreDumpArchiver())
+  elif osname == 'macos':
+    return contextlib.nested(PosixCoreDumpEnabler(),
+                             MacOSCoreDumpArchiver())
   elif osname == 'win32':
-    return contextlib.nested(WindowsCoredumpEnabler(),
+    return contextlib.nested(WindowsCoreDumpEnabler(),
                              WindowsCoreDumpArchiver())
   else:
     # We don't have support for MacOS yet.

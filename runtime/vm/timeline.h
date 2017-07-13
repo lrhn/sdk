@@ -158,6 +158,9 @@ class TimelineEvent {
     kAsyncInstant,
     kAsyncEnd,
     kCounter,
+    kFlowBegin,
+    kFlowStep,
+    kFlowEnd,
     kMetadata,
     kNumEventTypes,
   };
@@ -208,6 +211,16 @@ class TimelineEvent {
            int64_t thread_micros = OS::GetCurrentThreadCPUMicros());
 
   void Counter(const char* label,
+               int64_t micros = OS::GetCurrentMonotonicMicros());
+
+  void FlowBegin(const char* label,
+                 int64_t async_id,
+                 int64_t micros = OS::GetCurrentMonotonicMicros());
+  void FlowStep(const char* label,
+                int64_t async_id,
+                int64_t micros = OS::GetCurrentMonotonicMicros());
+  void FlowEnd(const char* label,
+               int64_t async_id,
                int64_t micros = OS::GetCurrentMonotonicMicros());
 
   void Metadata(const char* label,
@@ -318,6 +331,10 @@ class TimelineEvent {
   // Returns the number of bytes written into |buffer|.
   intptr_t PrintSystrace(char* buffer, intptr_t buffer_size);
 
+#if defined(HOST_OS_FUCHSIA)
+  void EmitFuchsiaEvent();
+#endif
+
  private:
   void FreeArguments();
 
@@ -386,6 +403,7 @@ class TimelineEvent {
   friend class TimelineEventRingRecorder;
   friend class TimelineEventStartupRecorder;
   friend class TimelineEventSystraceRecorder;
+  friend class TimelineEventFuchsiaRecorder;
   friend class TimelineStream;
   friend class TimelineTestHelper;
   DISALLOW_COPY_AND_ASSIGN(TimelineEvent);
@@ -432,6 +450,10 @@ class TimelineEventScope : public StackResource {
   void set_enabled(bool enabled) { enabled_ = enabled; }
 
   const char* label() const { return label_; }
+
+  TimelineEventArgument* arguments() const { return arguments_; }
+
+  intptr_t arguments_length() const { return arguments_length_; }
 
   TimelineStream* stream() const { return stream_; }
 
@@ -560,6 +582,7 @@ class TimelineEventBlock {
   friend class TimelineEventRingRecorder;
   friend class TimelineEventStartupRecorder;
   friend class TimelineEventSystraceRecorder;
+  friend class TimelineEventFuchsiaRecorder;
   friend class TimelineTestHelper;
   friend class JSONStream;
 
@@ -733,6 +756,25 @@ class TimelineEventSystraceRecorder : public TimelineEventFixedBufferRecorder {
 
   int systrace_fd_;
 };
+
+
+#if defined(HOST_OS_FUCHSIA)
+// A recorder that sends events to Fuchsia's tracing app. Events are also stored
+// in a buffer of fixed capacity. When the buffer is full, new events overwrite
+// old events.
+// See: https://fuchsia.googlesource.com/tracing/+/HEAD/docs/usage_guide.md
+class TimelineEventFuchsiaRecorder : public TimelineEventFixedBufferRecorder {
+ public:
+  explicit TimelineEventFuchsiaRecorder(intptr_t capacity = kDefaultCapacity);
+  virtual ~TimelineEventFuchsiaRecorder() {}
+
+  const char* name() const { return "Fuchsia"; }
+
+ protected:
+  TimelineEventBlock* GetNewBlockLocked();
+  void CompleteEvent(TimelineEvent* event);
+};
+#endif  // defined(HOST_OS_FUCHSIA)
 
 
 // A recorder that stores events in a buffer of fixed capacity. When the buffer

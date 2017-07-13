@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_LINUX)
+#if defined(HOST_OS_LINUX)
 
 #include <errno.h>  // NOLINT
 
@@ -14,6 +14,8 @@
 #include "vm/thread_interrupter.h"
 
 namespace dart {
+
+#ifndef PRODUCT
 
 DECLARE_FLAG(bool, thread_interrupter);
 DECLARE_FLAG(bool, trace_thread_interrupter);
@@ -69,7 +71,8 @@ void ThreadInterrupter::RemoveSignalHandler() {
   SignalHandler::Remove();
 }
 
+#endif  // !PRODUCT
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_LINUX)
+#endif  // defined(HOST_OS_LINUX)

@@ -6,13 +6,13 @@
 
 #include "platform/math.h"
 
-#include "vm/code_generator.h"  // DartModulo.
 #include "vm/dart_entry.h"
 #include "vm/double_conversion.h"
 #include "vm/double_internals.h"
 #include "vm/exceptions.h"
 #include "vm/native_entry.h"
 #include "vm/object.h"
+#include "vm/runtime_entry.h"  // DartModulo.
 #include "vm/symbols.h"
 
 namespace dart {
@@ -78,6 +78,19 @@ static RawInteger* DoubleToInteger(double val, const char* error_msg) {
     const Array& args = Array::Handle(Array::New(1));
     args.SetAt(0, String::Handle(String::New(error_msg)));
     Exceptions::ThrowByType(Exceptions::kUnsupported, args);
+  }
+  if (FLAG_limit_ints_to_64_bits) {
+    // TODO(alexmarkov): decide on the double-to-integer conversion semantics
+    // in truncating mode.
+    int64_t ival = 0;
+    if (val <= static_cast<double>(kMinInt64)) {
+      ival = kMinInt64;
+    } else if (val >= static_cast<double>(kMaxInt64)) {
+      ival = kMaxInt64;
+    } else {  // Representable in int64_t.
+      ival = static_cast<int64_t>(val);
+    }
+    return Integer::New(ival);
   }
   if ((-1.0 < val) && (val < 1.0)) {
     return Smi::New(0);
@@ -198,7 +211,7 @@ DEFINE_NATIVE_ENTRY(Double_truncate, 1) {
 }
 
 
-#if defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_MACOS)
 // MAC OSX math library produces old style cast warning.
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif

@@ -2,15 +2,14 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.services.refactoring.convert_method_to_getter;
-
 import 'dart:async';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart'
-    show RefactoringProblemSeverity, SourceChange;
 import 'package:analysis_server/src/services/correction/status.dart';
 import 'package:analysis_server/src/services/refactoring/refactoring.dart';
 import 'package:analyzer/dart/element/element.dart';
+import 'package:analyzer/src/generated/testing/element_search.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart'
+    show RefactoringProblemSeverity, SourceChange;
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
 import 'abstract_refactoring.dart';
@@ -18,7 +17,6 @@ import 'abstract_refactoring.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(ConvertMethodToGetterTest);
-    defineReflectiveTests(ConvertMethodToGetterTest_Driver);
   });
 }
 
@@ -157,7 +155,8 @@ main() {
   var v = test();
 }
 ''');
-    _createRefactoring('test');
+    ExecutableElement element = findElementsByName(testUnit, 'test').single;
+    _createRefactoringForElement(element);
     // check conditions
     _assertInitialConditions_fatal(
         'Only top-level functions can be converted to getters.');
@@ -215,10 +214,4 @@ void test() {}
     ExecutableElement element = findNodeElementAtString(search);
     _createRefactoringForElement(element);
   }
-}
-
-@reflectiveTest
-class ConvertMethodToGetterTest_Driver extends ConvertMethodToGetterTest {
-  @override
-  bool get enableNewAnalysisDriver => true;
 }

@@ -6,6 +6,7 @@
 // refactored to fit into analyzer.
 library analyzer.src.task.strong.checker;
 
+import 'dart:collection';
 import 'package:analyzer/analyzer.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/standard_resolution_map.dart';
@@ -14,11 +15,15 @@ import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
+import 'package:analyzer/source/error_processor.dart' show ErrorProcessor;
+import 'package:analyzer/src/dart/element/element.dart';
+import 'package:analyzer/src/dart/element/member.dart';
 import 'package:analyzer/src/dart/element/type.dart';
 import 'package:analyzer/src/error/codes.dart' show StrongModeCode;
 import 'package:analyzer/src/generated/engine.dart' show AnalysisOptionsImpl;
 import 'package:analyzer/src/generated/resolver.dart' show TypeProvider;
 import 'package:analyzer/src/generated/type_system.dart';
+import 'package:analyzer/src/summary/idl.dart';
 
 import 'ast_properties.dart';
 
@@ -41,6 +46,45 @@ DartType getDefiniteType(
     return typeSystem.functionTypeToConcreteType(type);
   }
   return type;
+}
+
+bool hasStrictArrow(Expression expression) {
+  var element = _getKnownElement(expression);
+  return element is FunctionElement || element is MethodElement;
+}
+
+/// Given a generic class [element] find its covariant upper bound, using
+/// the type system [rules].
+///
+/// Unlike [TypeSystem.instantiateToBounds], this will change `dynamic` into
+/// `Object` to work around an issue with fuzzy arrows.
+InterfaceType _getCovariantUpperBound(TypeSystem rules, ClassElement element) {
+  var upperBound = rules.instantiateToBounds(element.type) as InterfaceType;
+  var typeArgs = upperBound.typeArguments;
+  // TODO(jmesserly): remove this. It is a workaround for fuzzy arrows.
+  // To prevent extra checks due to fuzzy arrows, we need to instantiate with
+  // `Object` rather than `dynamic`. Consider a case like:
+  //
+  //     class C<T> {
+  //       void forEach(f(T t)) {}
+  //     }
+  //
+  // If we try `(dynamic) ~> void <: (T) ~> void` with fuzzy arrows, we will
+  // treat `dynamic` as `bottom` and get `(bottom) -> void <: (T) -> void`
+  // which indicates that a check is required on the parameter `f`. This check
+  // is not sufficient when `T` is `dynamic`, however, because calling a
+  // function with a fuzzy arrow type is not safe and requires a dynamic call.
+  // See: https://github.com/dart-lang/sdk/issues/29295
+  //
+  // For all other values of T, the check is unnecessary: it is sound to pass
+  // a function that accepts any Object.
+  if (typeArgs.any((t) => t.isDynamic)) {
+    var newTypeArgs = typeArgs
+        .map((t) => t.isDynamic ? rules.typeProvider.objectType : t)
+        .toList();
+    upperBound = element.type.instantiate(newTypeArgs);
+  }
+  return upperBound;
 }
 
 DartType _elementType(Element e) {
@@ -95,51 +139,18 @@ FieldElement _getMemberField(
 
 /// Looks up the declaration that matches [member] in [type] and returns it's
 /// declared type.
-FunctionType _getMemberType(InterfaceType type, ExecutableElement member) =>
-    _memberTypeGetter(member)(type);
-
-bool hasStrictArrow(Expression expression) {
-  var element = _getKnownElement(expression);
-  return element is FunctionElement || element is MethodElement;
-}
-
-_MemberTypeGetter _memberTypeGetter(ExecutableElement member) {
-  String memberName = member.name;
-  final isGetter = member is PropertyAccessorElement && member.isGetter;
-  final isSetter = member is PropertyAccessorElement && member.isSetter;
-
-  FunctionType f(InterfaceType type) {
-    ExecutableElement baseMethod;
-
-    if (member.isPrivate) {
-      var subtypeLibrary = member.library;
-      var baseLibrary = type.element.library;
-      if (baseLibrary != subtypeLibrary) {
-        return null;
-      }
-    }
-
-    try {
-      if (isGetter) {
-        assert(!isSetter);
-        // Look for getter or field.
-        baseMethod = type.getGetter(memberName);
-      } else if (isSetter) {
-        baseMethod = type.getSetter(memberName);
-      } else {
-        baseMethod = type.getMethod(memberName);
-      }
-    } catch (e) {
-      // TODO(sigmund): remove this try-catch block (see issue #48).
-    }
-    if (baseMethod == null || baseMethod.isStatic) return null;
-    return baseMethod.type;
+FunctionType _getMemberType(InterfaceType type, ExecutableElement member) {
+  if (member.isPrivate && type.element.library != member.library) {
+    return null;
   }
 
-  return f;
+  var name = member.name;
+  var baseMember = member is PropertyAccessorElement
+      ? (member.isGetter ? type.getGetter(name) : type.getSetter(name))
+      : type.getMethod(name);
+  if (baseMember == null || baseMember.isStatic) return null;
+  return baseMember.type;
 }
-
-typedef FunctionType _MemberTypeGetter(InterfaceType type);
 
 /// Checks the body of functions and properties.
 class CodeChecker extends RecursiveAstVisitor {
@@ -151,6 +162,7 @@ class CodeChecker extends RecursiveAstVisitor {
 
   bool _failure = false;
   bool _hasImplicitCasts;
+  HashSet<ExecutableElement> _covariantPrivateMembers;
 
   CodeChecker(TypeProvider typeProvider, StrongTypeSystemImpl rules,
       AnalysisErrorListener reporter, this._options)
@@ -198,7 +210,7 @@ class CodeChecker extends RecursiveAstVisitor {
   void checkBoolean(Expression expr) =>
       checkAssignment(expr, typeProvider.boolType);
 
-  void checkFunctionApplication(InvocationExpression node) {
+  void _checkFunctionApplication(InvocationExpression node) {
     var ft = _getTypeAsCaller(node);
 
     if (_isDynamicCall(node, ft)) {
@@ -294,6 +306,12 @@ class CodeChecker extends RecursiveAstVisitor {
   }
 
   @override
+  void visitClassTypeAlias(ClassTypeAlias node) {
+    _overrideChecker.check(node);
+    super.visitClassTypeAlias(node);
+  }
+
+  @override
   void visitComment(Comment node) {
     // skip, no need to do typechecking inside comments (they may contain
     // comment references which would require resolution).
@@ -302,8 +320,10 @@ class CodeChecker extends RecursiveAstVisitor {
   @override
   void visitCompilationUnit(CompilationUnit node) {
     _hasImplicitCasts = false;
+    _covariantPrivateMembers = new HashSet();
     node.visitChildren(this);
     setHasImplicitCasts(node, _hasImplicitCasts);
+    setCovariantPrivateMembers(node, _covariantPrivateMembers);
   }
 
   @override
@@ -428,14 +448,8 @@ class CodeChecker extends RecursiveAstVisitor {
   }
 
   @override
-  void visitFunctionExpression(FunctionExpression node) {
-    _checkForUnsafeBlockClosureInference(node);
-    super.visitFunctionExpression(node);
-  }
-
-  @override
   void visitFunctionExpressionInvocation(FunctionExpressionInvocation node) {
-    checkFunctionApplication(node);
+    _checkFunctionApplication(node);
     node.visitChildren(this);
   }
 
@@ -562,9 +576,13 @@ class CodeChecker extends RecursiveAstVisitor {
       // we call [checkFunctionApplication].
       setIsDynamicInvoke(node.methodName, true);
     } else {
-      checkFunctionApplication(node);
+      _checkImplicitCovarianceCast(node, target, element);
+      _checkFunctionApplication(node);
     }
-    node.visitChildren(this);
+    // Don't visit methodName, we already checked things related to the call.
+    node.target?.accept(this);
+    node.typeArguments?.accept(this);
+    node.argumentList?.accept(this);
   }
 
   @override
@@ -645,24 +663,32 @@ class CodeChecker extends RecursiveAstVisitor {
           StaticTypeWarningCode.NON_NULLABLE_FIELD_NOT_INITIALIZED,
           [node.name, variableElement?.type]);
     }
+    AstNode parent = node.parent;
+    if (variableElement != null &&
+        parent is VariableDeclarationList &&
+        parent.type == null &&
+        node.initializer != null) {
+      if (variableElement.kind == ElementKind.TOP_LEVEL_VARIABLE ||
+          variableElement.kind == ElementKind.FIELD) {
+        _validateTopLevelInitializer(variableElement.name, node.initializer);
+      }
+    }
     return super.visitVariableDeclaration(node);
   }
 
   @override
   void visitVariableDeclarationList(VariableDeclarationList node) {
     TypeAnnotation type = node.type;
-    if (type == null) {
-      // No checks are needed when the type is var. Although internally the
-      // typing rules may have inferred a more precise type for the variable
-      // based on the initializer.
-    } else {
-      for (VariableDeclaration variable in node.variables) {
-        var initializer = variable.initializer;
-        if (initializer != null) {
+
+    for (VariableDeclaration variable in node.variables) {
+      var initializer = variable.initializer;
+      if (initializer != null) {
+        if (type != null) {
           checkAssignment(initializer, type.type);
         }
       }
     }
+
     node.visitChildren(this);
   }
 
@@ -716,114 +742,14 @@ class CodeChecker extends RecursiveAstVisitor {
     }
   }
 
-  void _checkFieldAccess(AstNode node, AstNode target, SimpleIdentifier field) {
-    if (field.staticElement == null &&
-        !typeProvider.isObjectMember(field.name)) {
+  void _checkFieldAccess(
+      AstNode node, Expression target, SimpleIdentifier field) {
+    var element = field.staticElement;
+    _checkImplicitCovarianceCast(node, target, element);
+    if (element == null && !typeProvider.isObjectMember(field.name)) {
       _recordDynamicInvoke(node, target);
     }
     node.visitChildren(this);
-  }
-
-  /**
-   * Check if the closure [node] is unsafe due to dartbug.com/26947.  If so,
-   * issue a warning.
-   *
-   * TODO(paulberry): eliminate this once dartbug.com/26947 is fixed.
-   */
-  void _checkForUnsafeBlockClosureInference(FunctionExpression node) {
-    if (node.body is! BlockFunctionBody) {
-      return;
-    }
-    if (resolutionMap
-        .elementDeclaredByFunctionExpression(node)
-        .returnType
-        .isDynamic) {
-      return;
-    }
-    // Find the enclosing variable declaration whose inferred type might depend
-    // on the inferred return type of the block closure (if any).
-    AstNode prevAncestor = node;
-    AstNode ancestor = node.parent;
-    while (ancestor != null && ancestor is! VariableDeclaration) {
-      if (ancestor is BlockFunctionBody) {
-        // node is inside another block function body; if that block
-        // function body is unsafe, we've already warned about it.
-        return;
-      }
-      if (ancestor is InstanceCreationExpression) {
-        // node appears inside an instance creation expression; we may be safe
-        // if the type of the instance creation expression requires no
-        // inference.
-        TypeName typeName = ancestor.constructorName.type;
-        if (typeName.typeArguments != null) {
-          // Type arguments were explicitly specified.  We are safe.
-          return;
-        }
-        DartType type = typeName.type;
-        if (!(type is ParameterizedType && type.typeParameters.isNotEmpty)) {
-          // Type is not generic.  We are safe.
-          return;
-        }
-      }
-      if (ancestor is MethodInvocation) {
-        // node appears inside a method or function invocation; we may be safe
-        // if the type of the method or function requires no inference.
-        if (ancestor.typeArguments != null) {
-          // Type arguments were explicitly specified.  We are safe.
-          return;
-        }
-        Element methodElement = ancestor.methodName.staticElement;
-        if (!(methodElement is ExecutableElement &&
-            methodElement.typeParameters.isNotEmpty)) {
-          // Method is not generic.  We are safe.
-          return;
-        }
-      }
-      if (ancestor is FunctionExpressionInvocation &&
-          !identical(prevAncestor, ancestor.function)) {
-        // node appears inside an argument to a function expression invocation;
-        // we may be safe if the type of the function expression requires no
-        // inference.
-        if (ancestor.typeArguments != null) {
-          // Type arguments were explicitly specified.  We are safe.
-          return;
-        }
-        DartType type = ancestor.function.staticType;
-        if (!(type is FunctionTypeImpl && type.typeFormals.isNotEmpty)) {
-          // Type is not generic or has had its type parameters instantiated.
-          // We are safe.
-          return;
-        }
-      }
-      if ((ancestor is ListLiteral && ancestor.typeArguments != null) ||
-          (ancestor is MapLiteral && ancestor.typeArguments != null)) {
-        // node appears inside a list or map literal with an explicit type.  We
-        // are safe because no type inference is required.
-        return;
-      }
-      prevAncestor = ancestor;
-      ancestor = ancestor.parent;
-    }
-    if (ancestor == null) {
-      // node is not inside a variable declaration, so it is safe.
-      return;
-    }
-    VariableDeclaration decl = ancestor;
-    VariableElement declElement = decl.element;
-    if (!declElement.hasImplicitType) {
-      // Variable declaration has an explicit type, so it's safe.
-      return;
-    }
-    if (declElement.type.isDynamic) {
-      // No type was successfully inferred for this variable, so it's safe.
-      return;
-    }
-    if (declElement.enclosingElement is ExecutableElement) {
-      // Variable declaration is inside a function or method, so it's safe.
-      return;
-    }
-    _recordMessage(node, StrongModeCode.UNSAFE_BLOCK_CLOSURE_INFERENCE,
-        [declElement.name]);
   }
 
   /// Checks if an implicit cast of [expr] from [from] type to [to] type is
@@ -837,7 +763,7 @@ class CodeChecker extends RecursiveAstVisitor {
       {DartType from, bool opAssign: false}) {
     from ??= _getDefiniteType(expr);
 
-    if (_needsImplicitCast(expr, to, from: from)) {
+    if (_needsImplicitCast(expr, to, from: from) == true) {
       _recordImplicitCast(expr, to, from: from, opAssign: opAssign);
     }
   }
@@ -915,6 +841,134 @@ class CodeChecker extends RecursiveAstVisitor {
   DartType _getDefiniteType(Expression expr) =>
       getDefiniteType(expr, rules, typeProvider);
 
+  /// If we're calling into [member] through the [target], we may need to
+  /// insert a caller side check for soundness on the result of the expression
+  /// [node].
+  ///
+  /// This happens when [target] is an unsafe covariant interface, and [member]
+  /// could return a type that is not a subtype of the expected static type
+  /// given target's type. For example:
+  ///
+  ///     typedef F<T>(T t);
+  ///     class C<T> {
+  ///       F<T> f;
+  ///       C(this.f);
+  ///     }
+  ///     test1() {
+  ///       C<Object> c = new C<int>((int x) => x + 42));
+  ///       F<Object> f = c.f; // need an implicit cast here.
+  ///       f('hello');
+  ///     }
+  ///
+  /// Here target is `c`, the target type is `C<Object>`, the member is
+  /// `get f() -> F<T>`, and the expression node is `c.f`. When we call `c.f`
+  /// the expected static result is `F<Object>`. However `c.f` actually returns
+  /// `F<int>`, which is not a subtype of `F<Object>`. So this method will add
+  /// an implicit cast `(c.f as F<Object>)` to guard against this case.
+  ///
+  /// Note that it is possible for the cast to succeed, for example:
+  /// `new C<int>((Object x) => '$x'))`. It is safe to pass any object to that
+  /// function, including an `int`.
+  void _checkImplicitCovarianceCast(
+      Expression node, Expression target, Element member) {
+    // If we're calling an instance method or getter, then we
+    // want to check the result type.
+    //
+    // We intentionally ignore method tear-offs, because those methods have
+    // covariance checks for their parameters inside the method.
+    var targetType = target?.staticType;
+    if (member is ExecutableElement &&
+        _isInstanceMember(member) &&
+        targetType is InterfaceType &&
+        targetType.typeArguments.isNotEmpty &&
+        !_targetHasKnownGenericTypeArguments(target)) {
+      // Track private setters/method calls. We can sometimes eliminate the
+      // parameter check in code generation, if it was never needed.
+      // This member will need a check, however, because we are calling through
+      // an unsafe target.
+      if (member.isPrivate && member.parameters.isNotEmpty) {
+        _covariantPrivateMembers
+            .add(member is ExecutableMember ? member.baseElement : member);
+      }
+
+      // Get the lower bound of the declared return type (e.g. `F<Null>`) and
+      // see if it can be assigned to the expected type (e.g. `F<Object>`).
+      //
+      // That way we can tell if any lower `T` will work or not.
+      var classType = targetType.element.type;
+      var classLowerBound = classType.instantiate(new List.filled(
+          classType.typeParameters.length, typeProvider.nullType));
+      var memberLowerBound = _lookUpMember(classLowerBound, member).type;
+      var expectedType = member.returnType;
+
+      if (!rules.isSubtypeOf(memberLowerBound.returnType, expectedType)) {
+        if (node is MethodInvocation && member is! MethodElement) {
+          // If `o.m` is not a method, we need to cast `o.m` before the call:
+          // `(o.m as expectedType)(args)`.
+          // This cannot be represented by an `as` node without changing the
+          // Dart AST structure, so we record it as a special cast.
+          setImplicitOperationCast(node, expectedType);
+        } else {
+          setImplicitCast(node, expectedType);
+        }
+        _hasImplicitCasts = true;
+      }
+    }
+  }
+
+  /// Returns true if we can safely skip the covariance checks because [target]
+  /// has known type arguments, such as `this` `super` or a non-factory `new`.
+  ///
+  /// For example:
+  ///
+  ///     class C<T> {
+  ///       T _t;
+  ///     }
+  ///     class D<T> extends C<T> {
+  ///        method<S extends T>(T t, C<T> c) {
+  ///          // implicit cast: t as T;
+  ///          // implicit cast: c as C<T>;
+  ///
+  ///          // These do not need further checks. The type parameter `T` for
+  ///          // `this` must be the same as our `T`
+  ///          this._t = t;
+  ///          super._t = t;
+  ///          new C<T>()._t = t; // non-factory
+  ///
+  ///          // This needs further checks. The type of `c` could be `C<S>` for
+  ///          // some `S <: T`.
+  ///          c._t = t;
+  ///          // factory statically returns `C<T>`, dynamically returns `C<S>`.
+  ///          new F<T, S>()._t = t;
+  ///        }
+  ///     }
+  ///     class F<T, S extends T> extends C<T> {
+  ///       factory F() => new C<S>();
+  ///     }
+  ///
+  bool _targetHasKnownGenericTypeArguments(Expression target) {
+    return target == null || // implicit this
+        target is ThisExpression ||
+        target is SuperExpression ||
+        target is InstanceCreationExpression &&
+            target.staticElement?.isFactory == false;
+  }
+
+  bool _isInstanceMember(ExecutableElement e) =>
+      !e.isStatic &&
+      (e is MethodElement ||
+          e is PropertyAccessorElement && e.variable is FieldElement);
+
+  ExecutableElement _lookUpMember(InterfaceType type, ExecutableElement e) {
+    var name = e.name;
+    var library = e.library;
+    return e is PropertyAccessorElement
+        ? (e.isGetter
+            ? type.lookUpInheritedGetter(name, library: library)
+            : type.lookUpInheritedSetter(name, library: library))
+        : type.lookUpInheritedMethod(name, library: library);
+  }
+
   /// Gets the expected return type of the given function [body], either from
   /// a normal return/yield, or from a yield*.
   DartType _getExpectedReturnType(FunctionBody body, {bool yieldStar: false}) {
@@ -936,9 +990,11 @@ class CodeChecker extends RecursiveAstVisitor {
         // Stream<T> -> T
         expectedType = typeProvider.streamType;
       } else {
-        // Don't validate return type of async methods.
-        // They're handled by the runtime implementation.
-        return null;
+        // Future<T> -> FutureOr<T>
+        var typeArg = (type.element == typeProvider.futureType.element)
+            ? (type as InterfaceType).typeArguments[0]
+            : typeProvider.dynamicType;
+        return typeProvider.futureOrType.instantiate([typeArg]);
       }
     } else {
       if (body.isGenerator) {
@@ -1002,9 +1058,10 @@ class CodeChecker extends RecursiveAstVisitor {
   }
 
   /// Returns true if we need an implicit cast of [expr] from [from] type to
-  /// [to] type, otherwise returns false.
+  /// [to] type, returns false if no cast is needed, and returns null if the
+  /// types are statically incompatible.
   ///
-  /// If [from] is omitted, uses the static type of [expr].
+  /// If [from] is omitted, uses the static type of [expr]
   bool _needsImplicitCast(Expression expr, DartType to, {DartType from}) {
     from ??= _getDefiniteType(expr);
 
@@ -1016,22 +1073,22 @@ class CodeChecker extends RecursiveAstVisitor {
     // fromT <: toT, no coercion needed.
     if (rules.isSubtypeOf(from, to)) return false;
 
-    // Note: a function type is never assignable to a class per the Dart
-    // spec - even if it has a compatible call method.  We disallow as
-    // well for consistency.
-    if (from is FunctionType && rules.getCallMethodType(to) != null) {
-      return false;
-    }
+    // Down cast or legal sideways cast, coercion needed.
+    if (rules.isAssignableTo(from, to)) return true;
 
-    // Downcast if toT <: fromT
-    if (rules.isSubtypeOf(to, from)) {
-      return true;
+    // Special case for FutureOr to handle returned values from async functions.
+    // In this case, we're more permissive than assignability.
+    if (to.element == typeProvider.futureOrType.element) {
+      var to1 = (to as InterfaceType).typeArguments[0];
+      var to2 = typeProvider.futureType.instantiate([to1]);
+      return _needsImplicitCast(expr, to1, from: from) == true ||
+          _needsImplicitCast(expr, to2, from: from) == true;
     }
 
     // Anything else is an illegal sideways cast.
     // However, these will have been reported already in error_verifier, so we
     // don't need to report them again.
-    return false;
+    return null;
   }
 
   void _recordDynamicInvoke(AstNode node, Expression target) {
@@ -1048,8 +1105,6 @@ class CodeChecker extends RecursiveAstVisitor {
   /// the AST node.
   void _recordImplicitCast(Expression expr, DartType to,
       {DartType from, bool opAssign: false}) {
-    assert(rules.isSubtypeOf(to, from));
-
     // Inference "casts":
     if (expr is Literal) {
       // fromT should be an exact type - this will almost certainly fail at
@@ -1126,7 +1181,7 @@ class CodeChecker extends RecursiveAstVisitor {
     }
     _recordMessage(expr, errorCode, [from, to]);
     if (opAssign) {
-      setImplicitAssignmentCast(expr, to);
+      setImplicitOperationCast(expr, to);
     } else {
       setImplicitCast(expr, to);
     }
@@ -1134,8 +1189,21 @@ class CodeChecker extends RecursiveAstVisitor {
   }
 
   void _recordMessage(AstNode node, ErrorCode errorCode, List arguments) {
-    var severity = errorCode.errorSeverity;
-    if (severity == ErrorSeverity.ERROR) _failure = true;
+    // Compute the right severity taking the analysis options into account.
+    // We construct a dummy error to make the common case where we end up
+    // ignoring the strong mode message cheaper.
+    var processor = ErrorProcessor.getProcessor(_options,
+        new AnalysisError.forValues(null, -1, 0, errorCode, null, null));
+    var severity =
+        (processor != null) ? processor.severity : errorCode.errorSeverity;
+
+    if (severity == ErrorSeverity.ERROR) {
+      _failure = true;
+    }
+    if (errorCode.type == ErrorType.HINT &&
+        errorCode.name.startsWith('STRONG_MODE_TOP_LEVEL_')) {
+      severity = ErrorSeverity.ERROR;
+    }
     if (severity != ErrorSeverity.INFO || _options.strongModeHints) {
       int begin = node is AnnotatedNode
           ? node.firstTokenAfterCommentAndMetadata.offset
@@ -1147,6 +1215,159 @@ class CodeChecker extends RecursiveAstVisitor {
       var error =
           new AnalysisError(source, begin, length, errorCode, arguments);
       reporter.onError(error);
+    }
+  }
+
+  void _validateTopLevelInitializer(String name, Expression n) {
+    void validateHasType(PropertyAccessorElement e) {
+      if (e.hasImplicitReturnType) {
+        var variable = e.variable as VariableElementImpl;
+        TopLevelInferenceError error = variable.typeInferenceError;
+        if (error != null) {
+          if (error.kind == TopLevelInferenceErrorKind.dependencyCycle) {
+            _recordMessage(
+                n, StrongModeCode.TOP_LEVEL_CYCLE, [name, error.arguments]);
+          } else {
+            _recordMessage(
+                n, StrongModeCode.TOP_LEVEL_IDENTIFIER_NO_TYPE, [name, e.name]);
+          }
+        }
+      }
+    }
+
+    void validateIdentifierElement(AstNode n, Element e) {
+      if (e == null) {
+        return;
+      }
+
+      Element enclosing = e.enclosingElement;
+      if (enclosing is CompilationUnitElement) {
+        if (e is PropertyAccessorElement) {
+          validateHasType(e);
+        }
+      } else if (enclosing is ClassElement) {
+        if (e is PropertyAccessorElement) {
+          if (e.isStatic) {
+            validateHasType(e);
+          } else {
+            _recordMessage(
+                n, StrongModeCode.TOP_LEVEL_INSTANCE_GETTER, [name, e.name]);
+          }
+        }
+      }
+    }
+
+    if (n == null ||
+        n is NullLiteral ||
+        n is BooleanLiteral ||
+        n is DoubleLiteral ||
+        n is IntegerLiteral ||
+        n is StringLiteral ||
+        n is SymbolLiteral ||
+        n is IndexExpression) {
+      // Nothing to validate.
+    } else if (n is AwaitExpression) {
+      _validateTopLevelInitializer(name, n.expression);
+    } else if (n is ThrowExpression) {
+      // Nothing to validate.
+    } else if (n is ParenthesizedExpression) {
+      _validateTopLevelInitializer(name, n.expression);
+    } else if (n is ConditionalExpression) {
+      _validateTopLevelInitializer(name, n.thenExpression);
+      _validateTopLevelInitializer(name, n.elseExpression);
+    } else if (n is BinaryExpression) {
+      TokenType operator = n.operator.type;
+      if (operator == TokenType.AMPERSAND_AMPERSAND ||
+          operator == TokenType.BAR_BAR ||
+          operator == TokenType.EQ_EQ ||
+          operator == TokenType.BANG_EQ) {
+        // These operators give 'bool', no need to validate operands.
+      } else if (operator == TokenType.QUESTION_QUESTION) {
+        _recordMessage(n, StrongModeCode.TOP_LEVEL_UNSUPPORTED,
+            [name, n.runtimeType.toString()]);
+      } else {
+        _validateTopLevelInitializer(name, n.leftOperand);
+      }
+    } else if (n is PrefixExpression) {
+      TokenType operator = n.operator.type;
+      if (operator == TokenType.BANG) {
+        // This operator gives 'bool', no need to validate operands.
+      } else {
+        _validateTopLevelInitializer(name, n.operand);
+      }
+    } else if (n is PostfixExpression) {
+      _validateTopLevelInitializer(name, n.operand);
+    } else if (n is ListLiteral) {
+      if (n.typeArguments == null) {
+        for (Expression element in n.elements) {
+          _validateTopLevelInitializer(name, element);
+        }
+      }
+    } else if (n is MapLiteral) {
+      if (n.typeArguments == null) {
+        for (MapLiteralEntry entry in n.entries) {
+          _validateTopLevelInitializer(name, entry.key);
+          _validateTopLevelInitializer(name, entry.value);
+        }
+      }
+    } else if (n is FunctionExpression) {
+      for (FormalParameter p in n.parameters.parameters) {
+        if (p is DefaultFormalParameter) {
+          p = (p as DefaultFormalParameter).parameter;
+        }
+        if (p is SimpleFormalParameter) {
+          if (p.type == null) {
+            _recordMessage(
+                p,
+                StrongModeCode.TOP_LEVEL_FUNCTION_LITERAL_PARAMETER,
+                [name, p.element?.name]);
+          }
+        }
+      }
+
+      FunctionBody body = n.body;
+      if (body is ExpressionFunctionBody) {
+        _validateTopLevelInitializer(name, body.expression);
+      } else {
+        _recordMessage(n, StrongModeCode.TOP_LEVEL_FUNCTION_LITERAL_BLOCK, []);
+      }
+    } else if (n is InstanceCreationExpression) {
+      ConstructorElement constructor = n.staticElement;
+      ClassElement clazz = constructor?.enclosingElement;
+      if (clazz != null && clazz.typeParameters.isNotEmpty) {
+        TypeName type = n.constructorName.type;
+        if (type.typeArguments == null) {
+          _recordMessage(type, StrongModeCode.TOP_LEVEL_TYPE_ARGUMENTS,
+              [name, clazz.name]);
+        }
+      }
+    } else if (n is AsExpression) {
+      // Nothing to validate.
+    } else if (n is IsExpression) {
+      // Nothing to validate.
+    } else if (n is Identifier) {
+      validateIdentifierElement(n, n.staticElement);
+    } else if (n is PropertyAccess) {
+      Element element = n.propertyName.staticElement;
+      validateIdentifierElement(n.propertyName, element);
+    } else if (n is FunctionExpressionInvocation) {
+      _validateTopLevelInitializer(name, n.function);
+      // TODO(scheglov) type arguments
+    } else if (n is MethodInvocation) {
+      _validateTopLevelInitializer(name, n.target);
+      SimpleIdentifier methodName = n.methodName;
+      Element element = methodName.staticElement;
+      if (element is ExecutableElement && element.typeParameters.isNotEmpty) {
+        if (n.typeArguments == null) {
+          _recordMessage(methodName, StrongModeCode.TOP_LEVEL_TYPE_ARGUMENTS,
+              [name, methodName.name]);
+        }
+      }
+    } else if (n is CascadeExpression) {
+      _validateTopLevelInitializer(name, n.target);
+    } else {
+      _recordMessage(n, StrongModeCode.TOP_LEVEL_UNSUPPORTED,
+          [name, n.runtimeType.toString()]);
     }
   }
 }
@@ -1162,12 +1383,273 @@ class _OverrideChecker {
       : _checker = checker,
         rules = checker.rules;
 
-  void check(ClassDeclaration node) {
-    if (resolutionMap.elementDeclaredByClassDeclaration(node).type.isObject)
+  void check(Declaration node) {
+    var element =
+        resolutionMap.elementDeclaredByDeclaration(node) as ClassElement;
+    if (element.type.isObject) {
       return;
-    _checkSuperOverrides(node);
-    _checkMixinApplicationOverrides(node);
-    _checkAllInterfaceOverrides(node);
+    }
+    _checkSuperOverrides(node, element);
+    _checkMixinApplicationOverrides(node, element);
+    _checkAllInterfaceOverrides(node, element);
+    _checkForCovariantGenerics(node, element);
+  }
+
+  /// Finds implicit casts that we need on parameters and type formals to
+  /// ensure soundness of covariant generics, and records them on the [node].
+  ///
+  /// The parameter checks can be retrived using [getClassCovariantParameters]
+  /// and [getSuperclassCovariantParameters].
+  ///
+  /// For each member of this class and non-overridden inherited member, we
+  /// check to see if any generic super interface permits an unsound call to the
+  /// concrete member. For example:
+  ///
+  ///     class C<T> {
+  ///       add(T t) {} // C<Object>.add is unsafe, need a check on `t`
+  ///     }
+  ///     class D extends C<int> {
+  ///       add(int t) {} // C<Object>.add is unsafe, need a check on `t`
+  ///     }
+  ///     class E extends C<int> {
+  ///       add(Object t) {} // no check needed, C<Object>.add is safe
+  ///     }
+  ///
+  void _checkForCovariantGenerics(Declaration node, ClassElement element) {
+    // Find all generic interfaces that could be used to call into members of
+    // this class. This will help us identify which parameters need checks
+    // for soundness.
+    var allCovariant = _findAllGenericInterfaces(element.type);
+    if (allCovariant.isEmpty) return;
+
+    var seenConcreteMembers = new HashSet<String>();
+    var members = _getConcreteMembers(element.type, seenConcreteMembers);
+
+    // For members on this class, check them against all generic interfaces.
+    var checks = _findCovariantChecks(members, allCovariant);
+    // Store those checks on the class declaration.
+    setClassCovariantParameters(node, checks);
+
+    // For members of the superclass, we may need to add checks because this
+    // class adds a new unsafe interface. Collect those checks.
+    checks = _findSuperclassCovariantChecks(
+        element, allCovariant, seenConcreteMembers);
+    // Store the checks on the class declaration, it will need to ensure the
+    // inherited members are appropriately guarded to ensure soundness.
+    setSuperclassCovariantParameters(node, checks);
+  }
+
+  /// For each member of this class and non-overridden inherited member, we
+  /// check to see if any generic super interface permits an unsound call to the
+  /// concrete member. For example:
+  ///
+  /// We must check non-overridden inherited members because this class could
+  /// contain a new interface that permits unsound access to that member. In
+  /// those cases, the class is expected to insert stub that checks the type
+  /// before calling `super`. For example:
+  ///
+  ///     class C<T> {
+  ///       add(T t) {}
+  ///     }
+  ///     class D {
+  ///       add(int t) {}
+  ///     }
+  ///     class E extends D implements C<int> {
+  ///       // C<Object>.add is unsafe, and D.m is marked for a check.
+  ///       //
+  ///       // one way to implement this is to generate a stub method:
+  ///       // add(t) => super.add(t as int);
+  ///     }
+  ///
+  Set<Element> _findSuperclassCovariantChecks(ClassElement element,
+      Set<ClassElement> allCovariant, HashSet<String> seenConcreteMembers) {
+    var visited = new HashSet<ClassElement>()..add(element);
+    var superChecks = new Set<Element>();
+    var existingChecks = new HashSet<Element>();
+
+    void visitImmediateSuper(InterfaceType type) {
+      // For members of mixins/supertypes, check them against new interfaces,
+      // and also record any existing checks they already had.
+      var oldCovariant = _findAllGenericInterfaces(type);
+      var newCovariant = allCovariant.difference(oldCovariant);
+      if (newCovariant.isEmpty) return;
+
+      void visitSuper(InterfaceType type) {
+        var element = type.element;
+        if (visited.add(element)) {
+          var members = _getConcreteMembers(type, seenConcreteMembers);
+          _findCovariantChecks(members, newCovariant, superChecks);
+          _findCovariantChecks(members, oldCovariant, existingChecks);
+          element.mixins.reversed.forEach(visitSuper);
+          var s = element.supertype;
+          if (s != null) visitSuper(s);
+        }
+      }
+
+      visitSuper(type);
+    }
+
+    element.mixins.reversed.forEach(visitImmediateSuper);
+    var s = element.supertype;
+    if (s != null) visitImmediateSuper(s);
+
+    superChecks.removeAll(existingChecks);
+    return superChecks;
+  }
+
+  /// Gets all concrete instance members declared on this type, skipping already
+  /// [seenConcreteMembers] and adding any found ones to it.
+  ///
+  /// By tracking the set of seen members, we can visit superclasses and mixins
+  /// and ultimately collect every most-derived member exposed by a given type.
+  static List<ExecutableElement> _getConcreteMembers(
+      InterfaceType type, HashSet<String> seenConcreteMembers) {
+    var members = <ExecutableElement>[];
+    for (var declaredMembers in [type.accessors, type.methods]) {
+      for (var member in declaredMembers) {
+        // We only visit each most derived concrete member.
+        // To avoid visiting an overridden superclass member, we skip members
+        // we've seen, and visit starting from the class, then mixins in
+        // reverse order, then superclasses.
+        if (!member.isStatic &&
+            !member.isAbstract &&
+            seenConcreteMembers.add(member.name)) {
+          members.add(member);
+        }
+      }
+    }
+    return members;
+  }
+
+  /// Find all covariance checks on parameters/type parameters needed for
+  /// soundness given a set of concrete [members] and a set of unsafe generic
+  /// [covariantInterfaces] that may allow those members to be called in an
+  /// unsound way.
+  ///
+  /// See [_findCovariantChecksForMember] for more information and an exmaple.
+  Set<Element> _findCovariantChecks(Iterable<ExecutableElement> members,
+      Iterable<ClassElement> covariantInterfaces,
+      [Set<Element> covariantChecks]) {
+    covariantChecks ??= new Set();
+    if (members.isEmpty) return covariantChecks;
+
+    for (var iface in covariantInterfaces) {
+      var unsafeSupertype = _getCovariantUpperBound(rules, iface);
+      for (var m in members) {
+        _findCovariantChecksForMember(m, unsafeSupertype, covariantChecks);
+      }
+    }
+    return covariantChecks;
+  }
+
+  /// Given a [member] and a covariant [unsafeSupertype], determine if any
+  /// type formals or parameters of this member need a check because of the
+  /// unsoundness in the unsafe covariant supertype.
+  ///
+  /// For example:
+  ///
+  ///     class C<T> {
+  ///       m(T t) {}
+  ///       g<S extends T>() => <S>[];
+  ///     }
+  ///     class D extends C<num> {
+  ///       m(num n) {}
+  ///       g<R extends num>() => <R>[];
+  ///     }
+  ///     main() {
+  ///        C<Object> c = new C<int>();
+  ///        c.m('hi');     // must throw for soundness
+  ///        c.g<String>(); // must throw for soundness
+  ///
+  ///        c = new D();
+  ///        c.m('hi');     // must throw for soundness
+  ///        c.g<String>(); // must throw for soundness
+  ///     }
+  ///
+  /// We've already found `C<Object>` is a potentially unsafe covariant generic
+  /// supertpe, and we call this method to see if any members need a check
+  /// because of `C<Object>`.
+  ///
+  /// In this example, we will call this method with:
+  /// - `C<T>.m` and `C<Object>`, finding that `t` needs a check.
+  /// - `C<T>.g` and `C<Object>`, finding that `S` needs a check.
+  /// - `D.m`    and `C<Object>`, finding that `n` needs a check.
+  /// - `D.g`    and `C<Object>`, finding that `R` needs a check.
+  ///
+  /// Given `C<T>.m` and `C<Object>`, we search for covariance checks like this
+  /// (`*` short for `dynamic`):
+  /// - get the type of `C<Object>.m`: `(Object) -> *`
+  /// - get the type of `C<T>.m`:      `(T) -> *`
+  /// - perform a subtype check `(T) -> * <: (Object) -> *`,
+  ///   and record any parameters/type formals that violate soundess.
+  /// - that checks `Object <: T`, which is false, thus we need a check on
+  ///   parameter `t` of `C<T>.m`
+  ///
+  /// Another example is `D.g` and `C<Object>`:
+  /// - get the type of `C<Object>.m`: `<S extends Object>() -> *`
+  /// - get the type of `D.g`:         `<R extends num>() -> *`
+  /// - perform a subtype check
+  ///   `<S extends Object>() -> * <: <R extends num>() -> *`,
+  ///   and record any parameters/type formals that violate soundess.
+  /// - that checks the type formal bound of `S` and `R` asserting
+  ///   `Object <: num`, which is false, thus we need a check on type formal `R`
+  ///   of `D.g`.
+  void _findCovariantChecksForMember(ExecutableElement member,
+      InterfaceType unsafeSupertype, Set<Element> covariantChecks) {
+    var f2 = _getMemberType(unsafeSupertype, member);
+    if (f2 == null) return;
+    var f1 = member.type;
+
+    // Find parameter or type formal checks that we need to ensure `f2 <: f1`.
+    //
+    // The static type system allows this subtyping, but it is not sound without
+    // these runtime checks.
+    void addCheck(Element e) {
+      covariantChecks.add(e is Member ? e.baseElement : e);
+    }
+
+    var fresh = FunctionTypeImpl.relateTypeFormals(f1, f2, (b2, b1, p2, p1) {
+      if (!rules.isSubtypeOf(b2, b1)) addCheck(p1);
+      return true;
+    });
+    if (fresh != null) {
+      f1 = f1.instantiate(fresh);
+      f2 = f2.instantiate(fresh);
+    }
+    FunctionTypeImpl.relateParameters(f1.parameters, f2.parameters, (p1, p2) {
+      if (!rules.isOverrideSubtypeOfParameter(p1, p2)) addCheck(p1);
+      return true;
+    });
+  }
+
+  /// Find all generic interfaces that are implemented by [type], including
+  /// [type] itself if it is generic.
+  ///
+  /// This represents the complete set of unsafe covariant interfaces that could
+  /// be used to call members of [type].
+  ///
+  /// Because we're going to instantiate these to their upper bound, we don't
+  /// have to track type parameters.
+  static Set<ClassElement> _findAllGenericInterfaces(InterfaceType type) {
+    var visited = new HashSet<ClassElement>();
+    var genericSupertypes = new Set<ClassElement>();
+
+    void visitTypeAndSupertypes(InterfaceType type) {
+      var element = type.element;
+      if (visited.add(element)) {
+        if (element.typeParameters.isNotEmpty) {
+          genericSupertypes.add(element);
+        }
+        var supertype = element.supertype;
+        if (supertype != null) visitTypeAndSupertypes(supertype);
+        element.mixins.forEach(visitTypeAndSupertypes);
+        element.interfaces.forEach(visitTypeAndSupertypes);
+      }
+    }
+
+    visitTypeAndSupertypes(type);
+
+    return genericSupertypes;
   }
 
   /// Checks that implementations correctly override all reachable interfaces.
@@ -1185,7 +1667,7 @@ class _OverrideChecker {
   ///     E against H and I // no check against G because B is a concrete class
   ///     F against H and I
   ///     A against H and I
-  void _checkAllInterfaceOverrides(ClassDeclaration node) {
+  void _checkAllInterfaceOverrides(Declaration node, ClassElement element) {
     var seen = new Set<String>();
     // Helper function to collect all reachable interfaces.
     find(InterfaceType interfaceType, Set result) {
@@ -1200,25 +1682,30 @@ class _OverrideChecker {
     // Check all interfaces reachable from the `implements` clause in the
     // current class against definitions here and in superclasses.
     var localInterfaces = new Set<InterfaceType>();
-    var type = resolutionMap.elementDeclaredByClassDeclaration(node).type;
+    var type = element.type;
     type.interfaces.forEach((i) => find(i, localInterfaces));
-    _checkInterfacesOverrides(node, localInterfaces, seen,
-        includeParents: true);
+    _checkInterfacesOverrides(type, localInterfaces, seen,
+        includeParents: true, classNode: node);
 
     // Check also how we override locally the interfaces from parent classes if
     // the parent class is abstract. Otherwise, these will be checked as
     // overrides on the concrete superclass.
+    // We detect superclass circularities using the "tortoise and hare"
+    // algorithm.
     var superInterfaces = new Set<InterfaceType>();
     var parent = type.superclass;
+    var hare = type.superclass?.superclass;
     // TODO(sigmund): we don't seem to be reporting the analyzer error that a
     // non-abstract class is not implementing an interface. See
     // https://github.com/dart-lang/dart-dev-compiler/issues/25
     while (parent != null && parent.element.isAbstract) {
+      if (identical(parent, hare)) break;
       parent.interfaces.forEach((i) => find(i, superInterfaces));
       parent = parent.superclass;
+      hare = hare?.superclass?.superclass;
     }
-    _checkInterfacesOverrides(node, superInterfaces, seen,
-        includeParents: false);
+    _checkInterfacesOverrides(type, superInterfaces, seen,
+        includeParents: false, classNode: node);
   }
 
   /// Check that individual methods and fields in [node] correctly override
@@ -1226,9 +1713,9 @@ class _OverrideChecker {
   ///
   /// The [errorLocation] node indicates where errors are reported, see
   /// [_checkSingleOverride] for more details.
-  _checkIndividualOverridesFromClass(ClassDeclaration node,
-      InterfaceType baseType, Set<String> seen, bool isSubclass) {
-    for (var member in node.members) {
+  _checkIndividualOverridesFromClass(Declaration node, InterfaceType baseType,
+      Set<String> seen, bool isSubclass) {
+    for (var member in _classMembers(node)) {
       if (member is FieldDeclaration) {
         if (member.isStatic) {
           continue;
@@ -1281,7 +1768,7 @@ class _OverrideChecker {
   /// is used when invoking this function multiple times when checking several
   /// types in a class hierarchy. Errors are reported only the first time an
   /// invalid override involving a specific member is encountered.
-  _checkIndividualOverridesFromType(
+  void _checkIndividualOverridesFromType(
       InterfaceType subType,
       InterfaceType baseType,
       AstNode errorLocation,
@@ -1308,15 +1795,11 @@ class _OverrideChecker {
   /// [ClassDeclaration]s errors are reported on the member that contains the
   /// invalid override, for [InterfaceType]s we use [errorLocation] instead.
   void _checkInterfacesOverrides(
-      cls, Iterable<InterfaceType> interfaces, Set<String> seen,
+      InterfaceType type, Iterable<InterfaceType> interfaces, Set<String> seen,
       {Set<InterfaceType> visited,
       bool includeParents: true,
-      AstNode errorLocation}) {
-    var node = cls is ClassDeclaration ? cls : null;
-    var type = cls is InterfaceType
-        ? cls
-        : resolutionMap.elementDeclaredByClassDeclaration(node).type;
-
+      AstNode errorLocation,
+      Declaration classNode}) {
     if (visited == null) {
       visited = new Set<InterfaceType>();
     } else if (visited.contains(type)) {
@@ -1328,8 +1811,9 @@ class _OverrideChecker {
 
     // Check direct overrides on [type]
     for (var interfaceType in interfaces) {
-      if (node != null) {
-        _checkIndividualOverridesFromClass(node, interfaceType, seen, false);
+      if (classNode != null) {
+        _checkIndividualOverridesFromClass(
+            classNode, interfaceType, seen, false);
       } else {
         _checkIndividualOverridesFromType(
             type, interfaceType, errorLocation, seen, false);
@@ -1338,7 +1822,7 @@ class _OverrideChecker {
 
     // Check overrides from its mixins
     for (int i = 0; i < type.mixins.length; i++) {
-      var loc = errorLocation ?? node.withClause.mixinTypes[i];
+      var loc = errorLocation ?? _withClause(classNode).mixinTypes[i];
       for (var interfaceType in interfaces) {
         // We copy [seen] so we can report separately if more than one mixin or
         // the base class have an invalid override.
@@ -1353,7 +1837,7 @@ class _OverrideChecker {
       if (parent.isObject) {
         return;
       }
-      var loc = errorLocation ?? node.extendsClause;
+      var loc = errorLocation ?? _extendsErrorLocation(classNode);
       // No need to copy [seen] here because we made copies above when reporting
       // errors on mixins.
       _checkInterfacesOverrides(parent, interfaces, seen,
@@ -1369,8 +1853,8 @@ class _OverrideChecker {
   ///
   ///      B & E against B (equivalently how E overrides B)
   ///      B & E & F against B & E (equivalently how F overrides both B and E)
-  void _checkMixinApplicationOverrides(ClassDeclaration node) {
-    var type = resolutionMap.elementDeclaredByClassDeclaration(node).type;
+  void _checkMixinApplicationOverrides(Declaration node, ClassElement element) {
+    var type = element.type;
     var parent = type.superclass;
     var mixins = type.mixins;
 
@@ -1378,7 +1862,7 @@ class _OverrideChecker {
     for (int i = 0; i < mixins.length; i++) {
       var seen = new Set<String>();
       var current = mixins[i];
-      var errorLocation = node.withClause.mixinTypes[i];
+      var errorLocation = _withClause(node).mixinTypes[i];
       for (int j = i - 1; j >= 0; j--) {
         _checkIndividualOverridesFromType(
             current, mixins[j], errorLocation, seen, true);
@@ -1419,7 +1903,6 @@ class _OverrideChecker {
     assert(!element.isStatic);
 
     FunctionType subType = _elementType(element);
-    // TODO(vsm): Test for generic
     FunctionType baseType = _getMemberType(type, element);
     if (baseType == null) return false;
 
@@ -1439,11 +1922,14 @@ class _OverrideChecker {
         ]);
       }
     }
+
     if (!rules.isOverrideSubtypeOf(subType, baseType)) {
       ErrorCode errorCode;
-      if (errorLocation is ExtendsClause) {
+      var parent = errorLocation?.parent;
+      if (errorLocation is ExtendsClause ||
+          parent is ClassTypeAlias && parent.superclass == errorLocation) {
         errorCode = StrongModeCode.INVALID_METHOD_OVERRIDE_FROM_BASE;
-      } else if (errorLocation.parent is WithClause) {
+      } else if (parent is WithClause) {
         errorCode = StrongModeCode.INVALID_METHOD_OVERRIDE_FROM_MIXIN;
       } else {
         errorCode = StrongModeCode.INVALID_METHOD_OVERRIDE;
@@ -1487,9 +1973,9 @@ class _OverrideChecker {
   ///     class Test extends Parent {
   ///         m(B a) {} // invalid override
   ///     }
-  void _checkSuperOverrides(ClassDeclaration node) {
+  void _checkSuperOverrides(Declaration node, ClassElement element) {
     var seen = new Set<String>();
-    var current = resolutionMap.elementDeclaredByClassDeclaration(node).type;
+    var current = element.type;
     var visited = new Set<InterfaceType>();
     do {
       visited.add(current);
@@ -1498,5 +1984,27 @@ class _OverrideChecker {
       _checkIndividualOverridesFromClass(node, current.superclass, seen, true);
       current = current.superclass;
     } while (!current.isObject && !visited.contains(current));
+  }
+
+  /// If node is a [ClassDeclaration] returns its members, otherwise if node is
+  /// a [ClassTypeAlias] this returns an empty list.
+  Iterable<ClassMember> _classMembers(Declaration node) {
+    return node is ClassDeclaration ? node.members : [];
+  }
+
+  /// If node is a [ClassDeclaration] returns its members, otherwise if node is
+  /// a [ClassTypeAlias] this returns an empty list.
+  AstNode _extendsErrorLocation(Declaration node) {
+    return node is ClassDeclaration
+        ? node.extendsClause
+        : (node as ClassTypeAlias).superclass;
+  }
+
+  /// If node is a [ClassDeclaration] returns its members, otherwise if node is
+  /// a [ClassTypeAlias] this returns an empty list.
+  WithClause _withClause(Declaration node) {
+    return node is ClassDeclaration
+        ? node.withClause
+        : (node as ClassTypeAlias).withClause;
   }
 }

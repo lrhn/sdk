@@ -14,24 +14,29 @@ import 'package:observatory/src/elements/helpers/rendering_scheduler.dart';
 import 'package:observatory/src/elements/helpers/uris.dart';
 import 'package:observatory/src/elements/icdata_ref.dart';
 import 'package:observatory/src/elements/instance_ref.dart';
-import 'package:observatory/src/elements/megamorphiccache_ref.dart';
 import 'package:observatory/src/elements/library_ref.dart';
 import 'package:observatory/src/elements/local_var_descriptors_ref.dart';
+import 'package:observatory/src/elements/megamorphiccache_ref.dart';
 import 'package:observatory/src/elements/objectpool_ref.dart';
 import 'package:observatory/src/elements/pc_descriptors_ref.dart';
 import 'package:observatory/src/elements/script_ref.dart';
 import 'package:observatory/src/elements/sentinel_value.dart';
-import 'package:observatory/src/elements/type_arguments_ref.dart';
+import 'package:observatory/src/elements/singletargetcache_ref.dart';
+import 'package:observatory/src/elements/subtypetestcache_ref.dart';
 import 'package:observatory/src/elements/token_stream_ref.dart';
+import 'package:observatory/src/elements/type_arguments_ref.dart';
 import 'package:observatory/src/elements/unknown_ref.dart';
+import 'package:observatory/src/elements/unlinkedcall_ref.dart';
 
-Element anyRef(M.IsolateRef isolate, ref, M.InstanceRepository instances,
-    {RenderingQueue queue}) {
+Element anyRef(M.IsolateRef isolate, ref, M.ObjectRepository objects,
+    {RenderingQueue queue, bool expandable: true}) {
   if (ref is M.Guarded) {
     if (ref.isSentinel) {
-      return anyRef(isolate, ref.asSentinel, instances, queue: queue);
+      return anyRef(isolate, ref.asSentinel, objects,
+          queue: queue, expandable: expandable);
     } else {
-      return anyRef(isolate, ref.asValue, instances, queue: queue);
+      return anyRef(isolate, ref.asValue, objects,
+          queue: queue, expandable: expandable);
     }
   } else if (ref is M.ObjectRef) {
     if (ref is M.ClassRef) {
@@ -39,17 +44,20 @@ Element anyRef(M.IsolateRef isolate, ref, M.InstanceRepository instances,
     } else if (ref is M.CodeRef) {
       return new CodeRefElement(isolate, ref, queue: queue);
     } else if (ref is M.ContextRef) {
-      return new ContextRefElement(isolate, ref, queue: queue);
+      return new ContextRefElement(isolate, ref, objects,
+          queue: queue, expandable: expandable);
     } else if (ref is M.Error) {
       return new ErrorRefElement(ref, queue: queue);
     } else if (ref is M.FieldRef) {
-      return new FieldRefElement(isolate, ref, instances, queue: queue);
+      return new FieldRefElement(isolate, ref, objects,
+          queue: queue, expandable: expandable);
     } else if (ref is M.FunctionRef) {
       return new FunctionRefElement(isolate, ref, queue: queue);
     } else if (ref is M.ICDataRef) {
       return new ICDataRefElement(isolate, ref, queue: queue);
     } else if (ref is M.InstanceRef) {
-      return new InstanceRefElement(isolate, ref, instances, queue: queue);
+      return new InstanceRefElement(isolate, ref, objects,
+          queue: queue, expandable: expandable);
     } else if (ref is M.LibraryRef) {
       return new LibraryRefElement(isolate, ref, queue: queue);
     } else if (ref is M.LocalVarDescriptorsRef) {
@@ -62,12 +70,18 @@ Element anyRef(M.IsolateRef isolate, ref, M.InstanceRepository instances,
       return new PcDescriptorsRefElement(isolate, ref, queue: queue);
     } else if (ref is M.ScriptRef) {
       return new ScriptRefElement(isolate, ref, queue: queue);
+    } else if (ref is M.SingleTargetCacheRef) {
+      return new SingleTargetCacheRefElement(isolate, ref, queue: queue);
+    } else if (ref is M.SubtypeTestCacheRef) {
+      return new SubtypeTestCacheRefElement(isolate, ref, queue: queue);
     } else if (ref is M.TypeArgumentsRef) {
       return new TypeArgumentsRefElement(isolate, ref, queue: queue);
     } else if (ref is M.TokenStreamRef) {
       return new TokenStreamRefElement(isolate, ref, queue: queue);
     } else if (ref is M.UnknownObjectRef) {
       return new UnknownObjectRefElement(isolate, ref, queue: queue);
+    } else if (ref is M.UnlinkedCallRef) {
+      return new UnlinkedCallRefElement(isolate, ref, queue: queue);
     } else {
       return new AnchorElement(href: Uris.inspect(isolate, object: ref))
         ..text = 'object';

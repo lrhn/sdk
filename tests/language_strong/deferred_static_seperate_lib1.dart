@@ -13,11 +13,12 @@ var x = const ConstClass(const ConstClass(1));
 
 class C {
   static foo() {
-    () {} (); // Hack to avoid inlining.
+    () {}(); // Hack to avoid inlining.
     return 1;
   }
+
   bar() {
-    () {} (); // Hack to avoid inlining.
+    () {}(); // Hack to avoid inlining.
     return 1;
   }
 }
@@ -28,8 +29,8 @@ class C1 {
 }
 
 class C2 {
-  static var foo = new Map.from({1: 2});
-  var bar = new Map.from({1: 2});
+  static var foo = new Map<int, int>.from({1: 2});
+  var bar = new Map<int, int>.from({1: 2});
 }
 
 class C3 {
@@ -38,14 +39,16 @@ class C3 {
 }
 
 class C4 {
-  static final foo = new Map.from({x: x});
-  final bar = new Map.from({x: x});
+  static final foo = new Map<ConstClass, ConstClass>.from({x: x});
+  final bar = new Map<ConstClass, ConstClass>.from({x: x});
 }
 
 class C5 {
-  static const foo = const [const {1: 3}];
+  static const foo = const [
+    const {1: 3}
+  ];
   bar() {
-    () {} (); // Hack to avoid inlining.
+    () {}(); // Hack to avoid inlining.
     return 1;
   }
 }

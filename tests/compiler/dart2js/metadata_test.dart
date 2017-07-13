@@ -33,7 +33,7 @@ void checkAnnotation(String name, String declaration,
                    $declaration
                    main() {}""";
 
-  compileAndCheck(source1, name, (compiler, element) {
+  analyzeAndCheck(source1, name, (compiler, element) {
     compiler.enqueuer.resolution.queueIsClosed = false;
     Expect.equals(
         1, element.metadata.length, 'Unexpected metadata count on $element.');
@@ -41,7 +41,7 @@ void checkAnnotation(String name, String declaration,
     annotation.ensureResolved(compiler.resolution);
     PrimitiveConstantValue value =
         compiler.constants.getConstantValue(annotation.constant);
-    Expect.stringEquals('xyz', value.primitiveValue.slowToString());
+    Expect.stringEquals('xyz', value.primitiveValue);
 
     checkPosition(
         annotation, annotation.cachedNode, source1, compiler.reporter);
@@ -54,7 +54,7 @@ void checkAnnotation(String name, String declaration,
                    $declaration
                    main() {}""";
 
-  compileAndCheck(source2, name, (compiler, element) {
+  analyzeAndCheck(source2, name, (compiler, element) {
     compiler.enqueuer.resolution.queueIsClosed = false;
     Expect.equals(2, element.metadata.length);
     PartialMetadataAnnotation annotation1 = element.metadata.elementAt(0);
@@ -69,8 +69,8 @@ void checkAnnotation(String name, String declaration,
     PrimitiveConstantValue value2 =
         compiler.constants.getConstantValue(annotation2.constant);
     Expect.identical(value1, value2, 'expected same compile-time constant');
-    Expect.stringEquals('xyz', value1.primitiveValue.slowToString());
-    Expect.stringEquals('xyz', value2.primitiveValue.slowToString());
+    Expect.stringEquals('xyz', value1.primitiveValue);
+    Expect.stringEquals('xyz', value2.primitiveValue);
 
     checkPosition(
         annotation1, annotation1.cachedNode, source2, compiler.reporter);
@@ -89,7 +89,7 @@ void checkAnnotation(String name, String declaration,
                    }
                    main() {}""";
 
-  compileAndCheck(source3, 'Foo', (compiler, element) {
+  analyzeAndCheck(source3, 'Foo', (compiler, dynamic element) {
     compiler.enqueuer.resolution.queueIsClosed = false;
     Expect.equals(0, element.metadata.length);
     element.ensureResolved(compiler.resolution);
@@ -100,7 +100,7 @@ void checkAnnotation(String name, String declaration,
     annotation.ensureResolved(compiler.resolution);
     PrimitiveConstantValue value =
         compiler.constants.getConstantValue(annotation.constant);
-    Expect.stringEquals('xyz', value.primitiveValue.slowToString());
+    Expect.stringEquals('xyz', value.primitiveValue);
 
     checkPosition(
         annotation, annotation.cachedNode, source3, compiler.reporter);
@@ -115,7 +115,7 @@ void checkAnnotation(String name, String declaration,
                    }
                    main() {}""";
 
-  compileAndCheck(source4, 'Foo', (compiler, element) {
+  analyzeAndCheck(source4, 'Foo', (compiler, dynamic element) {
     compiler.enqueuer.resolution.queueIsClosed = false;
     Expect.equals(0, element.metadata.length);
     element.ensureResolved(compiler.resolution);
@@ -134,8 +134,8 @@ void checkAnnotation(String name, String declaration,
     PrimitiveConstantValue value2 =
         compiler.constants.getConstantValue(annotation2.constant);
     Expect.identical(value1, value2, 'expected same compile-time constant');
-    Expect.stringEquals('xyz', value1.primitiveValue.slowToString());
-    Expect.stringEquals('xyz', value2.primitiveValue.slowToString());
+    Expect.stringEquals('xyz', value1.primitiveValue);
+    Expect.stringEquals('xyz', value2.primitiveValue);
 
     checkPosition(
         annotation1, annotation1.cachedNode, source4, compiler.reporter);
@@ -168,7 +168,7 @@ void testLibraryTags() {
 
     Uri uri = new Uri(scheme: 'source', path: 'main.dart');
 
-    var compiler = compilerFor(source, uri)
+    var compiler = compilerFor(source, uri, analyzeOnly: true)
       ..registerSource(partUri, partSource)
       ..registerSource(libUri, libSource);
 
@@ -184,7 +184,7 @@ void testLibraryTags() {
           annotation.ensureResolved(compiler.resolution);
           PrimitiveConstantValue value =
               compiler.constants.getConstantValue(annotation.constant);
-          Expect.stringEquals('xyz', value.primitiveValue.slowToString());
+          Expect.stringEquals('xyz', value.primitiveValue);
 
           checkPosition(
               annotation, annotation.cachedNode, source, compiler.reporter);
@@ -197,32 +197,32 @@ void testLibraryTags() {
               library foo;
               const native = 'xyz';
               main() {}""";
-  compileAndCheckLibrary(source, (e) => e.libraryTag.metadata);
+  compileAndCheckLibrary(source, (dynamic e) => e.libraryTag.metadata);
 
   source = """@native
               import 'lib.dart';
               const native = 'xyz';
               main() {}""";
-  compileAndCheckLibrary(source, (e) => e.tags.single.metadata);
+  compileAndCheckLibrary(source, (dynamic e) => e.tags.single.metadata);
 
   source = """@native
               export 'lib.dart';
               const native = 'xyz';
               main() {}""";
-  compileAndCheckLibrary(source, (e) => e.tags.single.metadata);
+  compileAndCheckLibrary(source, (dynamic e) => e.tags.single.metadata);
 
   source = """@native
               part 'part.dart';
               const native = 'xyz';
               main() {}""";
-  compileAndCheckLibrary(source, (e) => e.tags.single.metadata);
+  compileAndCheckLibrary(source, (dynamic e) => e.tags.single.metadata);
 
   source = """@native
               part 'part.dart';
               const native = 'xyz';
               main() {}""";
   compileAndCheckLibrary(
-      source, (e) => e.compilationUnits.first.partTag.metadata);
+      source, (dynamic e) => e.compilationUnits.first.partTag.metadata);
 }
 
 void main() {

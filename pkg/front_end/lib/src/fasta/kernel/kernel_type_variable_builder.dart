@@ -4,54 +4,61 @@
 
 library fasta.kernel_type_variable_builder;
 
-import 'package:kernel/ast.dart' show
-    DartType,
-    TypeParameter,
-    TypeParameterType;
+import 'package:kernel/ast.dart'
+    show DartType, TypeParameter, TypeParameterType;
 
-import '../errors.dart' show
-    inputError;
+import '../deprecated_problems.dart' show deprecated_inputError;
 
-import 'kernel_builder.dart' show
-    KernelClassBuilder,
-    KernelLibraryBuilder,
-    KernelNamedTypeBuilder,
-    KernelTypeBuilder,
-    TypeVariableBuilder;
+import '../fasta_codes.dart' show templateTypeArgumentsOnTypeVariable;
+
+import 'kernel_builder.dart'
+    show
+        KernelClassBuilder,
+        KernelLibraryBuilder,
+        KernelNamedTypeBuilder,
+        KernelTypeBuilder,
+        LibraryBuilder,
+        TypeVariableBuilder;
 
 class KernelTypeVariableBuilder
     extends TypeVariableBuilder<KernelTypeBuilder, DartType> {
   final TypeParameter parameter;
 
-  KernelTypeVariableBuilder(String name, KernelLibraryBuilder compilationUnit,
-      int charOffset, [KernelTypeBuilder bound])
+  KernelTypeVariableBuilder(
+      String name, KernelLibraryBuilder compilationUnit, int charOffset,
+      [KernelTypeBuilder bound])
       : parameter = new TypeParameter(name, null),
         super(name, bound, compilationUnit, charOffset);
 
-  DartType buildType(List<KernelTypeBuilder> arguments) {
+  TypeParameter get target => parameter;
+
+  DartType buildType(
+      LibraryBuilder library, List<KernelTypeBuilder> arguments) {
     if (arguments != null) {
-      return inputError(null, null,
-          "Can't use type arguments with type parameter $parameter");
-    } else {
-      return new TypeParameterType(parameter);
+      library.addWarning(
+          templateTypeArgumentsOnTypeVariable.withArguments(name),
+          arguments.first.charOffset,
+          arguments.first.fileUri);
     }
+    return new TypeParameterType(parameter);
   }
 
-  DartType buildTypesWithBuiltArguments(List<DartType> arguments) {
+  DartType buildTypesWithBuiltArguments(
+      LibraryBuilder library, List<DartType> arguments) {
     if (arguments != null) {
-      return inputError(null, null,
+      return deprecated_inputError(null, null,
           "Can't use type arguments with type parameter $parameter");
     } else {
-      return buildType(null);
+      return buildType(library, null);
     }
   }
 
   KernelTypeBuilder asTypeBuilder() {
-    return new KernelNamedTypeBuilder(name, null, -1, null)
-        ..builder = this;
+    return new KernelNamedTypeBuilder(name, null, -1, null)..builder = this;
   }
 
-  void finish(KernelClassBuilder object) {
-    parameter.bound = bound?.build() ?? object.buildType(null);
+  void finish(LibraryBuilder library, KernelClassBuilder object) {
+    parameter.bound ??=
+        bound?.build(library) ?? object.buildType(library, null);
   }
 }

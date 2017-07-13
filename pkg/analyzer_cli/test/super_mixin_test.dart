@@ -6,6 +6,7 @@ library analyzer_cli.test.super_mixin;
 
 import 'dart:io';
 
+import 'package:analyzer_cli/src/ansi.dart' as ansi;
 import 'package:analyzer_cli/src/driver.dart' show Driver, errorSink, outSink;
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
@@ -23,40 +24,44 @@ void main() {
   group('--supermixins', () {
     StringSink savedOutSink, savedErrorSink;
     int savedExitCode;
+
     setUp(() {
+      ansi.runningTests = true;
       savedOutSink = outSink;
       savedErrorSink = errorSink;
       savedExitCode = exitCode;
       outSink = new StringBuffer();
       errorSink = new StringBuffer();
     });
+
     tearDown(() {
       outSink = savedOutSink;
       errorSink = savedErrorSink;
       exitCode = savedExitCode;
+      ansi.runningTests = false;
     });
 
     test('produces errors when option absent', () async {
       var testPath = path.join(testDirectory, 'data/super_mixin_example.dart');
-      await new Driver().start([testPath]);
+      await new Driver(isTesting: true).start([testPath]);
 
       expect(exitCode, 3);
       var stdout = outSink.toString();
       expect(
           stdout,
           contains(
-              "[error] The class 'C' can't be used as a mixin because it extends a class other than Object"));
+              "error • The class 'C' can't be used as a mixin because it extends a class other than Object"));
       expect(
           stdout,
           contains(
-              "[error] The class 'C' can't be used as a mixin because it references 'super'"));
+              "error • The class 'C' can't be used as a mixin because it references 'super'"));
       expect(stdout, contains('2 errors found.'));
       expect(errorSink.toString(), '');
     });
 
     test('produces no errors when option present', () async {
       var testPath = path.join(testDirectory, 'data/super_mixin_example.dart');
-      await new Driver().start(['--supermixin', testPath]);
+      await new Driver(isTesting: true).start(['--supermixin', testPath]);
 
       expect(exitCode, 0);
       var stdout = outSink.toString();

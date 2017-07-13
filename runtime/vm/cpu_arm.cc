@@ -82,20 +82,20 @@ DEFINE_FLAG(bool,
 #endif
 
 #if defined(USING_SIMULATOR)
-#if defined(TARGET_ARCH_ARM_5TE)
-DEFINE_FLAG(bool, sim_use_hardfp, false, "Use the softfp ABI.");
+#if defined(TARGET_ARCH_ARM_5TE) || defined(TARGET_OS_ANDROID)
+DEFINE_FLAG(bool, sim_use_hardfp, false, "Use the hardfp ABI.");
 #else
-DEFINE_FLAG(bool, sim_use_hardfp, true, "Use the softfp ABI.");
+DEFINE_FLAG(bool, sim_use_hardfp, true, "Use the hardfp ABI.");
 #endif
 #endif
 
 void CPU::FlushICache(uword start, uword size) {
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
   // Precompilation never patches code so there should be no I cache flushes.
   UNREACHABLE();
 #endif
 
-#if !defined(USING_SIMULATOR) && !TARGET_OS_IOS
+#if !defined(USING_SIMULATOR) && !HOST_OS_IOS
   // Nothing to do. Flushing no instructions.
   if (size == 0) {
     return;
@@ -140,7 +140,7 @@ bool HostCPUFeatures::initialized_ = false;
 
 
 #if !defined(USING_SIMULATOR)
-#if TARGET_OS_IOS
+#if HOST_OS_IOS
 void HostCPUFeatures::InitOnce() {
   // TODO(24743): Actually check the CPU features and fail if we're missing
   // something assumed in a precompiled snapshot.
@@ -148,7 +148,7 @@ void HostCPUFeatures::InitOnce() {
   // When the VM is targetted to ARMv7, pretend that the CPU is ARMv7 even if
   // the CPU is actually AArch64.
   arm_version_ = ARMv7;
-  // Always assume we have floating point unit since we dont support ARMv6 in
+  // Always assume we have floating point unit since we don't support ARMv6 in
   // this path.
   vfp_supported_ = FLAG_use_vfp;
   integer_division_supported_ = FLAG_use_integer_division;
@@ -158,7 +158,7 @@ void HostCPUFeatures::InitOnce() {
   initialized_ = true;
 #endif
 }
-#else  // TARGET_OS_IOS
+#else  // HOST_OS_IOS
 void HostCPUFeatures::InitOnce() {
   bool is_arm64 = false;
   CpuInfo::InitOnce();
@@ -207,15 +207,25 @@ void HostCPUFeatures::InitOnce() {
   // - Qualcomm Krait CPUs (QCT APQ8064) in Nexus 4 and 7 incorrectly report
   //   that they lack integer division.
   // - Marvell Armada 370/XP incorrectly reports that it has integer division.
-  // - Qualcomm Snapdragon 820/821 CPUs (MSM 8996 and MSM8996pro) in Xiaomi MI5
-  // and Pixel lack integer division even though ARMv8 requires it in A32.
   bool is_krait = CpuInfo::FieldContains(kCpuInfoHardware, "QCT APQ8064");
   bool is_armada_370xp =
       CpuInfo::FieldContains(kCpuInfoHardware, "Marvell Armada 370/XP");
-  bool is_snapdragon = CpuInfo::FieldContains(kCpuInfoHardware, "MSM8996");
+#if defined(HOST_OS_ANDROID)
+  bool is_android = true;
+#else
+  bool is_android = false;
+#endif
   if (is_krait) {
     integer_division_supported_ = FLAG_use_integer_division;
-  } else if (is_armada_370xp || is_snapdragon) {
+  } else if (is_android && is_arm64) {
+    // Various Android ARM64 devices, including the Qualcomm Snapdragon 820/821
+    // CPUs (MSM 8996 and MSM8996pro) in Xiaomi MI5 and Pixel lack integer
+    // division even though ARMv8 requires it in A32. Instead of attempting to
+    // track all of these devices, we conservatively disable use of integer
+    // division on Android ARM64 devices.
+    // TODO(29270): /proc/self/auxv might be more reliable here.
+    integer_division_supported_ = false;
+  } else if (is_armada_370xp) {
     integer_division_supported_ = false;
   } else {
     integer_division_supported_ =
@@ -238,7 +248,7 @@ void HostCPUFeatures::InitOnce() {
   initialized_ = true;
 #endif
 }
-#endif  // TARGET_OS_IOS
+#endif  // HOST_OS_IOS
 
 void HostCPUFeatures::Cleanup() {
   DEBUG_ASSERT(initialized_);

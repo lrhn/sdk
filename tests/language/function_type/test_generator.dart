@@ -448,8 +448,8 @@ List<FunctionType> buildFunctionTypes() {
         [new Parameter(new NominalType("int"), "x")],
         [new Parameter(parameterType, null)]));
     // int Function({int x}).
-    result.add(new FunctionType(returnType, generics, null, null,
-        [new Parameter(parameterType, "x")]));
+    result.add(new FunctionType(
+        returnType, generics, null, null, [new Parameter(parameterType, "x")]));
     // int Function(int, {int x})
     result.add(new FunctionType(
         returnType,
@@ -541,13 +541,10 @@ import 'package:expect/expect.dart';
 @NoInline()
 @AssumeDynamic()
 confuse(f) => f;
-
-final bool inCheckedMode =
-    (() { bool result = false; assert(result = true); return result; })();
 """;
 
-
 class Unit {
+  int typeCounter = 0;
   final String name;
   final StringBuffer typedefs = new StringBuffer();
   final StringBuffer globals = new StringBuffer();
@@ -593,10 +590,9 @@ void main() {
   }
 }
 
-
 final TEST_METHOD_HEADER = """
-  void #testName() {
-    // #typeCode""";
+  /// #typeCode
+  void #testName() {""";
 
 // Tests that apply for every type.
 final COMMON_TESTS_TEMPLATE = """
@@ -643,7 +639,7 @@ final TYPEDEF_T_TESTS_TEMPLATE = """
       Expect.equals(tIsDynamic, #methodFunName is #typeName<bool>);
       Expect.equals(tIsDynamic, confuse(#methodFunName) is #typeName<bool>);
     } else {
-      if (inCheckedMode) {
+      if (typeAssertionsEnabled) {
         Expect.throws(() { #fieldName = (#staticFunName as dynamic); });
         Expect.throws(() { #fieldName = confuse(#staticFunName); });
         #typeCode #localName;
@@ -670,6 +666,7 @@ String createTypeCode(FunctionType type) {
   type.writeType(typeBuffer);
   return typeBuffer.toString();
 }
+
 String createStaticFunCode(FunctionType type, int id) {
   StringBuffer staticFunBuffer = new StringBuffer();
   type.writeFunction(staticFunBuffer, createStaticFunName(id));
@@ -719,9 +716,11 @@ void generateTests() {
 
   var types = buildFunctionTypes();
 
-  int typeCounter = 0;
+  int unitCounter = 0;
   types.forEach((FunctionType type) {
-    Unit unit = units[typeCounter % units.length];
+    Unit unit = units[unitCounter % units.length];
+    unitCounter++;
+    int typeCounter = unit.typeCounter++;
 
     String typeName = createTypeName(typeCounter);
     String fieldName = createFieldName(typeCounter);
@@ -733,15 +732,12 @@ void generateTests() {
     String testMethodCode =
         createTestMethodFunCode(type, typeCode, typeCounter);
 
-
     unit.typedefs.writeln("typedef $typeName<T> = $typeCode;");
     unit.globals.writeln(staticFunCode);
     unit.fields.writeln("  $typeCode $fieldName;");
     unit.methods.writeln("  $methodFunCode");
     unit.testMethods.writeln("$testMethodCode");
     unit.tests.writeln("    $testName();");
-
-    typeCounter++;
   });
 
   for (int i = 0; i < units.length; i++) {

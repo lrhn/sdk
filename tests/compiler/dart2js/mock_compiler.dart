@@ -17,10 +17,9 @@ import 'package:compiler/src/diagnostics/source_span.dart';
 import 'package:compiler/src/diagnostics/spannable.dart';
 import 'package:compiler/src/elements/elements.dart';
 import 'package:compiler/src/elements/visitor.dart';
-import 'package:compiler/src/js_backend/backend_helpers.dart'
-    show BackendHelpers;
+import 'package:compiler/src/library_loader.dart' show LoadedLibraries;
 import 'package:compiler/src/js_backend/lookup_map_analysis.dart'
-    show LookupMapAnalysis;
+    show LookupMapResolutionAnalysis;
 import 'package:compiler/src/io/source_file.dart';
 import 'package:compiler/src/options.dart' show CompilerOptions;
 import 'package:compiler/src/resolution/members.dart';
@@ -62,12 +61,12 @@ class MockCompiler extends Compiler {
   final int expectedErrors;
   final Map<String, SourceFile> sourceFiles;
   Node parsedTree;
-  final String testedPatchVersion;
   final LibrarySourceProvider librariesOverride;
   final DiagnosticCollector diagnosticCollector = new DiagnosticCollector();
   final ResolvedUriTranslator resolvedUriTranslator =
       new MockResolvedUriTranslator();
   final Measurer measurer = new Measurer();
+  LibraryElement mainApp;
 
   MockCompiler.internal(
       {Map<String, String> coreSource,
@@ -87,10 +86,8 @@ class MockCompiler extends Compiler {
       int this.expectedWarnings,
       int this.expectedErrors,
       api.CompilerOutput outputProvider,
-      String patchVersion,
       LibrarySourceProvider this.librariesOverride})
       : sourceFiles = new Map<String, SourceFile>(),
-        testedPatchVersion = patchVersion,
         super(
             options: new CompilerOptions(
                 entryPoint: new Uri(scheme: 'mock'),
@@ -113,17 +110,19 @@ class MockCompiler extends Compiler {
     registerSource(
         Uris.dart_core, buildLibrarySource(DEFAULT_CORE_LIBRARY, coreSource));
     registerSource(PATCH_CORE, DEFAULT_PATCH_CORE_SOURCE);
+    registerSource(
+        Uris.dart__internal, buildLibrarySource(DEFAULT_INTERNAL_LIBRARY));
 
-    registerSource(BackendHelpers.DART_JS_HELPER,
-        buildLibrarySource(DEFAULT_JS_HELPER_LIBRARY));
-    registerSource(BackendHelpers.DART_FOREIGN_HELPER,
+    registerSource(
+        Uris.dart__js_helper, buildLibrarySource(DEFAULT_JS_HELPER_LIBRARY));
+    registerSource(Uris.dart__foreign_helper,
         buildLibrarySource(DEFAULT_FOREIGN_HELPER_LIBRARY));
-    registerSource(BackendHelpers.DART_INTERCEPTORS,
+    registerSource(Uris.dart__interceptors,
         buildLibrarySource(DEFAULT_INTERCEPTORS_LIBRARY));
-    registerSource(BackendHelpers.DART_ISOLATE_HELPER,
+    registerSource(Uris.dart__isolate_helper,
         buildLibrarySource(DEFAULT_ISOLATE_HELPER_LIBRARY));
     registerSource(Uris.dart_mirrors, DEFAULT_MIRRORS_SOURCE);
-    registerSource(BackendHelpers.DART_JS_MIRRORS, DEFAULT_JS_MIRRORS_SOURCE);
+    registerSource(Uris.dart__js_mirrors, DEFAULT_JS_MIRRORS_SOURCE);
 
     Map<String, String> asyncLibrarySource = <String, String>{};
     asyncLibrarySource.addAll(DEFAULT_ASYNC_LIBRARY);
@@ -131,30 +130,30 @@ class MockCompiler extends Compiler {
       asyncLibrarySource.addAll(ASYNC_AWAIT_LIBRARY);
     }
     registerSource(Uris.dart_async, buildLibrarySource(asyncLibrarySource));
-    registerSource(LookupMapAnalysis.PACKAGE_LOOKUP_MAP,
+    registerSource(LookupMapResolutionAnalysis.PACKAGE_LOOKUP_MAP,
         buildLibrarySource(DEFAULT_LOOKUP_MAP_LIBRARY));
-  }
-
-  String get patchVersion {
-    return testedPatchVersion != null ? testedPatchVersion : super.patchVersion;
   }
 
   /// Initialize the mock compiler with an empty main library.
   Future<Uri> init([String mainSource = ""]) {
     Uri uri = new Uri(scheme: "mock");
     registerSource(uri, mainSource);
-    return libraryLoader.loadLibrary(uri).then((LibraryElement library) {
-      mainApp = library;
+    return libraryLoader
+        .loadLibrary(uri)
+        .then((LoadedLibraries loadedLibraries) {
+      processLoadedLibraries(loadedLibraries);
+      mainApp = loadedLibraries.rootLibrary;
+      startResolution();
       // We need to make sure the Object class is resolved. When registering a
       // dynamic invocation the ArgumentTypesRegistry eventually iterates over
       // the interfaces of the Object class which would be 'null' if the class
       // wasn't resolved.
-      ClassElement objectClass = commonElements.objectClass;
+      ClassElement objectClass = resolution.commonElements.objectClass;
       objectClass.ensureResolved(resolution);
     }).then((_) => uri);
   }
 
-  Future run(Uri uri, [String mainSource = ""]) {
+  Future<bool> run(Uri uri, [String mainSource = ""]) {
     return init(mainSource).then((Uri mainUri) {
       return super.run(uri == null ? mainUri : uri);
     }).then((result) {
@@ -212,7 +211,8 @@ class MockCompiler extends Compiler {
 
   CollectingTreeElements resolveStatement(String text) {
     parsedTree = parseStatement(text);
-    return resolveNodeStatement(parsedTree, new MockElement(mainApp));
+    LibraryElement library = mainApp;
+    return resolveNodeStatement(parsedTree, new MockElement(library));
   }
 
   TreeElementMapping resolveNodeStatement(
@@ -221,7 +221,7 @@ class MockCompiler extends Compiler {
         this.resolution,
         element,
         new ResolutionRegistry(
-            this.backend, new CollectingTreeElements(element)),
+            this.backend.target, new CollectingTreeElements(element)),
         scope:
             new MockTypeVariablesScope(element.enclosingElement.buildScope()));
     if (visitor.scope is LibraryScope ||
@@ -234,12 +234,13 @@ class MockCompiler extends Compiler {
   }
 
   resolverVisitor() {
-    Element mockElement = new MockElement(mainApp.entryCompilationUnit);
+    LibraryElement library = mainApp;
+    Element mockElement = new MockElement(library.entryCompilationUnit);
     ResolverVisitor visitor = new ResolverVisitor(
         this.resolution,
         mockElement,
         new ResolutionRegistry(
-            this.backend, new CollectingTreeElements(mockElement)),
+            this.backend.target, new CollectingTreeElements(mockElement)),
         scope: mockElement.enclosingElement.buildScope());
     visitor.scope = new MethodScope(visitor.scope, mockElement);
     return visitor;
@@ -289,7 +290,7 @@ class MockCompiler extends Compiler {
 }
 
 class MockResolvedUriTranslator implements ResolvedUriTranslator {
-  static final _emptySet = new Set();
+  static final dynamic _emptySet = new Set();
 
   Uri translate(LibraryElement importingLibrary, Uri resolvedUri,
           Spannable spannable) =>

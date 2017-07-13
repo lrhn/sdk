@@ -11,9 +11,9 @@ class Trace {
   record(x) {
     trace += x.toString();
   }
+
   toString() => trace;
 }
-
 
 Stream makeMeAStream() {
   return timedCounter(5);
@@ -72,10 +72,10 @@ main() {
 
   var f2 = consumeTwo();
   t2.record("T2:");
- 
+
   var f3 = consumeNested();
   t3.record("T3:");
- 
+
   var f4 = consumeSomeOfInfinite();
   t4.record("T4:");
 
@@ -100,7 +100,7 @@ Stream timedCounter(int maxCount) {
     controller.add(counter); // Ask stream to send counter values as event.
     if (counter >= maxCount) {
       timer.cancel();
-      controller.close();    // Ask stream to shut down and tell listeners.
+      controller.close(); //    Ask stream to shut down and tell listeners.
     }
   }
 

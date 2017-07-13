@@ -16,18 +16,18 @@ class T1B {}
 @Native("T1C")
 class T1C {}
 
-makeT1A() native ;
-makeT1B() native ;
-makeT1C() native ;
+makeT1A() native;
+makeT1B() native;
+makeT1C() native;
 
-int getTagCallCount() native ;
+int getTagCallCount() native;
 
 void setup() native r'''
-function T1A() { }       // Normal native class.
+function T1A() { } //       Normal native class.
 function T1CrazyB() { }  // Native class with different constructor name.
 
 var T1fakeA = (function(){
-  function T1A() {}      // Native class with adversarial constructor name.
+  function T1A() {} //      Native class with adversarial constructor name.
   return T1A;
 })();
 

@@ -4,11 +4,14 @@
 
 library test.generics_double_substitution;
 
+@MirrorsUsed(targets: "test.generics_double_substitution")
 import 'dart:mirrors';
 import 'package:expect/expect.dart';
 
 class A<R> {}
+
 class B<S> {}
+
 class C<T> extends B<A<T>> {
   A<T> field;
   A<T> returnType() {}
@@ -29,5 +32,5 @@ main() {
   Expect.equals(aOfString, parameterType.parameters.single.type);
 
   ClassMirror typeArgOfSuperclass = cOfString.superclass.typeArguments.single;
-  Expect.equals(aOfString, typeArgOfSuperclass);  /// 01: ok
+  Expect.equals(aOfString, typeArgOfSuperclass); // //# 01: ok
 }

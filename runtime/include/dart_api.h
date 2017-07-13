@@ -132,10 +132,7 @@ typedef struct _Dart_Isolate* Dart_Isolate;
  *   occur in any function which triggers the execution of Dart code.
  *
  * - Fatal error handles are produced when the system wants to shut
- *   down the current isolate. Sometimes a fatal error may be a
- *   restart request (see Dart_IsRestartRequest). If the embedder does
- *   not support restarting the VM, then this should be treated as a
- *   normal fatal error.
+ *   down the current isolate.
  *
  * --- Propagating errors ---
  *
@@ -310,17 +307,6 @@ DART_EXPORT bool Dart_IsCompilationError(Dart_Handle handle);
  * Requires there to be a current isolate.
  */
 DART_EXPORT bool Dart_IsFatalError(Dart_Handle handle);
-
-/**
- * Is this error a request to restart the VM?
- *
- * If an embedder chooses to support restarting the VM from tools
- * (such as a debugger), then this function is used to distinguish
- * restart requests from other fatal errors.
- *
- * Requires there to be a current isolate.
- */
-DART_EXPORT bool Dart_IsVMRestartRequest(Dart_Handle handle);
 
 /**
  * Gets the error message from an error handle.
@@ -611,7 +597,7 @@ DART_EXPORT const char* Dart_VersionString();
  * for each part.
  */
 
-#define DART_FLAGS_CURRENT_VERSION (0x00000001)
+#define DART_FLAGS_CURRENT_VERSION (0x00000002)
 
 typedef struct {
   int32_t version;
@@ -619,6 +605,8 @@ typedef struct {
   bool enable_asserts;
   bool enable_error_on_bad_type;
   bool enable_error_on_bad_override;
+  bool use_field_guards;
+  bool use_osr;
 } Dart_IsolateFlags;
 
 /**
@@ -708,6 +696,22 @@ typedef void (*Dart_IsolateUnhandledExceptionCallback)(Dart_Handle error);
 typedef void (*Dart_IsolateShutdownCallback)(void* callback_data);
 
 /**
+ * An isolate cleanup callback function.
+ *
+ * This callback, provided by the embedder, is called after the vm
+ * shuts down an isolate. There will be no current isolate and it is *not*
+ * safe to run Dart code.
+ *
+ * This function should be used to dispose of native resources that
+ * are allocated to an isolate in order to avoid leaks.
+ *
+ * \param callback_data The same callback data which was passed to the
+ *   isolate when it was created.
+ *
+ */
+typedef void (*Dart_IsolateCleanupCallback)(void* callback_data);
+
+/**
  * A thread death callback function.
  * This callback, provided by the embedder, is called before a thread in the
  * vm thread pool exits.
@@ -788,6 +792,8 @@ typedef Dart_Handle (*Dart_GetVMServiceAssetsArchive)();
  *   See Dart_IsolateCreateCallback.
  * \param shutdown A function to be called when an isolate is shutdown.
  *   See Dart_IsolateShutdownCallback.
+ * \param cleanup A function to be called after an isolate is shutdown.
+ *   See Dart_IsolateCleanupCallback.
  * \param get_service_assets A function to be called by the service isolate when
  *    it requires the vmservice assets archive.
  *    See Dart_GetVMServiceAssetsArchive.
@@ -798,6 +804,7 @@ typedef struct {
   const uint8_t* vm_snapshot_instructions;
   Dart_IsolateCreateCallback create;
   Dart_IsolateShutdownCallback shutdown;
+  Dart_IsolateCleanupCallback cleanup;
   Dart_ThreadExitCallback thread_exit;
   Dart_FileOpenCallback file_open;
   Dart_FileReadCallback file_read;
@@ -1603,6 +1610,20 @@ DART_EXPORT Dart_Handle Dart_NewDouble(double value);
  * \return A valid handle if no error occurs during the operation.
  */
 DART_EXPORT Dart_Handle Dart_DoubleValue(Dart_Handle double_obj, double* value);
+
+/**
+ * Returns a closure of top level function 'function_name' in the exported
+ * namespace of specified 'library'. If a top level function 'function_name'
+ * does not exist, looks for a top level getter 'function_name' and invokes
+ * it and returns the object returned by the getter.
+ *
+ * \param library Library object
+ * \param function_name Name of the top level function
+ *
+ * \return A valid Dart instance if no error occurs during the operation.
+ */
+DART_EXPORT Dart_Handle Dart_GetClosure(Dart_Handle library,
+                                        Dart_Handle function_name);
 
 
 /*
@@ -3082,7 +3103,7 @@ DART_EXPORT Dart_Handle Dart_FinalizeLoading(bool complete_futures);
  */
 
 /**
- * The peer field is a lazily allocated field intendend for storage of
+ * The peer field is a lazily allocated field intended for storage of
  * an uncommonly used values.  Most instances types can have a peer
  * field allocated.  The exceptions are subtypes of Null, num, and
  * bool.
@@ -3148,6 +3169,15 @@ DART_EXPORT Dart_Port Dart_KernelPort();
 DART_EXPORT Dart_KernelCompilationResult
 Dart_CompileToKernel(const char* script_uri);
 
+typedef struct {
+  const char* uri;
+  const char* source;
+} Dart_SourceFile;
+DART_EXPORT Dart_KernelCompilationResult
+Dart_CompileSourcesToKernel(const char* script_uri,
+                            int source_files_count,
+                            Dart_SourceFile source_files[]);
+
 #define DART_KERNEL_ISOLATE_NAME "kernel-service"
 
 /*
@@ -3176,6 +3206,31 @@ DART_EXPORT bool Dart_IsServiceIsolate(Dart_Isolate isolate);
  * isolate failed to startup or does not support load requests.
  */
 DART_EXPORT Dart_Port Dart_ServiceWaitForLoadPort();
+
+
+/**
+ * Record all functions which have been compiled in the current isolate.
+ *
+ * \param buffer Returns a pointer to a buffer containing the trace.
+ *   This buffer is scope allocated and is only valid  until the next call to
+ *   Dart_ExitScope.
+ * \param size Returns the size of the buffer.
+ * \return Returns an valid handle upon success.
+ */
+DART_EXPORT Dart_Handle Dart_SaveCompilationTrace(uint8_t** buffer,
+                                                  intptr_t* buffer_length);
+
+
+/**
+ * Compile all functions from data from Dart_SaveCompilationTrace. Unlike JIT
+ * feedback, this data is fuzzy: loading does not need to happen in the exact
+ * program that was saved, the saver and loader do not need to agree on checked
+ * mode versus production mode or debug/release/product.
+ *
+ * \return Returns an error handle if a compilation error was encountered.
+ */
+DART_EXPORT Dart_Handle Dart_LoadCompilationTrace(uint8_t* buffer,
+                                                  intptr_t buffer_length);
 
 
 /*
@@ -3277,13 +3332,14 @@ Dart_CreateAppAOTSnapshotAsBlobs(uint8_t** vm_snapshot_data_buffer,
                                  uint8_t** isolate_snapshot_instructions_buffer,
                                  intptr_t* isolate_snapshot_instructions_size);
 
-
 /**
  * Sorts the class-ids in depth first traversal order of the inheritance
- * tree.  This is a costly operation, but it can make method dispatch
+ * tree. This is a costly operation, but it can make method dispatch
  * more efficient and is done before writing snapshots.
+ *
+ * \return A valid handle if no error occurs during the operation.
  */
-DART_EXPORT void Dart_SortClasses();
+DART_EXPORT Dart_Handle Dart_SortClasses();
 
 
 /**
@@ -3313,6 +3369,20 @@ Dart_CreateAppJITSnapshotAsBlobs(uint8_t** isolate_snapshot_data_buffer,
                                  intptr_t* isolate_snapshot_data_size,
                                  uint8_t** isolate_snapshot_instructions_buffer,
                                  intptr_t* isolate_snapshot_instructions_size);
+
+
+/**
+ * Like Dart_CreateAppJITSnapshotAsBlobs, but also creates a new VM snapshot.
+ */
+DART_EXPORT Dart_Handle Dart_CreateCoreJITSnapshotAsBlobs(
+    uint8_t** vm_snapshot_data_buffer,
+    intptr_t* vm_snapshot_data_size,
+    uint8_t** vm_snapshot_instructions_buffer,
+    intptr_t* vm_snapshot_instructions_size,
+    uint8_t** isolate_snapshot_data_buffer,
+    intptr_t* isolate_snapshot_data_size,
+    uint8_t** isolate_snapshot_instructions_buffer,
+    intptr_t* isolate_snapshot_instructions_size);
 
 
 /**

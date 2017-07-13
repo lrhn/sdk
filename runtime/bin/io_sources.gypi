@@ -14,9 +14,9 @@
     'io_service_patch.dart',
     'platform_patch.dart',
     'process_patch.dart',
-    'service_object_patch.dart',
     'socket_patch.dart',
     'stdio_patch.dart',
     'secure_socket_patch.dart',
+    'sync_socket_patch.dart',
   ],
 }

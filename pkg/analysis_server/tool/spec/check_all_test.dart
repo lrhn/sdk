@@ -1,12 +1,10 @@
-// Copyright (c) 2014, the Dart project authors.  Please see the AUTHORS file
+// Copyright (c) 2017, the Dart project authors.  Please see the AUTHORS file
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library check.all;
-
 import 'dart:io';
 
-import 'package:analyzer/src/codegen/tools.dart';
+import 'package:front_end/src/codegen/tools.dart';
 import 'package:path/path.dart';
 
 import 'generate_all.dart';
@@ -17,6 +15,9 @@ import 'generate_all.dart';
  */
 main() {
   String script = Platform.script.toFilePath(windows: Platform.isWindows);
-  String pkgPath = normalize(join(dirname(script), '..', '..'));
-  GeneratedContent.checkAll(pkgPath, 'tool/spec/generate_all.dart', allTargets);
+  List<String> components = split(script);
+  int index = components.indexOf('analysis_server');
+  String pkgPath = joinAll(components.sublist(0, index + 1));
+  GeneratedContent.checkAll(
+      pkgPath, join('tool', 'spec', 'generate_all.dart'), allTargets);
 }

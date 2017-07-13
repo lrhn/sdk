@@ -4,22 +4,24 @@
 
 library fasta.kernel_interface_type_builder;
 
-import 'package:kernel/ast.dart' show
-    DartType,
-    DynamicType,
-    Supertype,
-    VoidType;
+import 'package:kernel/ast.dart' show DartType, DynamicType, Supertype;
 
-import '../messages.dart' show
-    warning;
+import '../messages.dart'
+    show
+        templateSupertypeIsIllegal,
+        templateSupertypeIsTypeVariable,
+        templateTypeNotFound,
+        warning;
 
-import 'kernel_builder.dart' show
-    KernelClassBuilder,
-    KernelInvalidTypeBuilder,
-    KernelTypeBuilder,
-    NamedTypeBuilder,
-    TypeBuilder,
-    TypeVariableBuilder;
+import 'kernel_builder.dart'
+    show
+        KernelClassBuilder,
+        KernelInvalidTypeBuilder,
+        KernelTypeBuilder,
+        LibraryBuilder,
+        NamedTypeBuilder,
+        TypeBuilder,
+        TypeVariableBuilder;
 
 class KernelNamedTypeBuilder
     extends NamedTypeBuilder<KernelTypeBuilder, DartType>
@@ -30,37 +32,42 @@ class KernelNamedTypeBuilder
 
   KernelInvalidTypeBuilder buildInvalidType(String name) {
     // TODO(ahe): Record error instead of printing.
-    warning(fileUri, charOffset, "Type not found: '$name'.");
+    warning(templateTypeNotFound.withArguments(name), charOffset, fileUri);
     return new KernelInvalidTypeBuilder(name, charOffset, fileUri);
   }
 
   DartType handleMissingType() {
     // TODO(ahe): Record error instead of printing.
-    warning(fileUri, charOffset, "No type for: '$name'.");
+    warning(templateTypeNotFound.withArguments(name), charOffset, fileUri);
     return const DynamicType();
   }
 
-  Supertype handleMissingSuperType() {
-    warning(fileUri, charOffset,  "No type for: '$name'.");
+  Supertype handleMissingSupertype() {
+    warning(templateTypeNotFound.withArguments(name), charOffset, fileUri);
     return null;
   }
 
-  DartType build() {
-    if (name == "void") return const VoidType();
-    if (name == "dynamic") return const DynamicType();
-    if (builder == null) return handleMissingType();
-    return builder.buildType(arguments);
+  Supertype handleInvalidSupertype(LibraryBuilder library) {
+    var template = builder.isTypeVariable
+        ? templateSupertypeIsTypeVariable
+        : templateSupertypeIsIllegal;
+    library.addCompileTimeError(
+        template.withArguments(name), charOffset, fileUri);
+    return null;
   }
 
-  Supertype buildSupertype() {
-    if (name == "void") return null;
-    if (name == "dynamic") return null;
-    if (builder == null) return handleMissingSuperType();
+  DartType build(LibraryBuilder library) {
+    if (builder == null) return handleMissingType();
+    return builder.buildType(library, arguments);
+  }
+
+  Supertype buildSupertype(LibraryBuilder library) {
+    if (builder == null) return handleMissingSupertype();
     if (builder is KernelClassBuilder) {
       KernelClassBuilder builder = this.builder;
-      return builder.buildSupertype(arguments);
+      return builder.buildSupertype(library, arguments);
     } else {
-      return handleMissingSuperType();
+      return handleInvalidSupertype(library);
     }
   }
 
@@ -82,7 +89,7 @@ class KernelNamedTypeBuilder
       }
       if (arguments != null) {
         return new KernelNamedTypeBuilder(name, arguments, charOffset, fileUri)
-            ..builder = builder;
+          ..builder = builder;
       }
     }
     return this;

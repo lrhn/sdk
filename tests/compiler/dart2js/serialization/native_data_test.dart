@@ -9,13 +9,13 @@ import 'package:async_helper/async_helper.dart';
 import 'package:compiler/src/common/names.dart';
 import 'package:compiler/src/commandline_options.dart';
 import 'package:compiler/src/compiler.dart';
-import 'package:compiler/src/js_backend/js_backend.dart';
 import 'package:compiler/src/js_backend/native_data.dart';
 import 'package:compiler/src/filenames.dart';
 import 'package:compiler/src/serialization/equivalence.dart';
+import 'package:compiler/src/world.dart';
+import '../equivalence/check_helpers.dart';
 import '../memory_compiler.dart';
 import 'helper.dart';
-import 'test_helper.dart';
 
 main(List<String> args) {
   asyncTest(() async {
@@ -35,6 +35,9 @@ Future checkNativeData(Uri uri, {bool verbose: false}) async {
   SerializationResult result = await serialize(uri);
   Compiler compiler1 = result.compiler;
   SerializedData serializedData = result.serializedData;
+  var elementEnvironment1 = compiler1.frontendStrategy.elementEnvironment;
+  ClosedWorld closedWorld1 =
+      compiler1.closeResolution(elementEnvironment1.mainFunction).closedWorld;
 
   print('------------------------------------------------------------------');
   print('analyze deserialized: $uri');
@@ -44,22 +47,43 @@ Future checkNativeData(Uri uri, {bool verbose: false}) async {
       resolutionInputs: serializedData.toUris(),
       options: [Flags.analyzeAll]);
   await compiler2.run(uri);
+  var elementEnvironment2 = compiler2.frontendStrategy.elementEnvironment;
+  ClosedWorld closedWorld2 =
+      compiler2.closeResolution(elementEnvironment2.mainFunction).closedWorld;
 
-  JavaScriptBackend backend1 = compiler1.backend;
-  JavaScriptBackend backend2 = compiler2.backend;
-  NativeData nativeData1 = backend1.nativeData;
-  NativeData nativeData2 = backend2.nativeData;
+  NativeBasicDataImpl nativeBasicData1 =
+      compiler1.frontendStrategy.nativeBasicData;
+  NativeBasicDataImpl nativeBasicData2 =
+      compiler2.frontendStrategy.nativeBasicData;
+  NativeDataImpl nativeData1 = closedWorld1.nativeData;
+  NativeDataImpl nativeData2 = closedWorld2.nativeData;
 
-  checkMaps(nativeData1.jsInteropNames, nativeData2.jsInteropNames,
-      "NativeData.jsInteropNames", areElementsEquivalent, equality,
+  checkMaps(
+      nativeData1.jsInteropLibraryNames,
+      nativeData2.jsInteropLibraryNames,
+      "NativeData.jsInteropLibraryNames",
+      areElementsEquivalent,
+      equality,
+      verbose: verbose);
+
+  checkMaps(nativeData1.jsInteropClassNames, nativeData2.jsInteropClassNames,
+      "NativeData.jsInteropClassNames", areElementsEquivalent, equality,
+      verbose: verbose);
+
+  checkMaps(nativeData1.jsInteropMemberNames, nativeData2.jsInteropMemberNames,
+      "NativeData.jsInteropMemberNames", areElementsEquivalent, equality,
       verbose: verbose);
 
   checkMaps(nativeData1.nativeMemberName, nativeData2.nativeMemberName,
       "NativeData.nativeMemberName", areElementsEquivalent, equality,
       verbose: verbose);
 
-  checkMaps(nativeData1.nativeClassTagInfo, nativeData2.nativeClassTagInfo,
-      "NativeData.nativeClassTagInfo", areElementsEquivalent, equality,
+  checkMaps(
+      nativeBasicData1.nativeClassTagInfo,
+      nativeBasicData2.nativeClassTagInfo,
+      "NativeData.nativeClassTagInfo",
+      areElementsEquivalent,
+      equality,
       verbose: verbose);
 
   checkMaps(

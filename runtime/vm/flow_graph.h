@@ -133,6 +133,11 @@ class FlowGraph : public ZoneAllocated {
                                  Instruction* current,
                                  Instruction* replacement);
 
+  Instruction* CreateCheckClass(Definition* to_check,
+                                const Cids& cids,
+                                intptr_t deopt_id,
+                                TokenPosition token_pos);
+
   intptr_t current_ssa_temp_index() const { return current_ssa_temp_index_; }
   void set_current_ssa_temp_index(intptr_t index) {
     current_ssa_temp_index_ = index;
@@ -205,10 +210,18 @@ class FlowGraph : public ZoneAllocated {
 
   void MergeBlocks();
 
-  // Compute information about effects occuring in different blocks and
+  // Compute information about effects occurring in different blocks and
   // discover side-effect free paths.
   void ComputeBlockEffects();
   BlockEffects* block_effects() const { return block_effects_; }
+
+  // Insert a redefinition of an original definition after prev and rename all
+  // dominated uses of the original.  If an equivalent redefinition is already
+  // present, nothing is inserted.
+  // Returns the redefinition, if a redefinition was inserted, NULL otherwise.
+  RedefinitionInstr* EnsureRedefinition(Instruction* prev,
+                                        Definition* original,
+                                        CompileType compile_type);
 
   // Remove the redefinition instructions inserted to inhibit code motion.
   void RemoveRedefinitions();
@@ -285,6 +298,15 @@ class FlowGraph : public ZoneAllocated {
   // shift can be a truncating Smi shift-left and result is always Smi.
   // Merge instructions (only per basic-block).
   void TryOptimizePatterns();
+
+  ZoneGrowableArray<TokenPosition>* await_token_positions() const {
+    return await_token_positions_;
+  }
+
+  void set_await_token_positions(
+      ZoneGrowableArray<TokenPosition>* await_token_positions) {
+    await_token_positions_ = await_token_positions;
+  }
 
   // Replaces uses that are dominated by dom of 'def' with 'other'.
   // Note: uses that occur at instruction dom itself are not dominated by it.
@@ -391,6 +413,7 @@ class FlowGraph : public ZoneAllocated {
   ZoneGrowableArray<BlockEntryInstr*>* loop_headers_;
   ZoneGrowableArray<BitVector*>* loop_invariant_loads_;
   ZoneGrowableArray<const LibraryPrefix*>* deferred_prefixes_;
+  ZoneGrowableArray<TokenPosition>* await_token_positions_;
   DirectChainedHashMap<ConstantPoolTrait> constant_instr_pool_;
   BitVector* captured_parameters_;
 

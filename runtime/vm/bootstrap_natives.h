@@ -13,6 +13,7 @@ namespace dart {
 
 // List of bootstrap native entry points used in the core dart library.
 #define BOOTSTRAP_NATIVE_LIST(V)                                               \
+  V(AsyncStarMoveNext_debuggerStepCheck, 1)                                    \
   V(DartAsync_fatal, 1)                                                        \
   V(Object_equals, 2)                                                          \
   V(Object_getHash, 1)                                                         \
@@ -23,12 +24,7 @@ namespace dart {
   V(Object_haveSameRuntimeType, 2)                                             \
   V(Object_instanceOf, 4)                                                      \
   V(Object_simpleInstanceOf, 2)                                                \
-  V(Object_instanceOfNum, 2)                                                   \
-  V(Object_instanceOfInt, 2)                                                   \
-  V(Object_instanceOfSmi, 2)                                                   \
-  V(Object_instanceOfDouble, 2)                                                \
-  V(Object_instanceOfString, 2)                                                \
-  V(Object_as, 3)                                                              \
+  V(Object_as, 4)                                                              \
   V(Function_apply, 2)                                                         \
   V(Closure_equals, 2)                                                         \
   V(Closure_hashCode, 1)                                                       \
@@ -161,7 +157,7 @@ namespace dart {
   V(DateTime_localTimeZoneAdjustmentInSeconds, 0)                              \
   V(AssertionError_throwNew, 3)                                                \
   V(Async_rethrow, 2)                                                          \
-  V(StackTrace_asyncStackTraceHelper, 0)                                       \
+  V(StackTrace_asyncStackTraceHelper, 1)                                       \
   V(StackTrace_clearAsyncThreadStackTrace, 0)                                  \
   V(StackTrace_setAsyncThreadStackTrace, 1)                                    \
   V(StackTrace_current, 0)                                                     \
@@ -326,6 +322,7 @@ namespace dart {
   V(Internal_makeListFixedLength, 1)                                           \
   V(Internal_makeFixedListUnmodifiable, 1)                                     \
   V(Internal_inquireIs64Bit, 0)                                                \
+  V(Internal_prependTypeArguments, 3)                                          \
   V(LinkedHashMap_getIndex, 1)                                                 \
   V(LinkedHashMap_setIndex, 2)                                                 \
   V(LinkedHashMap_getData, 1)                                                  \
@@ -406,7 +403,7 @@ namespace dart {
   V(DeclarationMirror_metadata, 1)                                             \
   V(FunctionTypeMirror_call_method, 2)                                         \
   V(FunctionTypeMirror_parameters, 2)                                          \
-  V(FunctionTypeMirror_return_type, 2)                                         \
+  V(FunctionTypeMirror_return_type, 1)                                         \
   V(MethodMirror_owner, 2)                                                     \
   V(MethodMirror_parameters, 2)                                                \
   V(MethodMirror_return_type, 2)                                               \
@@ -428,7 +425,7 @@ class BootstrapNatives : public AllStatic {
   static void DN_##name(Dart_NativeArguments args);
 
   BOOTSTRAP_NATIVE_LIST(DECLARE_BOOTSTRAP_NATIVE)
-#if !defined(PRODUCT) && !defined(DART_PRECOMPILED_RUNTIME)
+#if !defined(DART_PRECOMPILED_RUNTIME)
   MIRRORS_BOOTSTRAP_NATIVE_LIST(DECLARE_BOOTSTRAP_NATIVE)
 #endif
 

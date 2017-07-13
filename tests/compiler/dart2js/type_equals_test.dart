@@ -7,12 +7,12 @@ import "package:async_helper/async_helper.dart";
 import 'package:compiler/src/elements/resolution_types.dart';
 import "compiler_helper.dart";
 
-bool test(compiler, String name1, String name2, {bool expect}) {
+test(compiler, String name1, String name2, {bool expect}) {
   Expect.isTrue((expect != null), 'required parameter "expect" not given');
-  var clazz = findElement(compiler, "Class");
+  dynamic clazz = findElement(compiler, "Class");
   clazz.ensureResolved(compiler.resolution);
-  var element1 = clazz.buildScope().lookup(name1);
-  var element2 = clazz.buildScope().lookup(name2);
+  dynamic element1 = clazz.buildScope().lookup(name1);
+  dynamic element2 = clazz.buildScope().lookup(name2);
   Expect.isNotNull(element1);
   Expect.isNotNull(element2);
   Expect.equals(element1.kind, ElementKind.FUNCTION);
@@ -22,8 +22,8 @@ bool test(compiler, String name1, String name2, {bool expect}) {
   FunctionSignature signature1 = element1.functionSignature;
   FunctionSignature signature2 = element2.functionSignature;
 
-  // Function signatures are used to be to provide void types (only occuring as
-  // as return types) and (inlined) function types (only occuring as method
+  // Function signatures are used to be to provide void types (only occurring as
+  // as return types) and (inlined) function types (only occurring as method
   // parameter types).
   //
   // Only a single type is used from each signature. That is, it is not the

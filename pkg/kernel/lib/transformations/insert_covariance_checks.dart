@@ -53,8 +53,8 @@ DartType substituteBounds(DartType type, Map<TypeParameter, DartType> upper,
 /// Currently, we only deduce that the type arguments are exact when the
 /// receiver is `this`.
 class InsertCovarianceChecks {
+  final CoreTypes coreTypes;
   ClassHierarchy hierarchy;
-  CoreTypes coreTypes;
   TypeEnvironment types;
 
   /// Maps unsafe members to their checked entry point, to be used at call sites
@@ -70,15 +70,17 @@ class InsertCovarianceChecks {
   /// in [unsafeMemberEntryPoint].
   final Set<Member> membersWithCheckedEntryPoint = new Set<Member>();
 
-  InsertCovarianceChecks({this.hierarchy, this.coreTypes});
+  InsertCovarianceChecks(this.coreTypes, this.hierarchy);
 
   void transformProgram(Program program) {
-    hierarchy ??= new ClassHierarchy(program);
-    coreTypes ??= new CoreTypes(program);
     types = new TypeEnvironment(coreTypes, hierarchy);
     // We transform every class before their subtypes.
     // This ensures that transitive overrides are taken into account.
-    hierarchy.classes.forEach(transformClass);
+    var unorderedClasses = program.libraries
+        .map((library) => library.classes)
+        .expand((classes) => classes);
+    var ordered = hierarchy.getOrderedClasses(unorderedClasses);
+    ordered.forEach(transformClass);
 
     program.accept(new _CallTransformer(this));
   }
@@ -377,7 +379,8 @@ class _ClassTransformer {
       // function type parameters (in case the function is generic).
       var targetType = cloneParameter.type;
       cloneParameter.type = cloner.visitType(getSafeType(unsafeInputs));
-      return new AsExpression(new VariableGet(cloneParameter), targetType);
+      return new AsExpression(new VariableGet(cloneParameter), targetType)
+        ..fileOffset = parameter.fileOffset;
     }
 
     // TODO: Insert checks for type parameter bounds.
@@ -416,7 +419,8 @@ class _ClassTransformer {
     Expression argument = new VariableGet(parameter);
     if (unsafeTypes != null) {
       var castType = substitute(field.type, ownSubstitution);
-      argument = new AsExpression(argument, castType);
+      argument = new AsExpression(argument, castType)
+        ..fileOffset = field.fileOffset;
       var inputType = substitute(getSafeType(unsafeTypes), ownSubstitution);
       parameter.type = inputType;
     }
@@ -429,7 +433,8 @@ class _ClassTransformer {
     var setter = new Procedure(
         covariantCheckedName(field.name),
         ProcedureKind.Setter,
-        new FunctionNode(body, positionalParameters: [parameter]));
+        new FunctionNode(body, positionalParameters: [parameter]))
+      ..fileUri = field.fileUri;
     host.addMember(setter);
 
     if (field.enclosingClass == host) {

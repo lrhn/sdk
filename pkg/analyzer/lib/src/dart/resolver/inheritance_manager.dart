@@ -161,8 +161,8 @@ class InheritanceManager {
     ExecutableElement executable = _computeClassChainLookupMap(
         classElt, new HashSet<ClassElement>())[memberName];
     if (executable == null) {
-      return _computeInterfaceLookupMap(classElt, new HashSet<ClassElement>())[
-          memberName];
+      return _computeInterfaceLookupMap(
+          classElt, new HashSet<ClassElement>())[memberName];
     }
     return executable;
   }
@@ -800,12 +800,12 @@ class InheritanceManager {
               // we create a warning, and have this class inherit nothing.
               //
               if (!classHasMember) {
-                String firstTwoFuntionTypesStr =
+                String firstTwoFunctionTypesStr =
                     "${executableElementTypes[0]}, ${executableElementTypes[1]}";
                 _reportError(
                     classElt,
                     StaticTypeWarningCode.INCONSISTENT_METHOD_INHERITANCE,
-                    [key, firstTwoFuntionTypesStr]);
+                    [key, firstTwoFunctionTypesStr]);
               }
             } else {
               //

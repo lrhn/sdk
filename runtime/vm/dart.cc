@@ -97,23 +97,13 @@ static void CheckOffsets() {
   CHECK_OFFSET(Isolate::object_store_offset(), 28);
   NOT_IN_PRODUCT(CHECK_OFFSET(sizeof(ClassHeapStats), 120));
 #endif
-#if defined(TARGET_ARCH_MIPS)
-  // These offsets are embedded in precompiled instructions. We need simmips
-  // (compiler) and mips (runtime) to agree.
-  CHECK_OFFSET(Heap::TopOffset(Heap::kNew), 8);
-  CHECK_OFFSET(Thread::stack_limit_offset(), 4);
-  CHECK_OFFSET(Thread::object_null_offset(), 40);
-  CHECK_OFFSET(SingleTargetCache::upper_limit_offset(), 14);
-  CHECK_OFFSET(Isolate::object_store_offset(), 28);
-  NOT_IN_PRODUCT(CHECK_OFFSET(sizeof(ClassHeapStats), 120));
-#endif
 #if defined(TARGET_ARCH_ARM64)
   // These offsets are embedded in precompiled instructions. We need simarm64
   // (compiler) and arm64 (runtime) to agree.
   CHECK_OFFSET(Heap::TopOffset(Heap::kNew), 8);
   CHECK_OFFSET(Thread::stack_limit_offset(), 8);
   CHECK_OFFSET(Thread::object_null_offset(), 80);
-  CHECK_OFFSET(SingleTargetCache::upper_limit_offset(), 28);
+  CHECK_OFFSET(SingleTargetCache::upper_limit_offset(), 26);
   CHECK_OFFSET(Isolate::object_store_offset(), 56);
   NOT_IN_PRODUCT(CHECK_OFFSET(sizeof(ClassHeapStats), 208));
 #endif
@@ -125,6 +115,7 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
                      const uint8_t* instructions_snapshot,
                      Dart_IsolateCreateCallback create,
                      Dart_IsolateShutdownCallback shutdown,
+                     Dart_IsolateCleanupCallback cleanup,
                      Dart_ThreadExitCallback thread_exit,
                      Dart_FileOpenCallback file_open,
                      Dart_FileReadCallback file_read,
@@ -152,7 +143,6 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
   start_time_micros_ = OS::GetCurrentMonotonicMicros();
   VirtualMemory::InitOnce();
   OSThread::InitOnce();
-  MallocHooks::InitOnce();
   if (FLAG_support_timeline) {
     Timeline::InitOnce();
   }
@@ -215,7 +205,7 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
       vm_snapshot_kind_ = snapshot->kind();
 
       if (Snapshot::IncludesCode(vm_snapshot_kind_)) {
-        if (vm_snapshot_kind_ == Snapshot::kAppAOT) {
+        if (vm_snapshot_kind_ == Snapshot::kFullAOT) {
 #if defined(DART_PRECOMPILED_RUNTIME)
           vm_isolate_->set_compilation_allowed(false);
           if (!FLAG_precompiled_runtime) {
@@ -233,6 +223,13 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
         return strdup("Precompiled runtime requires a precompiled snapshot");
 #else
         StubCode::InitOnce();
+        // MallocHooks can't be initialized until StubCode has been since stack
+        // trace generation relies on stub methods that are generated in
+        // StubCode::InitOnce().
+        // TODO(bkonyi) Split initialization for stack trace collection from the
+        // initialization for the actual malloc hooks to increase accuracy of
+        // memory consumption statistics.
+        MallocHooks::InitOnce();
 #endif
       } else {
         return strdup("Invalid vm isolate snapshot seen");
@@ -271,6 +268,13 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
 #else
       vm_snapshot_kind_ = Snapshot::kNone;
       StubCode::InitOnce();
+      // MallocHooks can't be initialized until StubCode has been since stack
+      // trace generation relies on stub methods that are generated in
+      // StubCode::InitOnce().
+      // TODO(bkonyi) Split initialization for stack trace collection from the
+      // initialization for the actual malloc hooks to increase accuracy of
+      // memory consumption statistics.
+      MallocHooks::InitOnce();
       Symbols::InitOnce(vm_isolate_);
 #endif
     }
@@ -300,6 +304,7 @@ char* Dart::InitOnce(const uint8_t* vm_isolate_snapshot,
   Thread::ExitIsolate();  // Unregister the VM isolate from this thread.
   Isolate::SetCreateCallback(create);
   Isolate::SetShutdownCallback(shutdown);
+  Isolate::SetCleanupCallback(cleanup);
 
   if (FLAG_support_service) {
     Service::SetGetServiceAssetsCallback(get_service_assets);
@@ -495,7 +500,7 @@ Isolate* Dart::CreateIsolate(const char* name_prefix,
 static bool IsSnapshotCompatible(Snapshot::Kind vm_kind,
                                  Snapshot::Kind isolate_kind) {
   if (vm_kind == isolate_kind) return true;
-  if (vm_kind == Snapshot::kCore && isolate_kind == Snapshot::kAppJIT)
+  if (vm_kind == Snapshot::kFull && isolate_kind == Snapshot::kFullJIT)
     return true;
   return Snapshot::IsFull(isolate_kind);
 }
@@ -640,7 +645,7 @@ RawError* Dart::InitializeIsolate(const uint8_t* snapshot_data,
 }
 
 
-const char* Dart::FeaturesString(Snapshot::Kind kind) {
+const char* Dart::FeaturesString(Isolate* isolate, Snapshot::Kind kind) {
   TextBuffer buffer(64);
 
 // Different fields are included for DEBUG/RELEASE/PRODUCT.
@@ -653,26 +658,39 @@ const char* Dart::FeaturesString(Snapshot::Kind kind) {
 #endif
 
   if (Snapshot::IncludesCode(kind)) {
+    if (FLAG_support_debugger) {
+      buffer.AddString(" support-debugger");
+    }
+
     // Checked mode affects deopt ids.
-    buffer.AddString(FLAG_enable_asserts ? " asserts" : " no-asserts");
-    buffer.AddString(FLAG_enable_type_checks ? " type-checks"
-                                             : " no-type-checks");
+#define ADD_FLAG(name, isolate_flag, flag)                                     \
+  do {                                                                         \
+    const bool name = (isolate != NULL) ? isolate->name() : flag;              \
+    buffer.AddString(name ? (" " #name) : (" no-" #name));                     \
+  } while (0);
+    ADD_FLAG(type_checks, enable_type_checks, FLAG_enable_type_checks);
+    ADD_FLAG(asserts, enable_asserts, FLAG_enable_asserts);
+    ADD_FLAG(error_on_bad_type, enable_error_on_bad_type,
+             FLAG_error_on_bad_type);
+    ADD_FLAG(error_on_bad_override, enable_error_on_bad_override,
+             FLAG_error_on_bad_override);
+    if (kind == Snapshot::kFullJIT) {
+      ADD_FLAG(use_field_guards, use_field_guards, FLAG_use_field_guards);
+      ADD_FLAG(use_osr, use_osr, FLAG_use_osr);
+    }
+#undef ADD_FLAG
 
 // Generated code must match the host architecture and ABI.
 #if defined(TARGET_ARCH_ARM)
-#if defined(TARGET_ABI_IOS)
+#if defined(TARGET_OS_MACOS) || defined(TARGET_OS_MACOS_IOS)
     buffer.AddString(" arm-ios");
-#elif defined(TARGET_ABI_EABI)
-    buffer.AddString(" arm-eabi");
 #else
-#error Unknown ABI
+    buffer.AddString(" arm-eabi");
 #endif
     buffer.AddString(TargetCPUFeatures::hardfp_supported() ? " hardfp"
                                                            : " softfp");
 #elif defined(TARGET_ARCH_ARM64)
     buffer.AddString(" arm64");
-#elif defined(TARGET_ARCH_MIPS)
-    buffer.AddString(" mips");
 #elif defined(TARGET_ARCH_IA32)
     buffer.AddString(" ia32");
 #elif defined(TARGET_ARCH_X64)
@@ -686,6 +704,10 @@ const char* Dart::FeaturesString(Snapshot::Kind kind) {
 #elif defined(TARGET_ARCH_DBC64)
     buffer.AddString(" dbc64");
 #endif
+  }
+
+  if (FLAG_precompiled_mode && FLAG_dwarf_stack_traces) {
+    buffer.AddString(" dwarf-stack-traces");
   }
 
   return buffer.Steal();

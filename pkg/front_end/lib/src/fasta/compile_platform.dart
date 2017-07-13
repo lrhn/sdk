@@ -4,89 +4,83 @@
 
 library fasta.compile_platform;
 
-import 'dart:async' show
-    Future;
+import 'dart:async' show Future;
 
-import 'kernel/verifier.dart' show
-    verifyProgram;
+import 'dart:io' show exitCode, File;
 
-import 'ticker.dart' show
-    Ticker;
+import '../../compiler_options.dart' show CompilerOptions;
 
-import 'dart:io' show
-    exitCode;
+import '../base/processed_options.dart' show ProcessedOptions;
 
-import 'compiler_command_line.dart' show
-    CompilerCommandLine;
+import '../kernel_generator_impl.dart' show generateKernel;
 
-import 'compiler_context.dart' show
-    CompilerContext;
+import 'compiler_command_line.dart' show CompilerCommandLine;
 
-import 'errors.dart' show
-    InputError;
+import 'compiler_context.dart' show CompilerContext;
 
-import 'kernel/kernel_target.dart' show
-    KernelTarget;
+import 'deprecated_problems.dart' show deprecated_InputError;
 
-import 'dill/dill_target.dart' show
-    DillTarget;
+import 'kernel/utils.dart' show writeProgramToFile;
 
-import 'translate_uri.dart' show
-    TranslateUri;
+import 'ticker.dart' show Ticker;
 
-import 'ast_kind.dart' show
-    AstKind;
+const int iterations = const int.fromEnvironment("iterations", defaultValue: 1);
 
-Future main(List<String> arguments) async {
-  Ticker ticker = new Ticker();
-  try {
-    await CompilerCommandLine.withGlobalOptions(
-        "compile_platform", arguments,
-        (CompilerContext c) => compilePlatform(c, ticker));
-  } on InputError catch (e) {
-    exitCode = 1;
-    print(e.format());
-    return null;
+Future mainEntryPoint(List<String> arguments) async {
+  for (int i = 0; i < iterations; i++) {
+    if (i > 0) {
+      print("\n");
+    }
+    try {
+      await compilePlatform(arguments);
+    } on deprecated_InputError catch (e) {
+      exitCode = 1;
+      print(e.deprecated_format());
+      return null;
+    }
   }
 }
 
-Future compilePlatform(CompilerContext c, Ticker ticker) async {
-  ticker.isVerbose = c.options.verbose;
-  Uri output = Uri.base.resolveUri(new Uri.file(c.options.arguments[1]));
-  Uri patchedSdk =
-      Uri.base.resolveUri(new Uri.file(c.options.arguments[0]));
-  ticker.logMs("Parsed arguments");
-  if (ticker.isVerbose) {
-    print("Compiling $patchedSdk to $output");
+Future compilePlatform(List<String> arguments) async {
+  Ticker ticker = new Ticker();
+  await CompilerCommandLine.withGlobalOptions("compile_platform", arguments,
+      (CompilerContext c) {
+    Uri patchedSdk = Uri.base.resolveUri(new Uri.file(c.options.arguments[0]));
+    Uri fullOutput = Uri.base.resolveUri(new Uri.file(c.options.arguments[1]));
+    Uri outlineOutput =
+        Uri.base.resolveUri(new Uri.file(c.options.arguments[2]));
+    return compilePlatformInternal(
+        c, ticker, patchedSdk, fullOutput, outlineOutput);
+  });
+}
+
+Future compilePlatformInternal(CompilerContext c, Ticker ticker, Uri patchedSdk,
+    Uri fullOutput, Uri outlineOutput) async {
+  var options = new CompilerOptions()
+    ..strongMode = c.options.strongMode
+    ..sdkRoot = patchedSdk
+    ..packagesFileUri = c.options.packages
+    ..compileSdk = true
+    ..chaseDependencies = true
+    ..target = c.options.target
+    ..debugDump = c.options.dumpIr
+    ..verify = c.options.verify
+    ..verbose = c.options.verbose;
+
+  if (options.strongMode) {
+    print("Note: strong mode support is preliminary and may not work.");
+  }
+  if (options.verbose) {
+    print("Generating outline of $patchedSdk into $outlineOutput");
+    print("Compiling $patchedSdk to $fullOutput");
   }
 
-  TranslateUri uriTranslator = await TranslateUri.parse(
-      patchedSdk, c.options.packages);
-  ticker.logMs("Read packages file");
-
-  DillTarget dillTarget = new DillTarget(ticker, uriTranslator);
-  KernelTarget kernelTarget = new KernelTarget(
-      dillTarget, uriTranslator, c.uriToSource);
-
-  kernelTarget.read(Uri.parse("dart:core"));
-  await dillTarget.writeOutline(null);
-  await kernelTarget.writeOutline(output);
-
-  if (exitCode != 0) return null;
-  await kernelTarget.writeProgram(output, AstKind.Kernel);
-  if (c.options.dumpIr) {
-    kernelTarget.dumpIr();
-  }
-  if (c.options.verify) {
-    try {
-      verifyProgram(kernelTarget.program);
-      ticker.logMs("Verified program");
-    } catch (e, s) {
-      exitCode = 1;
-      print("Verification of program failed: $e");
-      if (s != null && c.options.verbose) {
-        print(s);
-      }
-    }
-  }
+  var result = await generateKernel(
+      new ProcessedOptions(options, false, [Uri.parse('dart:core')]),
+      buildSummary: true,
+      buildProgram: true);
+  new File.fromUri(outlineOutput).writeAsBytesSync(result.summary);
+  ticker.logMs("Wrote outline to ${outlineOutput.toFilePath()}");
+  await writeProgramToFile(result.program, fullOutput);
+  ticker.logMs("Wrote program to ${fullOutput.toFilePath()}");
 }

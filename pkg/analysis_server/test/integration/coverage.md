@@ -1,23 +1,20 @@
 Checklist to ensure that we have integration test coverage of all analysis
-server calls.
-
-This file is validated by `coverage_test.dart`.
-
-TODO(devoncarew): We should track analysis server notifications here as well.
+server calls. This file is validated by `coverage_test.dart`.
 
 ## analysis domain
 - [x] analysis.getErrors
 - [x] analysis.getHover
-- [ ] analysis.getReachableSources
-- [ ] analysis.getLibraryDependencies
+- [x] analysis.getImportedElements
+- [x] analysis.getLibraryDependencies (failing - see #29310)
 - [x] analysis.getNavigation (failing - see #28799)
+- [x] analysis.getReachableSources (failing - see #29311)
 - [x] analysis.reanalyze
 - [x] analysis.setAnalysisRoots
-- [ ] analysis.setGeneralSubscriptions
-- [ ] analysis.setPriorityFiles
+- [x] analysis.setGeneralSubscriptions
+- [x] analysis.setPriorityFiles
 - [x] analysis.setSubscriptions
 - [x] analysis.updateContent
-- [x] analysis.updateOptions (failing - see #28800)
+- [x] analysis.updateOptions (failing - see #28800) (deprecated)
 
 ## completion domain
 - [x] completion.getSuggestions
@@ -28,10 +25,15 @@ TODO(devoncarew): We should track analysis server notifications here as well.
 
 ## edit domain
 - [x] edit.format
-- [ ] edit.getAssists
-- [ ] edit.getAvailableRefactorings
-- [ ] edit.getFixes
-- [ ] edit.getRefactoring
+- [x] edit.getAssists
+- [x] edit.getAvailableRefactorings
+- [x] edit.getFixes
+- [x] edit.getPostfixCompletion
+- [x] edit.getRefactoring
+- [x] edit.getStatementCompletion
+- [x] edit.importElements
+- [x] edit.isPostfixCompletionApplicable
+- [x] edit.listPostfixCompletionTemplates
 - [x] edit.sortMembers
 - [x] edit.organizeDirectives
 
@@ -39,16 +41,22 @@ TODO(devoncarew): We should track analysis server notifications here as well.
 - [x] execution.createContext
 - [x] execution.deleteContext
 - [x] execution.mapUri
-- [x] execution.setSubscriptions (failing - see #28806)
+- [x] execution.setSubscriptions
 
 ## search domain
-- [ ] search.findElementReferences
-- [ ] search.findMemberDeclarations
-- [ ] search.findMemberReferences
-- [ ] search.findTopLevelDeclarations
+- [x] search.findElementReferences
+- [x] search.findMemberDeclarations
+- [x] search.findMemberReferences
+- [x] search.findTopLevelDeclarations
 - [x] search.getTypeHierarchy
 
 ## server domain
 - [x] server.getVersion
 - [x] server.shutdown
 - [x] server.setSubscriptions
+
+## analytics domain
+- [x] analytics.isEnabled
+- [x] analytics.enable
+- [x] analytics.sendEvent
+- [x] analytics.sendTiming

@@ -202,6 +202,14 @@ class CompilerOptions implements DiagnosticOptions {
   /// Whether to use kernel internally as part of compilation.
   final bool useKernel;
 
+  /// Read input from a .dill file rather than a .dart input (only to be used in
+  /// conjunction with useKernel = true).
+  final bool loadFromDill;
+
+  // Whether to use kernel internally for global type inference calculations.
+  // TODO(efortuna): Remove this and consolidate with useKernel.
+  final bool kernelGlobalInference;
+
   /// When obfuscating for minification, whether to use the frequency of a name
   /// as an heuristic to pick shorter names.
   final bool useFrequencyNamer;
@@ -221,6 +229,19 @@ class CompilerOptions implements DiagnosticOptions {
   /// Enable verbose printing during compilation. Includes progress messages
   /// during each phase and a time-breakdown between phases at the end.
   final bool verbose;
+
+  /// Track allocations in the JS output.
+  ///
+  /// This is an experimental feature.
+  final bool experimentalTrackAllocations;
+
+  /// The path to the file that contains the profiled allocations.
+  ///
+  /// The file must contain the Map that was produced by using
+  /// [experimentalTrackAllocations] encoded as a JSON map.
+  ///
+  /// This is an experimental feature.
+  final String experimentalAllocationsPath;
 
   // -------------------------------------------------
   // Options for deprecated features
@@ -275,10 +296,16 @@ class CompilerOptions implements DiagnosticOptions {
         enableNativeLiveTypeAnalysis:
             !_hasOption(options, Flags.disableNativeLiveTypeAnalysis),
         enableTypeAssertions: _hasOption(options, Flags.enableCheckedMode),
-        enableUserAssertions: _hasOption(options, Flags.enableCheckedMode),
+        enableUserAssertions: _hasOption(options, Flags.enableCheckedMode) ||
+            _hasOption(options, Flags.enableAsserts),
+        experimentalTrackAllocations:
+            _hasOption(options, Flags.experimentalTrackAllocations),
+        experimentalAllocationsPath: _extractStringOption(
+            options, "${Flags.experimentalAllocationsPath}=", null),
         generateCodeWithCompileTimeErrors:
             _hasOption(options, Flags.generateCodeWithCompileTimeErrors),
         generateSourceMap: !_hasOption(options, Flags.noSourceMaps),
+        kernelGlobalInference: _hasOption(options, Flags.kernelGlobalInference),
         outputUri: _extractUriOption(options, '--out='),
         platformConfigUri:
             _resolvePlatformConfigFromOptions(libraryRoot, options),
@@ -297,6 +324,7 @@ class CompilerOptions implements DiagnosticOptions {
         useContentSecurityPolicy:
             _hasOption(options, Flags.useContentSecurityPolicy),
         useKernel: _hasOption(options, Flags.useKernel),
+        loadFromDill: _hasOption(options, Flags.loadFromDill),
         useFrequencyNamer:
             !_hasOption(options, Flags.noFrequencyBasedMinification),
         useMultiSourceInfo: _hasOption(options, Flags.useMultiSourceInfo),
@@ -339,8 +367,11 @@ class CompilerOptions implements DiagnosticOptions {
       bool enableNativeLiveTypeAnalysis: true,
       bool enableTypeAssertions: false,
       bool enableUserAssertions: false,
+      bool experimentalTrackAllocations: false,
+      String experimentalAllocationsPath: null,
       bool generateCodeWithCompileTimeErrors: false,
       bool generateSourceMap: true,
+      bool kernelGlobalInference: false,
       Uri outputUri: null,
       Uri platformConfigUri: null,
       bool preserveComments: false,
@@ -356,6 +387,7 @@ class CompilerOptions implements DiagnosticOptions {
       bool trustTypeAnnotations: false,
       bool useContentSecurityPolicy: false,
       bool useKernel: false,
+      bool loadFromDill: false,
       bool useFrequencyNamer: true,
       bool useMultiSourceInfo: false,
       bool useNewSourceInfo: false,
@@ -409,8 +441,11 @@ class CompilerOptions implements DiagnosticOptions {
         enableNativeLiveTypeAnalysis: enableNativeLiveTypeAnalysis,
         enableTypeAssertions: enableTypeAssertions,
         enableUserAssertions: enableUserAssertions,
+        experimentalTrackAllocations: experimentalTrackAllocations,
+        experimentalAllocationsPath: experimentalAllocationsPath,
         generateCodeWithCompileTimeErrors: generateCodeWithCompileTimeErrors,
         generateSourceMap: generateSourceMap,
+        kernelGlobalInference: kernelGlobalInference,
         outputUri: outputUri,
         platformConfigUri: platformConfigUri ??
             _resolvePlatformConfig(libraryRoot, null, const []),
@@ -427,6 +462,7 @@ class CompilerOptions implements DiagnosticOptions {
         trustTypeAnnotations: trustTypeAnnotations,
         useContentSecurityPolicy: useContentSecurityPolicy,
         useKernel: useKernel,
+        loadFromDill: loadFromDill,
         useFrequencyNamer: useFrequencyNamer,
         useMultiSourceInfo: useMultiSourceInfo,
         useNewSourceInfo: useNewSourceInfo,
@@ -458,8 +494,11 @@ class CompilerOptions implements DiagnosticOptions {
       this.enableNativeLiveTypeAnalysis: false,
       this.enableTypeAssertions: false,
       this.enableUserAssertions: false,
+      this.experimentalTrackAllocations: false,
+      this.experimentalAllocationsPath: null,
       this.generateCodeWithCompileTimeErrors: false,
       this.generateSourceMap: true,
+      this.kernelGlobalInference: false,
       this.outputUri: null,
       this.platformConfigUri: null,
       this.preserveComments: false,
@@ -476,6 +515,7 @@ class CompilerOptions implements DiagnosticOptions {
       this.trustTypeAnnotations: false,
       this.useContentSecurityPolicy: false,
       this.useKernel: false,
+      this.loadFromDill: false,
       this.useFrequencyNamer: false,
       this.useMultiSourceInfo: false,
       this.useNewSourceInfo: false,
@@ -514,8 +554,11 @@ class CompilerOptions implements DiagnosticOptions {
       enableNativeLiveTypeAnalysis,
       enableTypeAssertions,
       enableUserAssertions,
+      experimentalTrackAllocations,
+      experimentalAllocationsPath,
       generateCodeWithCompileTimeErrors,
       generateSourceMap,
+      kernelGlobalInference,
       outputUri,
       platformConfigUri,
       preserveComments,
@@ -532,6 +575,7 @@ class CompilerOptions implements DiagnosticOptions {
       trustTypeAnnotations,
       useContentSecurityPolicy,
       useKernel,
+      loadFromDill,
       useFrequencyNamer,
       useMultiSourceInfo,
       useNewSourceInfo,
@@ -575,9 +619,15 @@ class CompilerOptions implements DiagnosticOptions {
             enableTypeAssertions ?? options.enableTypeAssertions,
         enableUserAssertions:
             enableUserAssertions ?? options.enableUserAssertions,
+        experimentalTrackAllocations: experimentalTrackAllocations ??
+            options.experimentalTrackAllocations,
+        experimentalAllocationsPath:
+            experimentalAllocationsPath ?? options.experimentalAllocationsPath,
         generateCodeWithCompileTimeErrors: generateCodeWithCompileTimeErrors ??
             options.generateCodeWithCompileTimeErrors,
         generateSourceMap: generateSourceMap ?? options.generateSourceMap,
+        kernelGlobalInference:
+            kernelGlobalInference ?? options.kernelGlobalInference,
         outputUri: outputUri ?? options.outputUri,
         platformConfigUri: platformConfigUri ?? options.platformConfigUri,
         preserveComments: preserveComments ?? options.preserveComments,
@@ -597,6 +647,7 @@ class CompilerOptions implements DiagnosticOptions {
         useContentSecurityPolicy:
             useContentSecurityPolicy ?? options.useContentSecurityPolicy,
         useKernel: useKernel ?? options.useKernel,
+        loadFromDill: loadFromDill ?? options.loadFromDill,
         useFrequencyNamer: useFrequencyNamer ?? options.useFrequencyNamer,
         useMultiSourceInfo: useMultiSourceInfo ?? options.useMultiSourceInfo,
         useNewSourceInfo: useNewSourceInfo ?? options.useNewSourceInfo,

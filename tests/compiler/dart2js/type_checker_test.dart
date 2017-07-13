@@ -11,7 +11,7 @@ import 'package:compiler/src/elements/resolution_types.dart';
 import 'package:compiler/src/diagnostics/messages.dart';
 import 'package:compiler/src/elements/elements.dart';
 import 'package:compiler/src/elements/modelx.dart'
-    show ClassElementX, CompilationUnitElementX, ElementX, FunctionElementX;
+    show ClassElementX, CompilationUnitElementX, ElementX;
 import 'package:compiler/src/io/source_file.dart';
 import 'package:compiler/src/resolution/tree_elements.dart'
     show TreeElements, TreeElementMapping;
@@ -22,7 +22,6 @@ import 'package:compiler/src/script.dart';
 import 'package:compiler/src/util/util.dart';
 
 import 'mock_compiler.dart';
-import 'options_helper.dart';
 import 'parser_helper.dart';
 
 final MessageKind NOT_ASSIGNABLE = MessageKind.NOT_ASSIGNABLE;
@@ -75,10 +74,10 @@ testSimpleTypes(MockCompiler compiler) {
     Expect.equals(type, analyzeType(compiler, code));
   }
 
-  checkType(compiler.commonElements.intType, "3");
-  checkType(compiler.commonElements.boolType, "false");
-  checkType(compiler.commonElements.boolType, "true");
-  checkType(compiler.commonElements.stringType, "'hestfisk'");
+  checkType(compiler.resolution.commonElements.intType, "3");
+  checkType(compiler.resolution.commonElements.boolType, "false");
+  checkType(compiler.resolution.commonElements.boolType, "true");
+  checkType(compiler.resolution.commonElements.stringType, "'hestfisk'");
 }
 
 Future testReturn(MockCompiler compiler) {
@@ -100,6 +99,8 @@ Future testReturn(MockCompiler compiler) {
     check(returnWithType("void", 1), MessageKind.RETURN_VALUE_IN_VOID),
     check(returnWithType("void", null)),
     check(returnWithType("String", ""), MessageKind.RETURN_NOTHING),
+    check(arrowReturnWithType("void", "4")),
+    check("void set foo(x) => 5;"),
     // check("String foo() {};"), // Should probably fail.
   ]);
 }
@@ -173,7 +174,8 @@ class Class {
 }
 """;
   compiler.parseScript(script);
-  ClassElement foo = compiler.mainApp.find("Class");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement foo = mainApp.find("Class");
   foo.ensureResolved(compiler.resolution);
   FunctionElement method = foo.lookupLocalMember('forIn');
 
@@ -412,7 +414,8 @@ class Class {
 }
 """;
   compiler.parseScript(script);
-  ClassElement foo = compiler.mainApp.find("Class");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement foo = mainApp.find("Class");
   foo.ensureResolved(compiler.resolution);
   FunctionElement method = foo.lookupLocalMember('forIn');
 
@@ -1355,7 +1358,8 @@ testThis(MockCompiler compiler) {
                        void method() {}
                      }""";
   compiler.parseScript(script);
-  ClassElement foo = compiler.mainApp.find("Foo");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement foo = mainApp.find("Foo");
   foo.ensureResolved(compiler.resolution);
   Element method = foo.lookupLocalMember('method');
   analyzeIn(compiler, method, "{ int i = this; }", warnings: NOT_ASSIGNABLE);
@@ -1375,7 +1379,8 @@ testSuper(MockCompiler compiler) {
     }
     ''';
   compiler.parseScript(script);
-  ClassElement B = compiler.mainApp.find("B");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement B = mainApp.find("B");
   B.ensureResolved(compiler.resolution);
   Element method = B.lookupLocalMember('method');
   analyzeIn(compiler, method, "{ int i = super.field; }",
@@ -1672,7 +1677,8 @@ void testTypeVariableExpressions(MockCompiler compiler) {
                        void method() {}
                      }""";
   compiler.parseScript(script);
-  ClassElement foo = compiler.mainApp.find("Foo");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement foo = mainApp.find("Foo");
   foo.ensureResolved(compiler.resolution);
   Element method = foo.lookupLocalMember('method');
 
@@ -1707,7 +1713,8 @@ class Test<S extends Foo, T> {
 """;
 
   compiler.parseScript(script);
-  ClassElement classTest = compiler.mainApp.find("Test");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement classTest = mainApp.find("Test");
   classTest.ensureResolved(compiler.resolution);
   FunctionElement methodTest = classTest.lookupLocalMember("test");
 
@@ -1747,7 +1754,8 @@ class Test<S extends T, T extends Foo> {
 }""";
 
   compiler.parseScript(script);
-  ClassElement classTest = compiler.mainApp.find("Test");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement classTest = mainApp.find("Test");
   classTest.ensureResolved(compiler.resolution);
   FunctionElement methodTest = classTest.lookupLocalMember("test");
 
@@ -1769,7 +1777,8 @@ class Test<S extends T, T extends S> {
 }""";
 
   compiler.parseScript(script);
-  ClassElement classTest = compiler.mainApp.find("Test");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement classTest = mainApp.find("Test");
   classTest.ensureResolved(compiler.resolution);
   FunctionElement methodTest = classTest.lookupLocalMember("test");
 
@@ -2499,7 +2508,8 @@ testAwait(MockCompiler compiler) {
                        Foo self() => this;
                      }""";
   compiler.parseScript(script);
-  ClassElement foo = compiler.mainApp.find("Foo");
+  LibraryElement mainApp = compiler.mainApp;
+  ClassElement foo = mainApp.find("Foo");
   foo.ensureResolved(compiler.resolution);
   FunctionElement method = foo.lookupLocalMember('method');
   analyzeIn(compiler, method, "{ await 0; }");
@@ -2554,8 +2564,8 @@ testAsyncReturn(MockCompiler compiler) {
     check("""
     Future<int> foo() async => new Future<Future<int>>.value();
     """),
-    check("void foo() async => 0;", MessageKind.RETURN_VALUE_IN_VOID),
-    check("void foo() async => new Future.value();",
+    check("void foo() async { return 0; }", MessageKind.RETURN_VALUE_IN_VOID),
+    check("void foo() async { return new Future.value(); }",
         MessageKind.RETURN_VALUE_IN_VOID),
     check("int foo() async => 0;", NOT_ASSIGNABLE),
     check("int foo() async => new Future<int>.value();", NOT_ASSIGNABLE),
@@ -2606,6 +2616,10 @@ String returnWithType(String type, expression) {
   return "$type foo() { return $expression; }";
 }
 
+String arrowReturnWithType(String type, expression) {
+  return "$type foo() => $expression;";
+}
+
 Node parseExpression(String text) =>
     parseBodyCode(text, (parser, token) => parser.parseExpression(token));
 
@@ -2652,7 +2666,7 @@ Future setup(test(MockCompiler compiler)) {
 ResolutionDartType analyzeType(MockCompiler compiler, String text) {
   var node = parseExpression(text);
   TypeCheckerVisitor visitor = new TypeCheckerVisitor(
-      compiler, new TreeElementMapping(null), compiler.types);
+      compiler, new TreeElementMapping(null), compiler.resolution.types);
   return visitor.analyze(node);
 }
 
@@ -2696,7 +2710,7 @@ analyzeTopLevel(String text, [expectedWarnings]) {
     }
     // Type check last class declaration or member.
     TypeCheckerVisitor checker =
-        new TypeCheckerVisitor(compiler, mapping, compiler.types);
+        new TypeCheckerVisitor(compiler, mapping, compiler.resolution.types);
     DiagnosticCollector collector = compiler.diagnosticCollector;
     collector.clear();
     checker.analyze(node, mustHaveType: false);
@@ -2733,7 +2747,7 @@ analyze(MockCompiler compiler, String text,
   TreeElements elements = compiler.resolveNodeStatement(node, function);
   compiler.enqueuer.resolution.emptyDeferredQueueForTesting();
   TypeCheckerVisitor checker =
-      new TypeCheckerVisitor(compiler, elements, compiler.types);
+      new TypeCheckerVisitor(compiler, elements, compiler.resolution.types);
   DiagnosticCollector collector = compiler.diagnosticCollector;
   collector.clear();
   checker.analyze(node, mustHaveType: false);
@@ -2768,13 +2782,13 @@ analyzeIn(MockCompiler compiler, FunctionElement element, String text,
   Token tokens = scan(text);
   NodeListener listener =
       new NodeListener(const ScannerOptions(), compiler.reporter, null);
-  Parser parser = new Parser(listener,
-      asyncAwaitKeywordsEnabled: element.asyncMarker != AsyncMarker.SYNC);
+  Parser parser = new Parser(listener)
+    ..asyncState = element.asyncMarker.asyncParserState;
   parser.parseStatement(tokens);
   Node node = listener.popNode();
   TreeElements elements = compiler.resolveNodeStatement(node, element);
   TypeCheckerVisitor checker =
-      new TypeCheckerVisitor(compiler, elements, compiler.types);
+      new TypeCheckerVisitor(compiler, elements, compiler.resolution.types);
   DiagnosticCollector collector = compiler.diagnosticCollector;
   collector.clear();
   checker.analyze(node, mustHaveType: false);

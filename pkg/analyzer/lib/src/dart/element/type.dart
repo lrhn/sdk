@@ -283,14 +283,14 @@ class DynamicTypeImpl extends TypeImpl {
    * Prevent the creation of instances of this class.
    */
   DynamicTypeImpl._()
-      : super(new DynamicElementImpl(), Keyword.DYNAMIC.syntax) {
+      : super(new DynamicElementImpl(), Keyword.DYNAMIC.lexeme) {
     (element as DynamicElementImpl).type = this;
   }
 
   /**
    * Constructor used by [CircularTypeImpl].
    */
-  DynamicTypeImpl._circular() : super(instance.element, Keyword.DYNAMIC.syntax);
+  DynamicTypeImpl._circular() : super(instance.element, Keyword.DYNAMIC.lexeme);
 
   @override
   int get hashCode => 1;
@@ -386,7 +386,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
    * [element], and also initialize [typeArguments] to match the
    * [typeParameters], which permits later substitution.
    */
-  FunctionTypeImpl(ExecutableElement element,
+  FunctionTypeImpl(FunctionTypedElement element,
       [List<FunctionTypeAliasElement> prunedTypedefs])
       : this._(element, null, prunedTypedefs, null, null, null, null, false);
 
@@ -398,19 +398,6 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
       List<DartType> typeArguments, bool isInstantiated)
       : this._(element, name, null, typeArguments, null, null, null,
             isInstantiated);
-
-  /**
-   * Initialize a newly created function type to represent a type described by
-   * a generic function type.
-   */
-  FunctionTypeImpl.forGenericFunctionType(
-      List<TypeParameterElement> typeParameters,
-      List<DartType> typeArguments,
-      DartType returnType,
-      List<ParameterElement> parameters,
-      bool isInstantiated)
-      : this._(null, null, null, typeArguments, typeParameters, returnType,
-            parameters, isInstantiated);
 
   /**
    * Initialize a newly created function type to be declared by the given
@@ -425,7 +412,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
    * Private constructor.
    */
   FunctionTypeImpl._(
-      TypeParameterizedElement element,
+      FunctionTypedElement element,
       String name,
       this.prunedTypedefs,
       this._typeArguments,
@@ -454,13 +441,42 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
   @override
   String get displayName {
     String name = this.name;
+
+    // Function types have an empty name when they are defined implicitly by
+    // either a closure or as part of a parameter declaration.
     if (name == null || name.length == 0) {
-      // Function types have an empty name when they are defined implicitly by
-      // either a closure or as part of a parameter declaration.
       StringBuffer buffer = new StringBuffer();
       appendTo(buffer, new Set.identity());
+      return buffer.toString();
+    }
+
+    List<DartType> typeArguments = this.typeArguments;
+
+    bool areAllTypeArgumentsDynamic() {
+      for (DartType type in typeArguments) {
+        if (type != null && !type.isDynamic) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    // If there is at least one non-dynamic type, then list them out.
+    if (!areAllTypeArgumentsDynamic()) {
+      StringBuffer buffer = new StringBuffer();
+      buffer.write(name);
+      buffer.write("<");
+      for (int i = 0; i < typeArguments.length; i++) {
+        if (i != 0) {
+          buffer.write(", ");
+        }
+        DartType typeArg = typeArguments[i];
+        buffer.write(typeArg.displayName);
+      }
+      buffer.write(">");
       name = buffer.toString();
     }
+
     return name;
   }
 
@@ -702,7 +718,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
       // variables, and see if the result is equal.
       if (typeFormals.isNotEmpty) {
         List<DartType> freshVariables =
-            relateTypeFormals(this, object, (t, s) => t == s);
+            relateTypeFormals(this, object, (t, s, _, __) => t == s);
         if (freshVariables == null) {
           return false;
         }
@@ -715,7 +731,8 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
               normalParameterTypes, object.normalParameterTypes) &&
           TypeImpl.equalArrays(
               optionalParameterTypes, object.optionalParameterTypes) &&
-          _equals(namedParameterTypes, object.namedParameterTypes);
+          _equals(namedParameterTypes, object.namedParameterTypes) &&
+          TypeImpl.equalArrays(typeArguments, object.typeArguments);
     }
     return false;
   }
@@ -878,7 +895,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     return relate(
         this,
         type,
-        (DartType t, DartType s, _, __) =>
+        (DartType t, DartType s) =>
             (t as TypeImpl).isMoreSpecificThan(s, withDynamic),
         new TypeSystemImpl(null).instantiateToBounds);
   }
@@ -889,7 +906,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     return relate(
         typeSystem.instantiateToBounds(this),
         typeSystem.instantiateToBounds(type),
-        (DartType t, DartType s, _, __) => t.isAssignableTo(s),
+        (DartType t, DartType s) => t.isAssignableTo(s),
         typeSystem.instantiateToBounds);
   }
 
@@ -1059,16 +1076,16 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
    * structural rules for handling optional parameters and arity, but use their
    * own relation for comparing corresponding parameters or return types.
    *
-   * If [returnRelation] is omitted, uses [parameterRelation] for both.
+   * If [parameterRelation] is omitted, uses [returnRelation] for both. This
+   * is convenient for Dart 1 type system methods.
    */
   static bool relate(
       FunctionType t,
       DartType other,
-      bool parameterRelation(
-          DartType t, DartType s, bool tIsCovariant, bool sIsCovariant),
+      bool returnRelation(DartType t, DartType s),
       DartType instantiateToBounds(DartType t),
-      {bool returnRelation(DartType t, DartType s)}) {
-    returnRelation ??= (t, s) => parameterRelation(t, s, false, false);
+      {bool parameterRelation(ParameterElement t, ParameterElement s)}) {
+    parameterRelation ??= (t, s) => returnRelation(t.type, s.type);
 
     // Trivial base cases.
     if (other == null) {
@@ -1085,7 +1102,8 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     // This type cast is safe, because we checked it above.
     FunctionType s = other as FunctionType;
     if (t.typeFormals.isNotEmpty) {
-      List<DartType> freshVariables = relateTypeFormals(t, s, returnRelation);
+      List<DartType> freshVariables =
+          relateTypeFormals(t, s, (s, t, _, __) => returnRelation(s, t));
       if (freshVariables == null) {
         return false;
       }
@@ -1102,14 +1120,34 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     }
 
     // Test the parameter types.
+    return relateParameters(t.parameters, s.parameters, parameterRelation);
+  }
 
+  /**
+   * Compares parameters [tParams] and [sParams] of two function types, taking
+   * corresponding parameters from the lists, and see if they match
+   * [parameterRelation].
+   *
+   * Corresponding parameters are defined as a pair `(t, s)` where `t` is a
+   * parameter from [tParams] and `s` is a parameter from [sParams], and both
+   * `t` and `s` are at the same position (for positional parameters)
+   * or have the same name (for named parameters).
+   * 
+   * Used for the various relations on function types which have the same
+   * structural rules for handling optional parameters and arity, but use their
+   * own relation for comparing the parameters.
+   */
+  static bool relateParameters(
+      List<ParameterElement> tParams,
+      List<ParameterElement> sParams,
+      bool parameterRelation(ParameterElement t, ParameterElement s)) {
     // TODO(jmesserly): this could be implemented with less allocation if we
     // wanted, by taking advantage of the fact that positional arguments must
     // appear before named ones.
     var tRequired = <ParameterElement>[];
     var tOptional = <ParameterElement>[];
     var tNamed = <String, ParameterElement>{};
-    for (var p in t.parameters) {
+    for (var p in tParams) {
       var kind = p.parameterKind;
       if (kind == ParameterKind.REQUIRED) {
         tRequired.add(p);
@@ -1124,7 +1162,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     var sRequired = <ParameterElement>[];
     var sOptional = <ParameterElement>[];
     var sNamed = <String, ParameterElement>{};
-    for (var p in s.parameters) {
+    for (var p in sParams) {
       var kind = p.parameterKind;
       if (kind == ParameterKind.REQUIRED) {
         sRequired.add(p);
@@ -1157,8 +1195,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
         return false;
       }
       var sParam = sNamed[key];
-      if (!parameterRelation(
-          tParam.type, sParam.type, tParam.isCovariant, sParam.isCovariant)) {
+      if (!parameterRelation(tParam, sParam)) {
         return false;
       }
     }
@@ -1187,10 +1224,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
     }
 
     for (int i = 0; i < sPositional.length; i++) {
-      var tParam = tPositional[i];
-      var sParam = sPositional[i];
-      if (!parameterRelation(
-          tParam.type, sParam.type, tParam.isCovariant, sParam.isCovariant)) {
+      if (!parameterRelation(tPositional[i], sPositional[i])) {
         return false;
       }
     }
@@ -1210,7 +1244,10 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
    * `F` to get `F -> F` and `F -> F`, which we can see are equal.
    */
   static List<DartType> relateTypeFormals(
-      FunctionType f1, FunctionType f2, bool relation(DartType t, DartType s)) {
+      FunctionType f1,
+      FunctionType f2,
+      bool relation(DartType bound2, DartType bound1,
+          TypeParameterElement formal2, TypeParameterElement formal1)) {
     List<TypeParameterElement> params1 = f1.typeFormals;
     List<TypeParameterElement> params2 = f2.typeFormals;
     int count = params1.length;
@@ -1241,7 +1278,7 @@ class FunctionTypeImpl extends TypeImpl implements FunctionType {
       bound1 = bound1.substitute2(variablesFresh, variables1);
       bound2 = bound2.substitute2(variablesFresh, variables2);
       pFresh.bound = bound2;
-      if (!relation(bound2, bound1)) {
+      if (!relation(bound2, bound1, p2, p1)) {
         return null;
       }
     }
@@ -1379,16 +1416,20 @@ class InterfaceTypeImpl extends TypeImpl implements InterfaceType {
   @override
   String get displayName {
     String name = this.name;
+
     List<DartType> typeArguments = this.typeArguments;
-    bool allDynamic = true;
-    for (DartType type in typeArguments) {
-      if (type != null && !type.isDynamic) {
-        allDynamic = false;
-        break;
+
+    bool areAllTypeArgumentsDynamic() {
+      for (DartType type in typeArguments) {
+        if (type != null && !type.isDynamic) {
+          return false;
+        }
       }
+      return true;
     }
-    // If there is at least one non-dynamic type, then list them out
-    if (!allDynamic) {
+
+    // If there is at least one non-dynamic type, then list them out.
+    if (!areAllTypeArgumentsDynamic()) {
       StringBuffer buffer = new StringBuffer();
       buffer.write(name);
       buffer.write("<");
@@ -2004,6 +2045,7 @@ class InterfaceTypeImpl extends TypeImpl implements InterfaceType {
     if (argumentTypes.length == 0 || typeArguments.length == 0) {
       return this.pruned(prune);
     }
+
     List<DartType> newTypeArguments = TypeImpl.substitute(
         typeArguments, argumentTypes, parameterTypes, prune);
     if (listsEqual(newTypeArguments, typeArguments)) {
@@ -2129,7 +2171,7 @@ class InterfaceTypeImpl extends TypeImpl implements InterfaceType {
       _computeSuperinterfaceSet(type, new HashSet<InterfaceType>());
 
   /**
-   * Return the type from the [types] list that has the longest inheritence path
+   * Return the type from the [types] list that has the longest inheritance path
    * to Object of unique length.
    */
   static InterfaceType computeTypeAtMaxUniqueDepth(List<InterfaceType> types) {
@@ -2641,6 +2683,10 @@ abstract class TypeImpl implements DartType {
  * A concrete implementation of a [TypeParameterType].
  */
 class TypeParameterTypeImpl extends TypeImpl implements TypeParameterType {
+  static bool _comparingBounds = false;
+
+  static bool _appendingBounds = false;
+
   /**
    * Initialize a newly created type parameter type to be declared by the given
    * [element] and to have the given name.
@@ -2661,8 +2707,43 @@ class TypeParameterTypeImpl extends TypeImpl implements TypeParameterType {
   int get hashCode => element.hashCode;
 
   @override
-  bool operator ==(Object object) =>
-      object is TypeParameterTypeImpl && (element == object.element);
+  bool operator ==(Object other) {
+    if (other is TypeParameterTypeImpl && element == other.element) {
+      if (_comparingBounds) {
+        // If we're comparing bounds already, then we only need type variable
+        // equality.
+        return true;
+      }
+      _comparingBounds = true;
+      try {
+        return bound == other.bound;
+      } finally {
+        _comparingBounds = false;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Append a textual representation of this type to the given [buffer]. The set
+   * of [visitedTypes] is used to prevent infinite recursion.
+   */
+  void appendTo(StringBuffer buffer, Set<TypeImpl> visitedTypes) {
+    super.appendTo(buffer, visitedTypes);
+    TypeParameterElement e = element;
+    if (e is TypeParameterMember &&
+        e.bound != e.baseElement.bound &&
+        !_appendingBounds) {
+      buffer.write(' extends ');
+      // If we're appending bounds already, we don't want to do it recursively.
+      _appendingBounds = true;
+      try {
+        (e.bound as TypeImpl).appendTo(buffer, visitedTypes);
+      } finally {
+        _appendingBounds = false;
+      }
+    }
+  }
 
   @override
   bool isMoreSpecificThan(DartType s,
@@ -2781,7 +2862,7 @@ class UndefinedTypeImpl extends TypeImpl {
    * Prevent the creation of instances of this class.
    */
   UndefinedTypeImpl._()
-      : super(DynamicElementImpl.instance, Keyword.DYNAMIC.syntax);
+      : super(DynamicElementImpl.instance, Keyword.DYNAMIC.lexeme);
 
   @override
   int get hashCode => 1;
@@ -2850,7 +2931,7 @@ class VoidTypeImpl extends TypeImpl implements VoidType {
   /**
    * Prevent the creation of instances of this class.
    */
-  VoidTypeImpl._() : super(null, Keyword.VOID.syntax);
+  VoidTypeImpl._() : super(null, Keyword.VOID.lexeme);
 
   @override
   int get hashCode => 2;

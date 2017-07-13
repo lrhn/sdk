@@ -7,12 +7,14 @@
 import "package:expect/expect.dart";
 
 class A {
-  var indexField = new List(2);
-  operator[](index) => indexField[index];
+  var indexField = new List<int>(2);
+  operator [](index) => indexField[index];
 }
 
 class B extends A {
-  operator[]=(index, value) { indexField[index] = value; }
+  operator []=(index, value) {
+    indexField[index] = value;
+  }
 }
 
 class C extends B {

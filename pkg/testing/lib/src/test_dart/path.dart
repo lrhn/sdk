@@ -2,7 +2,7 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library legacy_path;
+library test_dart_copy.legacy_path;
 
 import 'dart:io';
 import 'dart:math';
@@ -34,7 +34,7 @@ class Path {
   static String _cleanWindows(String source) {
     // Change \ to /.
     var clean = source.replaceAll('\\', '/');
-    // Add / before intial [Drive letter]:
+    // Add / before initial [Drive letter]:
     if (clean.length >= 2 && clean[1] == ':') {
       clean = '/$clean';
     }

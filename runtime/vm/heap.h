@@ -33,7 +33,14 @@ class Heap {
     kCode,
   };
 
-  enum WeakSelector { kPeers = 0, kHashes, kObjectIds, kNumWeakSelectors };
+  enum WeakSelector {
+    kPeers = 0,
+#if !defined(HASH_IN_OBJECT_HEADER)
+    kHashes,
+#endif
+    kObjectIds,
+    kNumWeakSelectors
+  };
 
   enum ApiCallbacks { kIgnoreApiCallbacks, kInvokeApiCallbacks };
 
@@ -46,12 +53,8 @@ class Heap {
     kGCTestCase,
   };
 
-#if defined(DEBUG)
   // Pattern for unused new space and swept old space.
-  static const uint64_t kZap64Bits = 0xf3f3f3f3f3f3f3f3;
-  static const uint32_t kZap32Bits = 0xf3f3f3f3;
   static const uint8_t kZapByte = 0xf3;
-#endif  // DEBUG
 
   ~Heap();
 
@@ -142,6 +145,12 @@ class Heap {
                    intptr_t max_old_gen_words,
                    intptr_t max_external_words);
 
+  // Writes a suitable name for a VM region in the heap into the buffer `name`.
+  static void RegionName(Heap* heap,
+                         Space space,
+                         char* name,
+                         intptr_t name_size);
+
   // Verify that all pointers in the heap point to the heap.
   bool Verify(MarkExpectation mark_expectation = kForbidMarked) const;
 
@@ -171,6 +180,7 @@ class Heap {
   }
   int64_t PeerCount() const;
 
+#if !defined(HASH_IN_OBJECT_HEADER)
   // Associate an identity hashCode with an object. An non-existent hashCode
   // is equal to 0.
   void SetHash(RawObject* raw_obj, intptr_t hash) {
@@ -179,6 +189,7 @@ class Heap {
   intptr_t GetHash(RawObject* raw_obj) const {
     return GetWeakEntry(raw_obj, kHashes);
   }
+#endif
   int64_t HashCount() const;
 
   // Associate an id with an object (used when serializing an object).
@@ -216,7 +227,7 @@ class Heap {
 
   // Stats collection.
   void RecordTime(int id, int64_t micros) {
-    ASSERT((id >= 0) && (id < GCStats::kDataEntries));
+    ASSERT((id >= 0) && (id < GCStats::kTimeEntries));
     stats_.times_[id] = micros;
   }
 
@@ -268,11 +279,12 @@ class Heap {
       DISALLOW_COPY_AND_ASSIGN(Data);
     };
 
+    enum { kTimeEntries = 6 };
     enum { kDataEntries = 4 };
 
     Data before_;
     Data after_;
-    int64_t times_[kDataEntries];
+    int64_t times_[kTimeEntries];
     intptr_t data_[kDataEntries];
 
    private:
@@ -303,6 +315,7 @@ class Heap {
   // ensure thread-safety.
   bool VerifyGC(MarkExpectation mark_expectation = kForbidMarked) const;
 
+
   // Helper functions for garbage collection.
   void CollectNewSpaceGarbage(Thread* thread,
                               ApiCallbacks api_callbacks,
@@ -310,6 +323,7 @@ class Heap {
   void CollectOldSpaceGarbage(Thread* thread,
                               ApiCallbacks api_callbacks,
                               GCReason reason);
+  void EvacuateNewSpace(Thread* thread, GCReason reason);
 
   // GC stats collection.
   void RecordBeforeGC(Space space, GCReason reason);

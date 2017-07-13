@@ -14,6 +14,9 @@ abstract class IsolateRef {
 
   /// A name identifying this isolate. Not guaranteed to be unique.
   String get name;
+
+  /// Trigger a full GC, collecting all unreachable or weakly reachable objects.
+  Future collectAllGarbage();
 }
 
 enum IsolateStatus { loading, idle, running, paused }
@@ -54,10 +57,10 @@ abstract class Isolate extends IsolateRef {
   /// The list of threads associated with this isolate.
   Iterable<Thread> get threads;
 
-  /// The maximum amount of memory in bytes allocated by the isolate in all
-  /// threads at a given time. Calculated using the high watermarks of each
+  /// The maximum amount of zone memory in bytes allocated by the isolate in
+  /// all threads at a given time. Calculated using the high watermarks of each
   /// thread alive when a thread is unscheduled.
-  int get memoryHighWatermark;
+  int get zoneHighWatermark;
 
   /// The number of zone handles currently held by this isolate.
   int get numZoneHandles;

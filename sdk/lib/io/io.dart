@@ -196,13 +196,15 @@ library dart.io;
 
 import 'dart:async';
 import 'dart:_internal' hide Symbol;
-import 'dart:collection' show HashMap,
-                              HashSet,
-                              Queue,
-                              ListQueue,
-                              LinkedList,
-                              LinkedListEntry,
-                              UnmodifiableMapView;
+import 'dart:collection'
+    show
+        HashMap,
+        HashSet,
+        Queue,
+        ListQueue,
+        LinkedList,
+        LinkedListEntry,
+        UnmodifiableMapView;
 import 'dart:convert';
 import 'dart:developer' hide log;
 import 'dart:isolate';
@@ -240,5 +242,6 @@ part 'service_object.dart';
 part 'socket.dart';
 part 'stdio.dart';
 part 'string_transformer.dart';
+part 'sync_socket.dart';
 part 'websocket.dart';
 part 'websocket_impl.dart';

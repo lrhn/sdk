@@ -10,15 +10,15 @@
 #include "vm/globals.h"
 
 // Declare the OS-specific types ahead of defining the generic classes.
-#if defined(TARGET_OS_ANDROID)
+#if defined(HOST_OS_ANDROID)
 #include "vm/os_thread_android.h"
-#elif defined(TARGET_OS_FUCHSIA)
+#elif defined(HOST_OS_FUCHSIA)
 #include "vm/os_thread_fuchsia.h"
-#elif defined(TARGET_OS_LINUX)
+#elif defined(HOST_OS_LINUX)
 #include "vm/os_thread_linux.h"
-#elif defined(TARGET_OS_MACOS)
+#elif defined(HOST_OS_MACOS)
 #include "vm/os_thread_macos.h"
-#elif defined(TARGET_OS_WINDOWS)
+#elif defined(HOST_OS_WINDOWS)
 #include "vm/os_thread_win.h"
 #else
 #error Unknown target os.
@@ -116,7 +116,7 @@ class OSThread : public BaseThread {
   bool ThreadInterruptsEnabled();
 
   // The currently executing thread, or NULL if not yet initialized.
-  static OSThread* Current() {
+  static OSThread* TryCurrent() {
     BaseThread* thread = GetCurrentTLS();
     OSThread* os_thread = NULL;
     if (thread != NULL) {
@@ -126,7 +126,15 @@ class OSThread : public BaseThread {
         Thread* vm_thread = reinterpret_cast<Thread*>(thread);
         os_thread = GetOSThreadFromThread(vm_thread);
       }
-    } else {
+    }
+    return os_thread;
+  }
+
+  // The currently executing thread. If there is no currently executing thread,
+  // a new OSThread is created and returned.
+  static OSThread* Current() {
+    OSThread* os_thread = TryCurrent();
+    if (os_thread == NULL) {
       os_thread = CreateAndSetUnknownThread();
     }
     return os_thread;
@@ -244,6 +252,7 @@ class OSThread : public BaseThread {
   friend class Isolate;  // to access set_thread(Thread*).
   friend class OSThreadIterator;
   friend class ThreadInterrupterWin;
+  friend class ThreadInterrupterFuchsia;
 };
 
 

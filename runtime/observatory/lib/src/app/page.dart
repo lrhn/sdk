@@ -6,8 +6,8 @@ part of app;
 
 final _allocationProfileRepository = new AllocationProfileRepository();
 final _breakpointRepository = new BreakpointRepository();
-final _classSampleProfileRepository = new ClassSampleProfileRepository();
 final _classRepository = new ClassRepository();
+final _classSampleProfileRepository = new ClassSampleProfileRepository();
 final _contextRepository = new ContextRepository();
 final _evalRepository = new EvalRepository();
 final _fieldRepository = new FieldRepository();
@@ -21,16 +21,21 @@ final _isolateSampleProfileRepository = new IsolateSampleProfileRepository();
 final _libraryRepository = new LibraryRepository();
 final _megamorphicCacheRepository = new MegamorphicCacheRepository();
 final _metricRepository = new MetricRepository();
-final _objectRepository = new ObjectRepository();
+final _nativeMemorySampleProfileRepository =
+    new NativeMemorySampleProfileRepository();
 final _objectPoolRepository = new ObjectPoolRepository();
+final _objectRepository = new ObjectRepository();
 final _objectstoreRepository = new ObjectStoreRepository();
 final _persistentHandlesRepository = new PersistentHandlesRepository();
 final _portsRepository = new PortsRepository();
 final _scriptRepository = new ScriptRepository();
+final _singleTargetCacheRepository = new SingleTargetCacheRepository();
 final _stronglyReachangleInstancesRepository =
     new StronglyReachableInstancesRepository();
+final _subtypeTestCacheRepository = new SubtypeTestCacheRepository();
 final _topRetainingInstancesRepository = new TopRetainingInstancesRepository();
 final _typeArgumentsRepository = new TypeArgumentsRepository();
+final _unlinkedCallRepository = new UnlinkedCallRepository();
 
 class IsolateNotFound implements Exception {
   String isolateId;
@@ -98,6 +103,14 @@ abstract class MatchingPage extends Page {
       }
       return isolate;
     });
+  }
+
+  EditorRepository getEditor(Uri uri) {
+    var editor = uri.queryParameters['editor'];
+    if (editor != null) {
+      return new EditorRepository(editor);
+    }
+    return null;
   }
 
   bool canVisit(Uri uri) => uri.path == path;
@@ -187,6 +200,24 @@ class FlagsPage extends SimplePage {
   }
 }
 
+class NativeMemoryProfilerPage extends SimplePage {
+  NativeMemoryProfilerPage(app)
+      : super('native-memory-profile', 'native-memory-profile', app);
+  @override
+  onInstall() {
+    if (element == null) {
+      element = new NativeMemoryProfileElement(app.vm, app.events,
+          app.notifications, _nativeMemorySampleProfileRepository,
+          queue: app.queue);
+    }
+    assert(element != null);
+  }
+
+  void _visit(Uri uri) {
+    super._visit(uri);
+  }
+}
+
 class InspectPage extends MatchingPage {
   InspectPage(app) : super('inspect', app);
 
@@ -229,7 +260,7 @@ class InspectPage extends MatchingPage {
             _retainingPathRepository,
             _fieldRepository,
             _scriptRepository,
-            _instanceRepository,
+            _objectRepository,
             _evalRepository,
             _stronglyReachangleInstancesRepository,
             _topRetainingInstancesRepository,
@@ -249,7 +280,7 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is Context) {
@@ -265,7 +296,7 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is DartError) {
@@ -287,7 +318,7 @@ class InspectPage extends MatchingPage {
             _inboundReferencesRepository,
             _retainingPathRepository,
             _scriptRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is Instance) {
@@ -298,7 +329,7 @@ class InspectPage extends MatchingPage {
             obj,
             app.events,
             app.notifications,
-            _instanceRepository,
+            _objectRepository,
             _classRepository,
             _retainedSizeRepository,
             _reachableSizeRepository,
@@ -322,7 +353,7 @@ class InspectPage extends MatchingPage {
             _scriptRepository,
             _functionRepository,
             _libraryRepository,
-            _instanceRepository,
+            _objectRepository,
             _evalRepository,
             queue: app.queue)
       ];
@@ -341,7 +372,7 @@ class InspectPage extends MatchingPage {
             _inboundReferencesRepository,
             _retainingPathRepository,
             _scriptRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is ICData) {
@@ -357,7 +388,55 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
+            queue: app.queue)
+      ];
+    } else if (obj is SingleTargetCache) {
+      container.children = [
+        new SingleTargetCacheViewElement(
+            app.vm,
+            obj.isolate,
+            obj,
+            app.events,
+            app.notifications,
+            _singleTargetCacheRepository,
+            _retainedSizeRepository,
+            _reachableSizeRepository,
+            _inboundReferencesRepository,
+            _retainingPathRepository,
+            _objectRepository,
+            queue: app.queue)
+      ];
+    } else if (obj is SubtypeTestCache) {
+      container.children = [
+        new SubtypeTestCacheViewElement(
+            app.vm,
+            obj.isolate,
+            obj,
+            app.events,
+            app.notifications,
+            _subtypeTestCacheRepository,
+            _retainedSizeRepository,
+            _reachableSizeRepository,
+            _inboundReferencesRepository,
+            _retainingPathRepository,
+            _objectRepository,
+            queue: app.queue)
+      ];
+    } else if (obj is UnlinkedCall) {
+      container.children = [
+        new UnlinkedCallViewElement(
+            app.vm,
+            obj.isolate,
+            obj,
+            app.events,
+            app.notifications,
+            _unlinkedCallRepository,
+            _retainedSizeRepository,
+            _reachableSizeRepository,
+            _inboundReferencesRepository,
+            _retainingPathRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is Library) {
@@ -375,7 +454,7 @@ class InspectPage extends MatchingPage {
             _inboundReferencesRepository,
             _retainingPathRepository,
             _scriptRepository,
-            _instanceRepository,
+            _objectRepository,
             _evalRepository,
             queue: app.queue)
       ];
@@ -392,7 +471,7 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is ObjectPool) {
@@ -408,7 +487,7 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
             queue: app.queue)
       ];
     } else if (obj is Script) {
@@ -430,7 +509,7 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
+            _objectRepository,
             pos: pos,
             queue: app.queue)
       ];
@@ -447,7 +526,6 @@ class InspectPage extends MatchingPage {
             _reachableSizeRepository,
             _inboundReferencesRepository,
             _retainingPathRepository,
-            _instanceRepository,
             queue: app.queue)
       ];
     } else if (obj is Sentinel) {
@@ -496,7 +574,7 @@ class DebuggerPage extends MatchingPage {
     getIsolate(uri).then((isolate) async {
       container.children = [
         new DebuggerPageElement(
-            isolate, _instanceRepository, _scriptRepository, app.events)
+            isolate, _objectRepository, _scriptRepository, app.events)
       ];
     });
   }
@@ -525,7 +603,7 @@ class ObjectStorePage extends MatchingPage {
     getIsolate(uri).then((isolate) async {
       container.children = [
         new ObjectStoreViewElement(isolate.vm, isolate, app.events,
-            app.notifications, _objectstoreRepository, _instanceRepository)
+            app.notifications, _objectstoreRepository, _objectRepository)
       ];
     });
   }
@@ -615,6 +693,37 @@ class AllocationProfilerPage extends MatchingPage {
   }
 }
 
+class MemoryDashboardPage extends MatchingPage {
+  MemoryDashboardPage(app) : super('memory-dashboard', app);
+
+  final DivElement container = new DivElement();
+
+  void _visit(Uri uri) {
+    super._visit(uri);
+    getIsolate(uri).then((isolate) {
+      container.children = [
+        new MemoryDashboardElement(isolate.vm, isolate, app.events,
+            app.notifications, _allocationProfileRepository, getEditor(uri),
+            queue: app.queue)
+      ];
+    });
+  }
+
+  void onInstall() {
+    if (element == null) {
+      element = container;
+    }
+    app.startGCEventListener();
+  }
+
+  @override
+  void onUninstall() {
+    super.onUninstall();
+    app.stopGCEventListener();
+    container.children = const [];
+  }
+}
+
 class PortsPage extends MatchingPage {
   PortsPage(app) : super('ports', app);
 
@@ -625,7 +734,7 @@ class PortsPage extends MatchingPage {
     getIsolate(uri).then((isolate) {
       container.children = [
         new PortsElement(isolate.vm, isolate, app.events, app.notifications,
-            _portsRepository, _instanceRepository,
+            _portsRepository, _objectRepository,
             queue: app.queue)
       ];
     });
@@ -647,13 +756,8 @@ class PersistentHandlesPage extends MatchingPage {
     super._visit(uri);
     getIsolate(uri).then((isolate) {
       container.children = [
-        new PersistentHandlesPageElement(
-            isolate.vm,
-            isolate,
-            app.events,
-            app.notifications,
-            _persistentHandlesRepository,
-            _instanceRepository,
+        new PersistentHandlesPageElement(isolate.vm, isolate, app.events,
+            app.notifications, _persistentHandlesRepository, _objectRepository,
             queue: app.queue)
       ];
     });
@@ -698,7 +802,7 @@ class HeapSnapshotPage extends MatchingPage {
     getIsolate(uri).then((isolate) {
       container.children = [
         new HeapSnapshotElement(isolate.vm, isolate, app.events,
-            app.notifications, _heapSnapshotRepository, _instanceRepository,
+            app.notifications, _heapSnapshotRepository, _objectRepository,
             queue: app.queue)
       ];
     });

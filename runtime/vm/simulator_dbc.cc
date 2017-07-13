@@ -322,6 +322,7 @@ class SimulatorHelpers {
       uword tags = 0;
       tags = RawObject::ClassIdTag::update(kDoubleCid, tags);
       tags = RawObject::SizeTag::update(instance_size, tags);
+      // Also writes zero in the hash_ field.
       *reinterpret_cast<uword*>(start + Double::tags_offset()) = tags;
       *reinterpret_cast<double*>(start + Double::value_offset()) = value;
       return reinterpret_cast<RawObject*>(start + kHeapObjectTag);
@@ -542,6 +543,8 @@ Simulator::Simulator() : stack_(NULL), fp_(NULL) {
                          sizeof(uintptr_t)];
   last_setjmp_buffer_ = NULL;
   top_exit_frame_info_ = 0;
+
+  NOT_IN_PRODUCT(icount_ = 0;)
 }
 
 
@@ -573,6 +576,26 @@ uword Simulator::StackTop() const {
   return StackBase() +
          (OSThread::GetSpecifiedStackSize() + OSThread::kStackSizeBuffer);
 }
+
+
+#if !defined(PRODUCT)
+// Returns true if tracing of executed instructions is enabled.
+DART_FORCE_INLINE bool Simulator::IsTracingExecution() const {
+  return icount_ > FLAG_trace_sim_after;
+}
+
+
+// Prints bytecode instruction at given pc for instruction tracing.
+DART_NOINLINE void Simulator::TraceInstruction(uint32_t* pc) const {
+  THR_Print("%" Pu64 " ", icount_);
+  if (FLAG_support_disassembler) {
+    Disassembler::Disassemble(reinterpret_cast<uword>(pc),
+                              reinterpret_cast<uword>(pc + 1));
+  } else {
+    THR_Print("Disassembler not supported in this mode.\n");
+  }
+}
+#endif  // !defined(PRODUCT)
 
 
 // Calls into the Dart runtime are based on this interface.
@@ -930,10 +953,10 @@ static DART_NOINLINE bool InvokeRuntime(Thread* thread,
 }
 
 
-static DART_NOINLINE bool InvokeNative(Thread* thread,
-                                       Simulator* sim,
-                                       SimulatorBootstrapNativeCall f,
-                                       NativeArguments* args) {
+static DART_NOINLINE bool InvokeBootstrapNative(Thread* thread,
+                                                Simulator* sim,
+                                                SimulatorBootstrapNativeCall f,
+                                                NativeArguments* args) {
   SimulatorSetjmpBuffer buffer(sim);
   if (!setjmp(buffer.buffer_)) {
     thread->set_vm_tag(reinterpret_cast<uword>(f));
@@ -947,15 +970,33 @@ static DART_NOINLINE bool InvokeNative(Thread* thread,
 }
 
 
-static DART_NOINLINE bool InvokeNativeWrapper(Thread* thread,
-                                              Simulator* sim,
-                                              Dart_NativeFunction f,
-                                              NativeArguments* args) {
+static DART_NOINLINE bool InvokeNativeNoScopeWrapper(Thread* thread,
+                                                     Simulator* sim,
+                                                     Dart_NativeFunction f,
+                                                     NativeArguments* args) {
   SimulatorSetjmpBuffer buffer(sim);
   if (!setjmp(buffer.buffer_)) {
     thread->set_vm_tag(reinterpret_cast<uword>(f));
-    NativeEntry::NativeCallWrapper(reinterpret_cast<Dart_NativeArguments>(args),
-                                   f);
+    NativeEntry::NoScopeNativeCallWrapper(
+        reinterpret_cast<Dart_NativeArguments>(args), f);
+    thread->set_vm_tag(VMTag::kDartTagId);
+    thread->set_top_exit_frame_info(0);
+    return true;
+  } else {
+    return false;
+  }
+}
+
+
+static DART_NOINLINE bool InvokeNativeAutoScopeWrapper(Thread* thread,
+                                                       Simulator* sim,
+                                                       Dart_NativeFunction f,
+                                                       NativeArguments* args) {
+  SimulatorSetjmpBuffer buffer(sim);
+  if (!setjmp(buffer.buffer_)) {
+    thread->set_vm_tag(reinterpret_cast<uword>(f));
+    NativeEntry::AutoScopeNativeCallWrapper(
+        reinterpret_cast<Dart_NativeArguments>(args), f);
     thread->set_vm_tag(VMTag::kDartTagId);
     thread->set_top_exit_frame_info(0);
     return true;
@@ -966,12 +1007,24 @@ static DART_NOINLINE bool InvokeNativeWrapper(Thread* thread,
 
 // Note: all macro helpers are intended to be used only inside Simulator::Call.
 
+// Counts and prints executed bytecode instructions (in a non-PRODUCT mode).
+#if !defined(PRODUCT)
+#define TRACE_INSTRUCTION                                                      \
+  icount_++;                                                                   \
+  if (IsTracingExecution()) {                                                  \
+    TraceInstruction(pc - 1);                                                  \
+  }
+#else
+#define TRACE_INSTRUCTION
+#endif  // !defined(PRODUCT)
+
 // Decode opcode and A part of the given value and dispatch to the
 // corresponding bytecode handler.
 #define DISPATCH_OP(val)                                                       \
   do {                                                                         \
     op = (val);                                                                \
     rA = ((op >> 8) & 0xFF);                                                   \
+    TRACE_INSTRUCTION                                                          \
     goto* dispatch[op & 0xFF];                                                 \
   } while (0)
 
@@ -1092,17 +1145,80 @@ static DART_NOINLINE bool InvokeNativeWrapper(Thread* thread,
     HANDLE_EXCEPTION;                                                          \
   }
 
-#define INVOKE_NATIVE(Func, Args)                                              \
-  if (!InvokeNative(thread, this, Func, &Args)) {                              \
+#define INVOKE_BOOTSTRAP_NATIVE(Func, Args)                                    \
+  if (!InvokeBootstrapNative(thread, this, Func, &Args)) {                     \
     HANDLE_EXCEPTION;                                                          \
   }
 
-#define INVOKE_NATIVE_WRAPPER(Func, Args)                                      \
-  if (!InvokeNativeWrapper(thread, this, Func, &Args)) {                       \
+#define INVOKE_NATIVE_NO_SCOPE(Func, Args)                                     \
+  if (!InvokeNativeNoScopeWrapper(thread, this, Func, &Args)) {                \
+    HANDLE_EXCEPTION;                                                          \
+  }
+
+#define INVOKE_NATIVE_AUTO_SCOPE(Func, Args)                                   \
+  if (!InvokeNativeAutoScopeWrapper(thread, this, Func, &Args)) {              \
     HANDLE_EXCEPTION;                                                          \
   }
 
 #define LOAD_CONSTANT(index) (pp->data()[(index)].raw_obj_)
+
+
+// Returns true if deoptimization succeeds.
+DART_FORCE_INLINE bool Simulator::Deoptimize(Thread* thread,
+                                             RawObjectPool** pp,
+                                             uint32_t** pc,
+                                             RawObject*** FP,
+                                             RawObject*** SP,
+                                             bool is_lazy) {
+  // Note: frame translation will take care of preserving result at the
+  // top of the stack. See CompilerDeoptInfo::CreateDeoptInfo.
+
+  // Make sure we preserve SP[0] when entering synthetic frame below.
+  (*SP)++;
+
+  // Leaf runtime function DeoptimizeCopyFrame expects a Dart frame.
+  // The code in this frame may not cause GC.
+  // DeoptimizeCopyFrame and DeoptimizeFillFrame are leaf runtime calls.
+  EnterSyntheticFrame(FP, SP, *pc - (is_lazy ? 1 : 0));
+  const intptr_t frame_size_in_bytes =
+      DLRT_DeoptimizeCopyFrame(reinterpret_cast<uword>(*FP), is_lazy ? 1 : 0);
+  LeaveSyntheticFrame(FP, SP);
+
+  *SP = *FP + (frame_size_in_bytes / kWordSize);
+  EnterSyntheticFrame(FP, SP, *pc - (is_lazy ? 1 : 0));
+  DLRT_DeoptimizeFillFrame(reinterpret_cast<uword>(*FP));
+
+  // We are now inside a valid frame.
+  {
+    *++(*SP) = 0;  // Space for the result: number of materialization args.
+    Exit(thread, *FP, *SP + 1, /*pc=*/0);
+    NativeArguments native_args(thread, 0, *SP, *SP);
+    if (!InvokeRuntime(thread, this, DRT_DeoptimizeMaterialize, native_args)) {
+      return false;
+    }
+  }
+  const intptr_t materialization_arg_count =
+      Smi::Value(RAW_CAST(Smi, *(*SP)--)) / kWordSize;
+
+  // Restore caller PC.
+  *pc = SavedCallerPC(*FP);
+  pc_ = reinterpret_cast<uword>(*pc);  // For the profiler.
+
+  // Check if it is a fake PC marking the entry frame.
+  ASSERT((reinterpret_cast<uword>(*pc) & 2) == 0);
+
+  // Restore SP, FP and PP.
+  // Unoptimized frame SP is one below FrameArguments(...) because
+  // FrameArguments(...) returns a pointer to the first argument.
+  *SP = FrameArguments(*FP, materialization_arg_count) - 1;
+  *FP = SavedCallerFP(*FP);
+
+  // Restore pp.
+  *pp = SimulatorHelpers::FrameCode(*FP)->ptr()->object_pool_->ptr();
+
+  return true;
+}
+
 
 RawObject* Simulator::Call(const Code& code,
                            const Array& arguments_descriptor,
@@ -1191,7 +1307,7 @@ RawObject* Simulator::Call(const Code& code,
   RawBool* true_value = Bool::True().raw();
   RawBool* false_value = Bool::False().raw();
   RawObject* null_value = Object::null();
-  RawObject* empty_context = thread->isolate()->object_store()->empty_context();
+  RawObject* empty_context = Object::empty_context().raw();
 
 #if defined(DEBUG)
   Function& function_h = Function::Handle();
@@ -1506,50 +1622,58 @@ RawObject* Simulator::Call(const Code& code,
 
   {
     BYTECODE(InstantiateType, A_D);
+    // Stack: instantiator type args, function type args
     RawObject* type = LOAD_CONSTANT(rD);
     SP[1] = type;
-    SP[2] = SP[0];
-    SP[0] = null_value;
-    Exit(thread, FP, SP + 3, pc);
+    SP[2] = SP[-1];
+    SP[3] = SP[0];
+    Exit(thread, FP, SP + 4, pc);
     {
-      NativeArguments args(thread, 2, SP + 1, SP);
+      NativeArguments args(thread, 3, SP + 1, SP - 1);
       INVOKE_RUNTIME(DRT_InstantiateType, args);
     }
+    SP -= 1;
     DISPATCH();
   }
 
   {
     BYTECODE(InstantiateTypeArgumentsTOS, A_D);
+    // Stack: instantiator type args, function type args
     RawTypeArguments* type_arguments =
         static_cast<RawTypeArguments*>(LOAD_CONSTANT(rD));
 
-    RawObject* instantiator = SP[0];
-    // If the instantiator is null and if the type argument vector
+    RawObject* instantiator_type_args = SP[-1];
+    RawObject* function_type_args = SP[0];
+    // If both instantiators are null and if the type argument vector
     // instantiated from null becomes a vector of dynamic, then use null as
     // the type arguments.
-    if (rA == 0 || null_value != instantiator) {
+    if ((rA == 0) || (null_value != instantiator_type_args) ||
+        (null_value != function_type_args)) {
       // First lookup in the cache.
       RawArray* instantiations = type_arguments->ptr()->instantiations_;
       for (intptr_t i = 0;
            instantiations->ptr()->data()[i] != NULL;  // kNoInstantiator
-           i += 2) {
-        if (instantiations->ptr()->data()[i] == instantiator) {
+           i += 3) {  // kInstantiationSizeInWords
+        if ((instantiations->ptr()->data()[i] == instantiator_type_args) &&
+            (instantiations->ptr()->data()[i + 1] == function_type_args)) {
           // Found in the cache.
-          SP[0] = instantiations->ptr()->data()[i + 1];
+          SP[-1] = instantiations->ptr()->data()[i + 2];
           goto InstantiateTypeArgumentsTOSDone;
         }
       }
 
       // Cache lookup failed, call runtime.
       SP[1] = type_arguments;
-      SP[2] = instantiator;
+      SP[2] = instantiator_type_args;
+      SP[3] = function_type_args;
 
-      Exit(thread, FP, SP + 3, pc);
-      NativeArguments args(thread, 2, SP + 1, SP);
+      Exit(thread, FP, SP + 4, pc);
+      NativeArguments args(thread, 3, SP + 1, SP - 1);
       INVOKE_RUNTIME(DRT_InstantiateTypeArguments, args);
     }
 
   InstantiateTypeArgumentsTOSDone:
+    SP -= 1;
     DISPATCH();
   }
 
@@ -1664,7 +1788,7 @@ RawObject* Simulator::Call(const Code& code,
     // Invoke target function.
     {
       const uint16_t argc = rA;
-      // Lookup the funciton in the ICData.
+      // Look up the function in the ICData.
       RawObject* ic_data_obj = SP[0];
       RawICData* ic_data = RAW_CAST(ICData, ic_data_obj);
       RawObject** data = ic_data->ptr()->ic_data_->ptr()->data();
@@ -1800,6 +1924,28 @@ RawObject* Simulator::Call(const Code& code,
   }
 
   {
+    BYTECODE(PushPolymorphicInstanceCallByRange, A_D);
+    const uint8_t argc = rA;
+    const intptr_t cids_length = rD;
+    RawObject** args = SP - argc + 1;
+    const intptr_t receiver_cid = SimulatorHelpers::GetClassId(args[0]);
+    for (intptr_t i = 0; i < 3 * cids_length; i += 3) {
+      // Note unsigned types to get an unsigned range compare.
+      const uintptr_t cid_start = Bytecode::DecodeD(*(pc + i));
+      const uintptr_t cids = Bytecode::DecodeD(*(pc + i + 1));
+      if (receiver_cid - cid_start < cids) {
+        RawFunction* target =
+            RAW_CAST(Function, LOAD_CONSTANT(Bytecode::DecodeD(*(pc + i + 2))));
+        *++SP = target;
+        pc++;
+        break;
+      }
+    }
+    pc += 3 * cids_length;
+    DISPATCH();
+  }
+
+  {
     BYTECODE(NativeBootstrapCall, 0);
     RawFunction* function = FrameFunction(FP);
     RawObject** incoming_args =
@@ -1814,13 +1960,13 @@ RawObject* Simulator::Call(const Code& code,
     SP[-1] = null_value;
     Exit(thread, FP, SP + 1, pc);
     NativeArguments args(thread, argc_tag, incoming_args, SP - 1);
-    INVOKE_NATIVE(native_target, args);
+    INVOKE_BOOTSTRAP_NATIVE(native_target, args);
     SP -= 1;
     DISPATCH();
   }
 
   {
-    BYTECODE(NativeCall, 0);
+    BYTECODE(NativeNoScopeCall, 0);
     RawFunction* function = FrameFunction(FP);
     RawObject** incoming_args =
         (function->ptr()->num_optional_parameters_ == 0)
@@ -1834,7 +1980,27 @@ RawObject* Simulator::Call(const Code& code,
     SP[-1] = null_value;
     Exit(thread, FP, SP + 1, pc);
     NativeArguments args(thread, argc_tag, incoming_args, SP - 1);
-    INVOKE_NATIVE_WRAPPER(native_target, args);
+    INVOKE_NATIVE_NO_SCOPE(native_target, args);
+    SP -= 1;
+    DISPATCH();
+  }
+
+  {
+    BYTECODE(NativeAutoScopeCall, 0);
+    RawFunction* function = FrameFunction(FP);
+    RawObject** incoming_args =
+        (function->ptr()->num_optional_parameters_ == 0)
+            ? FrameArguments(FP, function->ptr()->num_fixed_parameters_)
+            : FP;
+
+    Dart_NativeFunction native_target =
+        reinterpret_cast<Dart_NativeFunction>(SP[-1]);
+    intptr_t argc_tag = reinterpret_cast<intptr_t>(SP[-0]);
+    SP[-0] = 0;  // argc_tag is not smi tagged!
+    SP[-1] = null_value;
+    Exit(thread, FP, SP + 1, pc);
+    NativeArguments args(thread, argc_tag, incoming_args, SP - 1);
+    INVOKE_NATIVE_AUTO_SCOPE(native_target, args);
     SP -= 1;
     DISPATCH();
   }
@@ -2724,9 +2890,10 @@ RawObject* Simulator::Call(const Code& code,
     const intptr_t instance_size = Context::InstanceSize(num_context_variables);
     const uword start = thread->heap()->new_space()->TryAllocate(instance_size);
     if (LIKELY(start != 0)) {
-      uword tags = 0;
+      uint32_t tags = 0;
       tags = RawObject::ClassIdTag::update(kContextCid, tags);
       tags = RawObject::SizeTag::update(instance_size, tags);
+      // Also writes 0 in the hash_ field of the header.
       *reinterpret_cast<uword*>(start + Array::tags_offset()) = tags;
       *reinterpret_cast<uword*>(start + Context::num_variables_offset()) =
           num_context_variables;
@@ -2767,6 +2934,7 @@ RawObject* Simulator::Call(const Code& code,
     const intptr_t instance_size = RawObject::SizeTag::decode(tags);
     const uword start = thread->heap()->new_space()->TryAllocate(instance_size);
     if (LIKELY(start != 0)) {
+      // Writes both the tags and the initial identity hash on 64 bit platforms.
       *reinterpret_cast<uword*>(start + Instance::tags_offset()) = tags;
       for (intptr_t current_offset = sizeof(RawInstance);
            current_offset < instance_size; current_offset += kWordSize) {
@@ -2798,6 +2966,7 @@ RawObject* Simulator::Call(const Code& code,
     if (LIKELY(start != 0)) {
       RawObject* type_args = SP[0];
       const intptr_t type_args_offset = Bytecode::DecodeD(*pc);
+      // Writes both the tags and the initial identity hash on 64 bit platforms.
       *reinterpret_cast<uword*>(start + Instance::tags_offset()) = tags;
       for (intptr_t current_offset = sizeof(RawInstance);
            current_offset < instance_size; current_offset += kWordSize) {
@@ -2824,31 +2993,38 @@ RawObject* Simulator::Call(const Code& code,
 
   {
     BYTECODE(CreateArrayOpt, A_B_C);
-    const intptr_t length = Smi::Value(RAW_CAST(Smi, FP[rB]));
-    if (LIKELY(static_cast<uintptr_t>(length) <= Array::kMaxElements)) {
-      const intptr_t fixed_size = sizeof(RawArray) + kObjectAlignment - 1;
-      const intptr_t instance_size =
-          (fixed_size + length * kWordSize) & ~(kObjectAlignment - 1);
-      const uword start =
-          thread->heap()->new_space()->TryAllocate(instance_size);
-      if (LIKELY(start != 0)) {
-        const intptr_t cid = kArrayCid;
-        uword tags = 0;
-        if (LIKELY(instance_size < RawObject::SizeTag::kMaxSizeTag)) {
-          tags = RawObject::SizeTag::update(instance_size, tags);
+    if (LIKELY(!FP[rB]->IsHeapObject())) {
+      const intptr_t length = Smi::Value(RAW_CAST(Smi, FP[rB]));
+      if (LIKELY(static_cast<uintptr_t>(length) <= Array::kMaxElements)) {
+        const intptr_t fixed_size_plus_alignment_padding =
+            sizeof(RawArray) + kObjectAlignment - 1;
+        const intptr_t instance_size =
+            (fixed_size_plus_alignment_padding + length * kWordSize) &
+            ~(kObjectAlignment - 1);
+        const uword start =
+            thread->heap()->new_space()->TryAllocate(instance_size);
+        if (LIKELY(start != 0)) {
+          const intptr_t cid = kArrayCid;
+          uword tags = 0;
+          if (LIKELY(instance_size <= RawObject::SizeTag::kMaxSizeTag)) {
+            tags = RawObject::SizeTag::update(instance_size, tags);
+          }
+          tags = RawObject::ClassIdTag::update(cid, tags);
+          // Writes both the tags and the initial identity hash on 64 bit
+          // platforms.
+          *reinterpret_cast<uword*>(start + Instance::tags_offset()) = tags;
+          *reinterpret_cast<RawObject**>(start + Array::length_offset()) =
+              FP[rB];
+          *reinterpret_cast<RawObject**>(
+              start + Array::type_arguments_offset()) = FP[rC];
+          RawObject** data =
+              reinterpret_cast<RawObject**>(start + Array::data_offset());
+          for (intptr_t i = 0; i < length; i++) {
+            data[i] = null_value;
+          }
+          FP[rA] = reinterpret_cast<RawObject*>(start + kHeapObjectTag);
+          pc += 4;
         }
-        tags = RawObject::ClassIdTag::update(cid, tags);
-        *reinterpret_cast<uword*>(start + Instance::tags_offset()) = tags;
-        *reinterpret_cast<RawObject**>(start + Array::length_offset()) = FP[rB];
-        *reinterpret_cast<RawObject**>(start + Array::type_arguments_offset()) =
-            FP[rC];
-        RawObject** data =
-            reinterpret_cast<RawObject**>(start + Array::data_offset());
-        for (intptr_t i = 0; i < length; i++) {
-          data[i] = null_value;
-        }
-        FP[rA] = reinterpret_cast<RawObject*>(start + kHeapObjectTag);
-        pc += 4;
       }
     }
     DISPATCH();
@@ -2866,9 +3042,12 @@ RawObject* Simulator::Call(const Code& code,
   }
 
   {
-    BYTECODE(InstanceOf, A);  // Stack: instance, type args, type, cache
-    RawInstance* instance = static_cast<RawInstance*>(SP[-3]);
+    BYTECODE(InstanceOf, 0);
+    // Stack: instance, instantiator type args, function type args, type, cache
+    RawInstance* instance = static_cast<RawInstance*>(SP[-4]);
     RawTypeArguments* instantiator_type_arguments =
+        static_cast<RawTypeArguments*>(SP[-3]);
+    RawTypeArguments* function_type_arguments =
         static_cast<RawTypeArguments*>(SP[-2]);
     RawAbstractType* type = static_cast<RawAbstractType*>(SP[-1]);
     RawSubtypeTestCache* cache = static_cast<RawSubtypeTestCache*>(SP[0]);
@@ -2881,7 +3060,11 @@ RawObject* Simulator::Call(const Code& code,
       RawObject* instance_cid_or_function;
       if (cid == kClosureCid) {
         RawClosure* closure = static_cast<RawClosure*>(instance);
-        instance_type_arguments = closure->ptr()->type_arguments_;
+        if (closure->ptr()->function_type_arguments_ != TypeArguments::null()) {
+          // Cache cannot be used for generic closures.
+          goto InstanceOfCallRuntime;
+        }
+        instance_type_arguments = closure->ptr()->instantiator_type_arguments_;
         instance_cid_or_function = closure->ptr()->function_;
       } else {
         instance_cid_or_function = Smi::New(cid);
@@ -2904,8 +3087,10 @@ RawObject* Simulator::Call(const Code& code,
             (entries[SubtypeTestCache::kInstanceTypeArguments] ==
              instance_type_arguments) &&
             (entries[SubtypeTestCache::kInstantiatorTypeArguments] ==
-             instantiator_type_arguments)) {
-          SP[-3] = entries[SubtypeTestCache::kTestResult];
+             instantiator_type_arguments) &&
+            (entries[SubtypeTestCache::kFunctionTypeArguments] ==
+             function_type_arguments)) {
+          SP[-4] = entries[SubtypeTestCache::kTestResult];
           goto InstanceOfOk;
         }
       }
@@ -2917,40 +3102,40 @@ RawObject* Simulator::Call(const Code& code,
       SP[1] = instance;
       SP[2] = type;
       SP[3] = instantiator_type_arguments;
-      SP[4] = cache;
-      Exit(thread, FP, SP + 5, pc);
-      NativeArguments native_args(thread, 4, SP + 1, SP - 3);
+      SP[4] = function_type_arguments;
+      SP[5] = cache;
+      Exit(thread, FP, SP + 6, pc);
+      NativeArguments native_args(thread, 5, SP + 1, SP - 4);
       INVOKE_RUNTIME(DRT_Instanceof, native_args);
     }
   // clang-format on
 
   InstanceOfOk:
-    SP -= 3;
-    if (rA) {  // Negate result.
-      SP[0] = (SP[0] == true_value) ? false_value : true_value;
-    }
+    SP -= 4;
     DISPATCH();
   }
 
   {
-    BYTECODE(BadTypeError, 0);  // Stack: instance, type args, type, name
-    RawObject** args = SP - 3;
+    BYTECODE(BadTypeError, 0);
+    // Stack: instance, instantiator type args, function type args, type, name
+    RawObject** args = SP - 4;
     if (args[0] != null_value) {
       SP[1] = args[0];  // instance.
-      SP[2] = args[3];  // name.
-      SP[3] = args[2];  // type.
+      SP[2] = args[4];  // name.
+      SP[3] = args[3];  // type.
       Exit(thread, FP, SP + 4, pc);
-      NativeArguments native_args(thread, 3, SP + 1, SP - 3);
+      NativeArguments native_args(thread, 3, SP + 1, SP - 4);
       INVOKE_RUNTIME(DRT_BadTypeError, native_args);
       UNREACHABLE();
     }
-    SP -= 3;
+    SP -= 4;
     DISPATCH();
   }
 
   {
-    BYTECODE(AssertAssignable, A_D);  // Stack: instance, type args, type, name
-    RawObject** args = SP - 3;
+    BYTECODE(AssertAssignable, A_D);
+    // Stack: instance, instantiator type args, function type args, type, name
+    RawObject** args = SP - 4;
     const bool may_be_smi = (rA == 1);
     const bool is_smi =
         ((reinterpret_cast<intptr_t>(args[0]) & kSmiTagMask) == kSmiTag);
@@ -2962,6 +3147,8 @@ RawObject* Simulator::Call(const Code& code,
         RawInstance* instance = static_cast<RawInstance*>(args[0]);
         RawTypeArguments* instantiator_type_arguments =
             static_cast<RawTypeArguments*>(args[1]);
+        RawTypeArguments* function_type_arguments =
+            static_cast<RawTypeArguments*>(args[2]);
 
         const intptr_t cid = SimulatorHelpers::GetClassId(instance);
 
@@ -2970,7 +3157,13 @@ RawObject* Simulator::Call(const Code& code,
         RawObject* instance_cid_or_function;
         if (cid == kClosureCid) {
           RawClosure* closure = static_cast<RawClosure*>(instance);
-          instance_type_arguments = closure->ptr()->type_arguments_;
+          if (closure->ptr()->function_type_arguments_ !=
+              TypeArguments::null()) {
+            // Cache cannot be used for generic closures.
+            goto AssertAssignableCallRuntime;
+          }
+          instance_type_arguments =
+              closure->ptr()->instantiator_type_arguments_;
           instance_cid_or_function = closure->ptr()->function_;
         } else {
           instance_cid_or_function = Smi::New(cid);
@@ -2993,7 +3186,9 @@ RawObject* Simulator::Call(const Code& code,
               (entries[SubtypeTestCache::kInstanceTypeArguments] ==
                instance_type_arguments) &&
               (entries[SubtypeTestCache::kInstantiatorTypeArguments] ==
-               instantiator_type_arguments)) {
+               instantiator_type_arguments) &&
+              (entries[SubtypeTestCache::kFunctionTypeArguments] ==
+               function_type_arguments)) {
             if (true_value == entries[SubtypeTestCache::kTestResult]) {
               goto AssertAssignableOk;
             } else {
@@ -3005,17 +3200,18 @@ RawObject* Simulator::Call(const Code& code,
 
     AssertAssignableCallRuntime:
       SP[1] = args[0];  // instance
-      SP[2] = args[2];  // type
-      SP[3] = args[1];  // type args
-      SP[4] = args[3];  // name
-      SP[5] = cache;
-      Exit(thread, FP, SP + 6, pc);
-      NativeArguments native_args(thread, 5, SP + 1, SP - 3);
+      SP[2] = args[3];  // type
+      SP[3] = args[1];  // instantiator type args
+      SP[4] = args[2];  // function type args
+      SP[5] = args[4];  // name
+      SP[6] = cache;
+      Exit(thread, FP, SP + 7, pc);
+      NativeArguments native_args(thread, 6, SP + 1, SP - 4);
       INVOKE_RUNTIME(DRT_TypeCheck, native_args);
     }
 
   AssertAssignableOk:
-    SP -= 3;
+    SP -= 4;
     DISPATCH();
   }
 
@@ -3103,7 +3299,19 @@ RawObject* Simulator::Call(const Code& code,
   }
 
   {
-    BYTECODE(CheckDenseSwitch, A_D);
+    BYTECODE(CheckClassIdRange, A_D);
+    const intptr_t actual_cid =
+        reinterpret_cast<intptr_t>(FP[rA]) >> kSmiTagSize;
+    const uintptr_t cid_start = rD;
+    const uintptr_t cid_range = Bytecode::DecodeD(*pc);
+    // Unsigned comparison.  Skip either just the nop or both the nop and the
+    // following instruction.
+    pc += (actual_cid - cid_start <= cid_range) ? 2 : 1;
+    DISPATCH();
+  }
+
+  {
+    BYTECODE(CheckBitTest, A_D);
     const intptr_t raw_value = reinterpret_cast<intptr_t>(FP[rA]);
     const bool is_smi = ((raw_value & kSmiTagMask) == kSmiTag);
     const intptr_t cid_min = Bytecode::DecodeD(*pc);
@@ -3137,6 +3345,31 @@ RawObject* Simulator::Call(const Code& code,
       for (intptr_t i = 0; i < cids_length; i++) {
         const intptr_t desired_cid = Bytecode::DecodeD(*(pc + i));
         if (cid == desired_cid) {
+          pc++;
+          break;
+        }
+      }
+      pc += cids_length;
+    } else {
+      pc += cids_length;
+      pc += (may_be_smi ? 1 : 0);
+    }
+    DISPATCH();
+  }
+
+  {
+    BYTECODE(CheckCidsByRange, A_B_C);
+    const intptr_t raw_value = reinterpret_cast<intptr_t>(FP[rA]);
+    const bool is_smi = ((raw_value & kSmiTagMask) == kSmiTag);
+    const bool may_be_smi = (rB == 1);
+    const intptr_t cids_length = rC;
+    if (LIKELY(!is_smi)) {
+      const intptr_t cid = SimulatorHelpers::GetClassId(FP[rA]);
+      for (intptr_t i = 0; i < cids_length; i += 2) {
+        // Note unsigned type to get unsigned range check below.
+        const uintptr_t cid_start = Bytecode::DecodeD(*(pc + i));
+        const uintptr_t cids = Bytecode::DecodeD(*(pc + i + 1));
+        if (cid - cid_start < cids) {
           pc++;
           break;
         }
@@ -3573,50 +3806,25 @@ RawObject* Simulator::Call(const Code& code,
 
   {
     BYTECODE(Deopt, A_D);
-
-    // Note: frame translation will take care of preserving result at the
-    // top of the stack. See CompilerDeoptInfo::CreateDeoptInfo.
     const bool is_lazy = rD == 0;
-
-    // Make sure we preserve SP[0] when entering synthetic frame below.
-    SP++;
-
-    // Leaf runtime function DeoptimizeCopyFrame expects a Dart frame.
-    // The code in this frame may not cause GC.
-    // DeoptimizeCopyFrame and DeoptimizeFillFrame are leaf runtime calls.
-    EnterSyntheticFrame(&FP, &SP, pc - (is_lazy ? 1 : 0));
-    const intptr_t frame_size_in_bytes =
-        DLRT_DeoptimizeCopyFrame(reinterpret_cast<uword>(FP), is_lazy ? 1 : 0);
-    LeaveSyntheticFrame(&FP, &SP);
-
-    SP = FP + (frame_size_in_bytes / kWordSize);
-    EnterSyntheticFrame(&FP, &SP, pc - (is_lazy ? 1 : 0));
-    DLRT_DeoptimizeFillFrame(reinterpret_cast<uword>(FP));
-
-    // We are now inside a valid frame.
-    {
-      *++SP = 0;  // Space for the result: number of materialization args.
-      Exit(thread, FP, SP + 1, /*pc=*/0);
-      NativeArguments native_args(thread, 0, SP, SP);
-      INVOKE_RUNTIME(DRT_DeoptimizeMaterialize, native_args);
+    if (!Deoptimize(thread, &pp, &pc, &FP, &SP, is_lazy)) {
+      HANDLE_EXCEPTION;
     }
-    const intptr_t materialization_arg_count =
-        Smi::Value(RAW_CAST(Smi, *SP--)) / kWordSize;
+    DISPATCH();
+  }
 
-    // Restore caller PC.
-    pc = SavedCallerPC(FP);
-    pc_ = reinterpret_cast<uword>(pc);  // For the profiler.
-
-    // Check if it is a fake PC marking the entry frame.
-    ASSERT((reinterpret_cast<uword>(pc) & 2) == 0);
-
-    // Restore SP, FP and PP.
-    // Unoptimized frame SP is one below FrameArguments(...) because
-    // FrameArguments(...) returns a pointer to the first argument.
-    SP = FrameArguments(FP, materialization_arg_count) - 1;
-    FP = SavedCallerFP(FP);
-    pp = SimulatorHelpers::FrameCode(FP)->ptr()->object_pool_->ptr();
-
+  {
+    BYTECODE(DeoptRewind, 0);
+    pc = reinterpret_cast<uint32_t*>(thread->resume_pc());
+    if (!Deoptimize(thread, &pp, &pc, &FP, &SP, false /* eager */)) {
+      HANDLE_EXCEPTION;
+    }
+    {
+      Exit(thread, FP, SP + 1, pc);
+      NativeArguments args(thread, 0, NULL, NULL);
+      INVOKE_RUNTIME(DRT_RewindPostDeopt, args);
+    }
+    UNREACHABLE();  // DRT_RewindPostDeopt does not exit normally.
     DISPATCH();
   }
 
@@ -3699,7 +3907,7 @@ RawObject* Simulator::Call(const Code& code,
 
 void Simulator::JumpToFrame(uword pc, uword sp, uword fp, Thread* thread) {
   // Walk over all setjmp buffers (simulated --> C++ transitions)
-  // and try to find the setjmp associated with the simulated stack pointer.
+  // and try to find the setjmp associated with the simulated frame pointer.
   SimulatorSetjmpBuffer* buf = last_setjmp_buffer();
   while ((buf->link() != NULL) && (buf->link()->fp() > fp)) {
     buf = buf->link();
@@ -3728,17 +3936,6 @@ void Simulator::JumpToFrame(uword pc, uword sp, uword fp, Thread* thread) {
     special_[kExceptionSpecialIndex] = raw_exception;
     special_[kStackTraceSpecialIndex] = raw_stacktrace;
     pc_ = thread->resume_pc();
-  } else if (pc == StubCode::DeoptForRewind_entry()->EntryPoint()) {
-    // The DeoptForRewind stub is a placeholder.  We will eventually
-    // implement its behavior here.
-    //
-    // TODO(turnidge): Refactor the Deopt bytecode so that we can use
-    // the implementation here too.  The deopt pc is stored in
-    // Thread::resume_pc().  After invoking deoptimization, we usually
-    // call into Debugger::RewindPostDeopt(), but I need to figure out
-    // if that makes any sense (it would JumpToFrame during a
-    // JumpToFrame, which seems wrong).
-    UNIMPLEMENTED();
   } else {
     pc_ = pc;
   }

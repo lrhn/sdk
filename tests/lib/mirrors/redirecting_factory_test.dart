@@ -2,6 +2,9 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
+library lib;
+
+@MirrorsUsed(targets: "lib")
 import "dart:mirrors";
 import "package:expect/expect.dart";
 import "stringify.dart";
@@ -41,9 +44,8 @@ class Class<T1, T2> {
   factory Class.redirectingFactoryStringIntTypeParameters(a, b) =
       Class<String, int>.factoryNoOptional;
 
-  factory Class.redirectingFactoryStringTypeParameters(a, b) =
-      Class
-        <String>  /// 02: static type warning
+  factory Class.redirectingFactoryStringTypeParameters(a, b) = Class
+        <String> // //# 02: static type warning
       .factoryNoOptional;
 
   factory Class.redirectingFactoryTypeParameters(a, b) =
@@ -59,66 +61,61 @@ main() {
   var instanceMirror = classMirror.newInstance(const Symbol(''), [2]);
   Expect.equals(2, instanceMirror.reflectee.field);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryNoOptional, [8, 6]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryNoOptional, [8, 6]);
   Expect.equals(2, instanceMirror.reflectee.field);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryUnnamedOptional, [43, 1]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryUnnamedOptional, [43, 1]);
   Expect.equals(42, instanceMirror.reflectee.field);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryMoreUnnamedOptional, [43, 1]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryMoreUnnamedOptional, [43, 1]);
   Expect.equals(40, instanceMirror.reflectee.field);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryStringIntTypeParameters, [43, 1]);
+  instanceMirror = classMirror
+      .newInstance(#redirectingFactoryStringIntTypeParameters, [43, 1]);
   Expect.equals(42, instanceMirror.reflectee.field);
   Expect.isTrue(instanceMirror.reflectee is Class<String, int>);
   Expect.isFalse(instanceMirror.reflectee is Class<int, String>);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryStringTypeParameters, [43, 1]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryStringTypeParameters, [43, 1]);
   Expect.equals(42, instanceMirror.reflectee.field);
   Expect.isTrue(instanceMirror.reflectee is Class<String, int>);
   Expect.isTrue(instanceMirror.reflectee is Class<String, String>);
   Expect.isTrue(instanceMirror.reflectee is Class<int, String>);
 
   bool isDart2js = false;
-  isDart2js = true; /// 01: ok
+  isDart2js = true; //# 01: ok
   if (isDart2js) return;
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryUnnamedOptional, [43]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryUnnamedOptional, [43]);
+  Expect.equals(1, instanceMirror.reflectee.field);
+
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryNamedOptional, [43]);
   Expect.equals(1, instanceMirror.reflectee.field);
 
   instanceMirror = classMirror.newInstance(
-      #redirectingFactoryNamedOptional, [43]);
-  Expect.equals(1, instanceMirror.reflectee.field);
-
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryNamedOptional,
-      [43],
-      new Map()..[#b] = 1);
+      #redirectingFactoryNamedOptional, [43], new Map()..[#b] = 1);
   Expect.equals(42, instanceMirror.reflectee.field);
 
   instanceMirror = classMirror.newInstance(
-      #redirectingFactoryMoreNamedOptional,
-      [43],
-      new Map()..[#b] = 1);
+      #redirectingFactoryMoreNamedOptional, [43], new Map()..[#b] = 1);
   Expect.equals(40, instanceMirror.reflectee.field);
 
   classMirror = reflect(new Class<String, int>(42)).type;
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryTypeParameters, [43, 1]);
+  instanceMirror =
+      classMirror.newInstance(#redirectingFactoryTypeParameters, [43, 1]);
   Expect.equals(42, instanceMirror.reflectee.field);
   Expect.isTrue(instanceMirror.reflectee is Class<String, int>);
   Expect.isFalse(instanceMirror.reflectee is Class<int, String>);
 
-  instanceMirror = classMirror.newInstance(
-      #redirectingFactoryReversedTypeParameters, [43, 1]);
+  instanceMirror = classMirror
+      .newInstance(#redirectingFactoryReversedTypeParameters, [43, 1]);
   Expect.equals(42, instanceMirror.reflectee.field);
   Expect.isTrue(instanceMirror.reflectee is Class<int, String>);
   Expect.isFalse(instanceMirror.reflectee is Class<String, int>);
 }
-

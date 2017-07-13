@@ -10,6 +10,35 @@ define(['dart_sdk'], function(dart_sdk) {
   const dart = dart_sdk.dart;
   const dartx = dart.dartx;
 
+  dart.trapRuntimeErrors(false);
+
+  suite('ignore', () => {
+    "use strict";
+
+    let FutureOr = async.FutureOr$;
+    let Future = async.Future$;
+    let List = core.List$;
+
+    setup(() => {
+      dart_sdk.dart.ignoreWhitelistedErrors(false);
+    });
+
+    teardown(() => {
+      dart_sdk.dart.ignoreWhitelistedErrors(false);
+    });
+
+    test('FutureOr', () => {
+      let f = Future(dart.dynamic).value(42);
+      let l = [1, 2, 3];
+
+      assert.throws(() => { dart.as(f, FutureOr(core.int)); });
+      assert.throws(() => { dart.as(l, FutureOr(List(core.int)))});
+
+      dart_sdk.dart.ignoreWhitelistedErrors(true);
+      assert.equal(f, dart.as(f, FutureOr(core.int)));
+      assert.equal(l, dart.as(l, FutureOr(List(core.int))));
+    });
+  });
 
   suite('generic', () => {
     "use strict";
@@ -114,6 +143,14 @@ define(['dart_sdk'], function(dart_sdk) {
   suite('instanceOf', () => {
     "use strict";
 
+    setup(() => {
+      dart_sdk.dart.failForWeakModeIsChecks(true);
+    });
+
+    teardown(() => {
+      dart_sdk.dart.failForWeakModeIsChecks(false);
+    });
+
     let expect = assert.equal;
     let isGroundType = dart.isGroundType;
     let generic = dart.generic;
@@ -122,7 +159,7 @@ define(['dart_sdk'], function(dart_sdk) {
     let instanceOf = dart.is;
     let strongInstanceOf = dart.strongInstanceOf;
     let getReifiedType = dart.getReifiedType;
-    let functionType = dart.functionType;
+    let fnTypeFuzzy = dart.fnTypeFuzzy;
     let typedef = dart.typedef;
     let isSubtype = dart.isSubtype;
 
@@ -132,6 +169,7 @@ define(['dart_sdk'], function(dart_sdk) {
     let List = core.List;
     let Map = core.Map;
     let Map$ = core.Map$;
+    let double = core.double;
     let int = core.int;
     let num = core.num;
     let bool = core.bool;
@@ -140,75 +178,84 @@ define(['dart_sdk'], function(dart_sdk) {
     class B extends A {}
     class C extends B {}
 
-    let AA$ = generic((T, U) => class AA extends core.Object {});
+    let AA$ = generic((T, U) => {
+      class AA extends core.Object {}
+      (AA.new = function() {}).prototype = AA.prototype;
+      return AA;
+    });
     let AA = AA$();
-    let BB$ = generic((T, U) => class BB extends AA$(U, T) {});
+    let BB$ = generic((T, U) => {
+      class BB extends AA$(U, T) {}
+      (BB.new = function() {}).prototype = BB.prototype;
+      return BB;
+    });
     let BB = BB$();
     class CC extends BB$(String, List) {}
+    (CC.new = function() {}).prototype = CC.prototype;
 
-    let Func2 = typedef('Func2', () => functionType(dynamic, [dynamic, dynamic]));
-    let Foo = typedef('Foo', () => functionType(B, [B, String]));
+    let Func2 = typedef('Func2', () => fnTypeFuzzy(dynamic, [dynamic, dynamic]));
+    let Foo = typedef('Foo', () => fnTypeFuzzy(B, [B, String]));
 
-    let FuncG$ = generic((T, U) => typedef('FuncG', () => functionType(T, [T, U])))
+    let FuncG$ = generic((T, U) => typedef('FuncG', () => fnTypeFuzzy(T, [T, U])))
     let FuncG = FuncG$();
 
     // TODO(vsm): Revisit when we encode types on functions properly.
     // A bar1(C c, String s) => null;
     function bar1(c, s) { return null; }
-    dart.fn(bar1, dart.definiteFunctionType(A, [C, String]));
+    dart.fn(bar1, dart.fnType(A, [C, String]));
 
     // bar2(B b, String s) => null;
     function bar2(b, s) { return null; }
-    dart.fn(bar2, dart.definiteFunctionType(dynamic, [B, String]));
+    dart.fn(bar2, dart.fnType(dynamic, [B, String]));
 
     // B bar3(B b, Object o) => null;
     function bar3(b, o) { return null; }
-    dart.fn(bar3, dart.definiteFunctionType(B, [B, Object]));
+    dart.fn(bar3, dart.fnType(B, [B, Object]));
 
     // B bar4(B b, o) => null;
     function bar4(b, o) { return null; }
-    dart.fn(bar4, dart.definiteFunctionType(B, [B, dynamic]));
+    dart.fn(bar4, dart.fnType(B, [B, dynamic]));
 
     // C bar5(A a, Object o) => null;
     function bar5(a, o) { return null; }
-    dart.fn(bar5, dart.definiteFunctionType(C, [A, Object]));
+    dart.fn(bar5, dart.fnType(C, [A, Object]));
 
     // B bar6(B b, String s, String o) => null;
     function bar6(b, s, o) { return null; }
-    dart.fn(bar6, dart.definiteFunctionType(B, [B, String, String]));
+    dart.fn(bar6, dart.fnType(B, [B, String, String]));
 
     // B bar7(B b, String s, [Object o]) => null;
     function bar7(b, s, o) { return null; }
-    dart.fn(bar7, dart.definiteFunctionType(B, [B, String], [Object]));
+    dart.fn(bar7, dart.fnType(B, [B, String], [Object]));
 
     // B bar8(B b, String s, {Object p}) => null;
     function bar8(b, s, o) { return null; }
-    dart.fn(bar8, dart.definiteFunctionType(B, [B, String], {p: Object}));
+    dart.fn(bar8, dart.fnType(B, [B, String], {p: Object}));
 
     let cls1 = dart.fn((c, s) => { return null; },
-                       dart.definiteFunctionType(A, [C, String]));
+                       dart.fnType(A, [C, String]));
 
     let cls2 = dart.fn((b, s) => { return null; },
-                       dart.definiteFunctionType(dynamic, [B, String]));
+                       dart.fnType(dynamic, [B, String]));
 
     let cls3 = dart.fn((b, o) => { return null; },
-                       dart.definiteFunctionType(B, [B, Object]));
+                       dart.fnType(B, [B, Object]));
 
     let cls4 = dart.fn((b, o) => { return null; },
-                       dart.definiteFunctionType(B, [B, dynamic]));
+                       dart.fnType(B, [B, dynamic]));
 
     let cls5 = dart.fn((a, o) => { return null; },
-                       dart.definiteFunctionType(C, [A, Object]));
+                       dart.fnType(C, [A, Object]));
 
     let cls6 = dart.fn((b, s, o) => { return null; },
-                       dart.definiteFunctionType(B, [B, String, String]));
+                       dart.fnType(B, [B, String, String]));
 
     let cls7 = dart.fn((b, s, o) => { return null; },
-                       dart.definiteFunctionType(B, [B, String], [Object]));
+                       dart.fnType(B, [B, String], [Object]));
 
     let cls8 =
       dart.fn((b, s, o) => { return null; },
-              dart.definiteFunctionType(B, [B, String], {p: Object}));
+              dart.fnType(B, [B, String], {p: Object}));
 
     function checkType(x, type, expectedTrue, strongOnly) {
       if (expectedTrue === undefined) expectedTrue = true;
@@ -248,7 +295,7 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('dynamic', () => {
       expect(isGroundType(dynamic), true);
-      checkType(new Object(), dynamic);
+      checkType(new Object.new(), dynamic);
       checkType(null, dynamic);
 
       expect(cast(null, dynamic), null);
@@ -256,7 +303,7 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('Object', () => {
       expect(isGroundType(Object), true);
-      checkType(new Object(), dynamic);
+      checkType(new Object.new(), dynamic);
       checkType(null, Object);
 
       expect(cast(null, Object), null);
@@ -283,14 +330,30 @@ define(['dart_sdk'], function(dart_sdk) {
       expect(cast(null, String), null);
     });
 
-    test('Map', () => {
-      let m1 = new (Map$(String, String))();
-      let m2 = new (Map$(Object, Object))();
-      let m3 = new Map();
-      let m4 = new (collection.HashMap$(dart.dynamic, dart.dynamic))();
-      let m5 = new collection.LinkedHashMap();
-      let m6 = new (Map$(String, dart.dynamic))();
+    test('FutureOr', () => {
+      let FutureOr = async.FutureOr$;
 
+      assert.equal(dart.as(3, FutureOr(int)), 3);
+      assert.equal(dart.as(3, FutureOr(double)), 3);
+      assert.throws(() => dart.as(3.5, FutureOr(int)));
+      assert.equal(dart.as(3.5, FutureOr(double)), 3.5);
+      assert.isTrue(dart.is(3, FutureOr(int)));
+      assert.isTrue(dart.is(3, FutureOr(double)));
+      assert.isFalse(dart.is(3.5, FutureOr(int)));
+      assert.isTrue(dart.is(3.5, FutureOr(double)));
+
+      assert.equal(dart.as(3, FutureOr(FutureOr(double))), 3);
+      assert.isTrue(dart.is(3, FutureOr(FutureOr(double))));
+
+    });
+
+    test('Map', () => {
+      let m1 = Map$(String, String).new();
+      let m2 = Map$(Object, Object).new();
+      let m3 = Map.new();
+      let m4 = collection.HashMap$(dart.dynamic, dart.dynamic).new();
+      let m5 = collection.LinkedHashMap.new();
+      let m6 = Map$(String, dart.dynamic).new();
 
       expect(isGroundType(Map), true);
       expect(isGroundType(getReifiedType(m1)), false);
@@ -350,40 +413,39 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('constructors', () => {
       class C extends core.Object {
-        new(x) {};
-        named(x, y) {};
       }
-      dart.defineNamedConstructor(C, 'named');
+      (C.new = function(x) {}).prototype = C.prototype;
+      (C.named = function(x, y) {}).prototype = C.prototype;
       dart.setSignature(C, {
         constructors: () => ({
-          new: dart.definiteFunctionType(C, [core.int]),
-          named: dart.definiteFunctionType(C, [core.int, core.int])
+          new: dart.fnType(C, [core.int]),
+          named: dart.fnType(C, [core.int, core.int])
         })
       });
       let getType = dart.classGetConstructorType;
-      isSubtype(getType(C), dart.functionType(C, [core.int]));
-      isSubtype(getType(C), dart.functionType(C, [core.String]), false);
-      isSubtype(getType(C, 'new'), dart.functionType(C, [core.int]));
-      isSubtype(getType(C, 'new'), dart.functionType(C, [core.String]), false);
-      isSubtype(getType(C, 'named'), dart.functionType(C, [core.int, core.int]));
+      isSubtype(getType(C), dart.fnTypeFuzzy(C, [core.int]));
+      isSubtype(getType(C), dart.fnTypeFuzzy(C, [core.String]), false);
+      isSubtype(getType(C, 'new'), dart.fnTypeFuzzy(C, [core.int]));
+      isSubtype(getType(C, 'new'), dart.fnTypeFuzzy(C, [core.String]), false);
+      isSubtype(getType(C, 'named'), dart.fnTypeFuzzy(C, [core.int, core.int]));
       isSubtype(getType(C, 'named'),
-                dart.functionType(C, [core.int, core.String]), false);
+                dart.fnTypeFuzzy(C, [core.int, core.String]), false);
     });
 
     test('generic and inheritance', () => {
-      let aaraw = new AA();
+      let aaraw = new AA.new();
       let aarawtype = getReifiedType(aaraw);
-      let aadynamic = new (AA$(dynamic, dynamic))();
+      let aadynamic = new (AA$(dynamic, dynamic).new)();
       let aadynamictype = getReifiedType(aadynamic);
-      let aa = new (AA$(String, List))();
+      let aa = new (AA$(String, List).new)();
       let aatype = getReifiedType(aa);
-      let bb = new (BB$(String, List))();
+      let bb = new (BB$(String, List).new)();
       let bbtype = getReifiedType(bb);
-      let cc = new CC();
+      let cc = new CC.new();
       let cctype = getReifiedType(cc);
       // We don't allow constructing bad types.
       // This was AA<String> in Dart (wrong number of type args).
-      let aabad = new (AA$(dart.dynamic, dart.dynamic))();
+      let aabad = new (AA$(dart.dynamic, dart.dynamic).new)();
       let aabadtype = getReifiedType(aabad);
 
       expect(isGroundType(aatype), false);
@@ -422,7 +484,7 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('mixins', () => {
       let c = collection;
-      var s1 = new (c.SplayTreeSet$(String))();
+      var s1 = new (c.SplayTreeSet$(String).new)();
 
       checkType(s1, c.IterableMixin);
       checkType(s1, c.IterableMixin$(String));
@@ -444,7 +506,7 @@ define(['dart_sdk'], function(dart_sdk) {
       checkType(Map, core.Type, true);
       checkType(Map$(int, String), core.Type, true);
       checkType(Func2, core.Type, true);
-      checkType(functionType(dynamic, [dynamic]), core.Type, true);
+      checkType(fnTypeFuzzy(dynamic, [dynamic]), core.Type, true);
       checkType(core.Type, core.Type, true);
 
       checkType(3, core.Type, false);
@@ -456,41 +518,41 @@ define(['dart_sdk'], function(dart_sdk) {
       // - param types: Dart is bivariant.  We're contravariant.
       expect(isGroundType(Func2), true);
       expect(isGroundType(Foo), false);
-      expect(isGroundType(functionType(B, [B, String])), false);
+      expect(isGroundType(fnTypeFuzzy(B, [B, String])), false);
       checkType(bar1, Foo, false, true);
       checkType(cls1, Foo, false, true);
-      checkType(bar1, functionType(B, [B, String]), false, true);
-      checkType(cls1, functionType(B, [B, String]), false, true);
+      checkType(bar1, fnTypeFuzzy(B, [B, String]), false, true);
+      checkType(cls1, fnTypeFuzzy(B, [B, String]), false, true);
       checkType(bar2, Foo, false, true);
       checkType(cls2, Foo, false, true);
-      checkType(bar2, functionType(B, [B, String]), false, true);
-      checkType(cls2, functionType(B, [B, String]), false, true);
+      checkType(bar2, fnTypeFuzzy(B, [B, String]), false, true);
+      checkType(cls2, fnTypeFuzzy(B, [B, String]), false, true);
       checkType(bar3, Foo);
       checkType(cls3, Foo);
-      checkType(bar3, functionType(B, [B, String]));
-      checkType(cls3, functionType(B, [B, String]));
+      checkType(bar3, fnTypeFuzzy(B, [B, String]));
+      checkType(cls3, fnTypeFuzzy(B, [B, String]));
       checkType(bar4, Foo, true);
       checkType(cls4, Foo, true);
-      checkType(bar4, functionType(B, [B, String]), true);
-      checkType(cls4, functionType(B, [B, String]), true);
+      checkType(bar4, fnTypeFuzzy(B, [B, String]), true);
+      checkType(cls4, fnTypeFuzzy(B, [B, String]), true);
       checkType(bar5, Foo);
       checkType(cls5, Foo);
-      checkType(bar5, functionType(B, [B, String]));
-      checkType(cls5, functionType(B, [B, String]));
+      checkType(bar5, fnTypeFuzzy(B, [B, String]));
+      checkType(cls5, fnTypeFuzzy(B, [B, String]));
       checkType(bar6, Foo, false);
       checkType(cls6, Foo, false);
-      checkType(bar6, functionType(B, [B, String]), false);
-      checkType(cls6, functionType(B, [B, String]), false);
+      checkType(bar6, fnTypeFuzzy(B, [B, String]), false);
+      checkType(cls6, fnTypeFuzzy(B, [B, String]), false);
       checkType(bar7, Foo);
       checkType(cls7, Foo);
-      checkType(bar7, functionType(B, [B, String]));
-      checkType(cls7, functionType(B, [B, String]));
+      checkType(bar7, fnTypeFuzzy(B, [B, String]));
+      checkType(cls7, fnTypeFuzzy(B, [B, String]));
       checkType(bar7, getReifiedType(bar6));
       checkType(cls7, getReifiedType(bar6));
       checkType(bar8, Foo);
       checkType(cls8, Foo);
-      checkType(bar8, functionType(B, [B, String]));
-      checkType(cls8, functionType(B, [B, String]));
+      checkType(bar8, fnTypeFuzzy(B, [B, String]));
+      checkType(cls8, fnTypeFuzzy(B, [B, String]));
       checkType(bar8, getReifiedType(bar6), false);
       checkType(cls8, getReifiedType(bar6), false);
       checkType(bar7, getReifiedType(bar8), false);
@@ -511,12 +573,12 @@ define(['dart_sdk'], function(dart_sdk) {
       function dd2d(x, y) {return x};
       dart.fn(dd2d);
       function ii2i(x, y) {return x};
-      dart.fn(ii2i, dart.definiteFunctionType(core.int, [core.int, core.int]));
+      dart.fn(ii2i, dart.fnType(core.int, [core.int, core.int]));
       function ii_2i(x, y) {return x};
-      dart.fn(ii_2i, dart.definiteFunctionType(core.int, [core.int], [core.int]));
+      dart.fn(ii_2i, dart.fnType(core.int, [core.int], [core.int]));
       function i_i2i(x, opts) {return x};
       dart.fn(i_i2i,
-              dart.definiteFunctionType(core.int, [core.int], {extra: core.int}));
+              dart.fnType(core.int, [core.int], {extra: core.int}));
 
       assert.equal(dart.dcall(dd2d, 0, 1), 0);
       assert.equal(dart.dcall(dd2d, "hello", "world"), "hello");
@@ -545,26 +607,26 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('dsend', () => {
       class Tester extends core.Object {
-        new() {
-          this.f = dart.fn(x => x,
-                           dart.definiteFunctionType(core.int, [core.int]));
-          this.me = this;
-        }
         m(x, y) {return x;}
         call(x) {return x;}
         static s(x, y) { return x;}
       }
+      (Tester.new = function() {
+        this.f = dart.fn(x => x,
+                          dart.fnType(core.int, [core.int]));
+        this.me = this;
+      }).prototype = Tester.prototype;
       dart.setSignature(Tester, {
         methods: () => ({
-          m: dart.definiteFunctionType(core.int, [core.int, core.int]),
-          call: dart.definiteFunctionType(core.int, [core.int])
+          m: dart.fnType(core.int, [core.int, core.int]),
+          call: dart.fnType(core.int, [core.int])
         }),
         statics: () => ({
-          s: dart.definiteFunctionType(core.String, [core.String])
+          s: dart.fnType(core.String, [core.String])
         }),
         names: ['s']
       })
-      let o = new Tester();
+      let o = new Tester.new();
 
       // Method send
       assert.equal(dart.dsend(o, 'm', 3, 4), 3);
@@ -602,115 +664,115 @@ define(['dart_sdk'], function(dart_sdk) {
       // Test some generated code
       // Test the lazy path
       checkType(core.identityHashCode,
-                dart.functionType(core.int, [core.Object]));
+                dart.fnTypeFuzzy(core.int, [core.Object]));
       // Test the normal path
       checkType(core.identical,
-                dart.functionType(core.bool,
+                dart.fnTypeFuzzy(core.bool,
                                   [core.Object, core.Object]));
 
       // Hand crafted tests
       // All dynamic
       function dd2d(x, y) {return x};
       dart.fn(dd2d);
-      checkType(dd2d, dart.functionType(dart.dynamic,
+      checkType(dd2d, dart.fnTypeFuzzy(dart.dynamic,
                                         [dart.dynamic, dart.dynamic]));
 
       // Set the type eagerly
       function ii2i(x, y) {return x};
-      dart.fn(ii2i, dart.definiteFunctionType(core.int, [core.int, core.int]));
-      checkType(ii2i, dart.functionType(core.int,
+      dart.fn(ii2i, dart.fnType(core.int, [core.int, core.int]));
+      checkType(ii2i, dart.fnTypeFuzzy(core.int,
                                         [core.int, core.int]));
 
       // Set the type lazily
       function ss2s(x, y) {return x};
       var coreString;
       dart.lazyFn(ss2s,
-                  () => dart.definiteFunctionType(coreString,
+                  () => dart.fnType(coreString,
                                                   [coreString, coreString]));
       coreString = core.String;
-      checkType(ss2s, dart.functionType(core.String,
+      checkType(ss2s, dart.fnTypeFuzzy(core.String,
                                         [core.String, core.String]));
 
       // Optional types
       function ii_2i(x, y) {return x};
-      dart.fn(ii_2i, dart.definiteFunctionType(core.int, [core.int], [core.int]));
-      checkType(ii_2i, dart.functionType(core.int, [core.int],
+      dart.fn(ii_2i, dart.fnType(core.int, [core.int], [core.int]));
+      checkType(ii_2i, dart.fnTypeFuzzy(core.int, [core.int],
                                          [core.int]));
-      checkType(ii_2i, dart.functionType(core.int, [core.int,
+      checkType(ii_2i, dart.fnTypeFuzzy(core.int, [core.int,
                                                     core.int]));
-      checkType(ii_2i, dart.functionType(core.int, [], [core.int,
+      checkType(ii_2i, dart.fnTypeFuzzy(core.int, [], [core.int,
                                                         core.int]),
                 false);
-      checkType(ii_2i, dart.functionType(core.int, [core.int],
+      checkType(ii_2i, dart.fnTypeFuzzy(core.int, [core.int],
                                          {extra: core.int}), false);
 
       // Named types
       function i_i2i(x, opts) {return x};
-      dart.fn(i_i2i, dart.definiteFunctionType(core.int, [core.int],
+      dart.fn(i_i2i, dart.fnType(core.int, [core.int],
                                                {extra: core.int}));
-      checkType(i_i2i, dart.functionType(core.int, [core.int],
+      checkType(i_i2i, dart.fnTypeFuzzy(core.int, [core.int],
                                          {extra: core.int}));
-      checkType(i_i2i, dart.functionType(core.int,
+      checkType(i_i2i, dart.fnTypeFuzzy(core.int,
                                          [core.int, core.int]), false);
-      checkType(i_i2i, dart.functionType(core.int, [core.int], {}));
+      checkType(i_i2i, dart.fnTypeFuzzy(core.int, [core.int], {}));
       checkType(i_i2i,
-          dart.functionType(core.int, [], {extra: core.int,
+          dart.fnTypeFuzzy(core.int, [], {extra: core.int,
                                            also: core.int}), false);
       checkType(i_i2i,
-          dart.functionType(core.int, [core.int], [core.int]), false);
+          dart.fnTypeFuzzy(core.int, [core.int], [core.int]), false);
     });
 
     test('Method tearoffs', () => {
       let c = collection;
       // Tear off of an inherited method
-      let map = new (Map$(core.int, core.String))();
+      let map = Map$(core.int, core.String).new();
       checkType(dart.bind(map, 'toString'),
-                dart.functionType(String, []));
+                dart.fnTypeFuzzy(String, []));
       checkType(dart.bind(map, 'toString'),
-                dart.functionType(int, []), false, true);
+                dart.fnTypeFuzzy(int, []), false, true);
 
       // Tear off of a method directly on the object
-      let smap = new (c.SplayTreeMap$(core.int, core.String))();
+      let smap = new (c.SplayTreeMap$(core.int, core.String).new)();
       checkType(dart.bind(smap, 'forEach'),
-          dart.functionType(dart.void,
-                            [dart.functionType(dart.void, [core.int, core.String])]));
+          dart.fnTypeFuzzy(dart.void,
+                            [dart.fnTypeFuzzy(dart.void, [core.int, core.String])]));
       checkType(dart.bind(smap, 'forEach'),
-          dart.functionType(dart.void,
-              [dart.functionType(dart.void,
+          dart.fnTypeFuzzy(dart.void,
+              [dart.fnTypeFuzzy(dart.void,
                   [core.String, core.String])]), false, true);
 
       // Tear off of a mixed in method
-      let mapB = new (c.MapBase$(core.int, core.int))();
+      let mapB = new (c.MapBase$(core.int, core.int).new)();
       checkType(dart.bind(mapB, 'forEach'),
-          dart.functionType(dart.void, [
-              dart.functionType(dart.void, [core.int, core.int])]));
+          dart.fnTypeFuzzy(dart.void, [
+              dart.fnTypeFuzzy(dart.void, [core.int, core.int])]));
       checkType(dart.bind(mapB, 'forEach'),
-          dart.functionType(dart.void, [
-              dart.functionType(dart.void, [core.int, core.String])]),
+          dart.fnTypeFuzzy(dart.void, [
+              dart.fnTypeFuzzy(dart.void, [core.int, core.String])]),
                 false, true);
 
       // Tear off of a method with a symbol name
-      let listB = new (c.ListBase$(core.int))();
+      let listB = new (c.ListBase$(core.int).new)();
       checkType(dart.bind(listB, dartx.add),
-                dart.functionType(dart.void, [core.int]));
+                dart.fnTypeFuzzy(dart.void, [core.int]));
       checkType(dart.bind(listB, dartx.add),
-                dart.functionType(dart.void, [core.String]), false, true);
+                dart.fnTypeFuzzy(dart.void, [core.String]), false, true);
 
       // Tear off of a static method
       checkType(c.ListBase.listToString,
-                dart.functionType(core.String, [core.List]));
+                dart.fnTypeFuzzy(core.String, [core.List]));
       checkType(c.ListBase.listToString,
-                dart.functionType(core.String, [core.String]), false, true);
+                dart.fnTypeFuzzy(core.String, [core.String]), false, true);
 
       // Tear-off of extension methods on primitives
       checkType(dart.bind(3.0, dartx.floor),
-                dart.functionType(core.int, []));
+                dart.fnTypeFuzzy(core.int, []));
       checkType(dart.bind(3.0, dartx.floor),
-                dart.functionType(core.String, []), false, true);
+                dart.fnTypeFuzzy(core.String, []), false, true);
       checkType(dart.bind("", dartx.endsWith),
-                dart.functionType(core.bool, [core.String]));
+                dart.fnTypeFuzzy(core.bool, [core.String]));
       checkType(dart.bind("", dartx.endsWith),
-                dart.functionType(core.bool, [core.int]), false, true);
+                dart.fnTypeFuzzy(core.bool, [core.int]), false, true);
 
       // Tear off a mixin method
       class Base {
@@ -718,7 +780,7 @@ define(['dart_sdk'], function(dart_sdk) {
       };
       dart.setSignature(Base, {
         methods: () => ({
-          m: dart.definiteFunctionType(core.int, [core.int]),
+          m: dart.fnType(core.int, [core.int]),
         })
       });
 
@@ -727,7 +789,7 @@ define(['dart_sdk'], function(dart_sdk) {
       };
       dart.setSignature(M1, {
         methods: () => ({
-          m: dart.definiteFunctionType(core.num, [core.int]),
+          m: dart.fnType(core.num, [core.int]),
         })
       });
 
@@ -736,29 +798,28 @@ define(['dart_sdk'], function(dart_sdk) {
       };
       dart.setSignature(M2, {
         methods: () => ({
-          m: dart.definiteFunctionType(core.Object, [core.int]),
+          m: dart.fnType(core.Object, [core.int]),
         })
       });
 
-      class O extends dart.mixin(Base, M1, M2) {
-        new() {};
-      };
+      class O extends dart.mixin(Base, M1, M2) {}
+      (O.new = function() {}).prototype = O.prototype;
       dart.setSignature(O, {});
-      var obj = new O();
+      var obj = new O.new();
       var m = dart.bind(obj, 'm');
-      checkType(m, dart.functionType(core.Object, [core.int]));
-      checkType(m, dart.functionType(core.int, [core.int]), false, true);
+      checkType(m, dart.fnTypeFuzzy(core.Object, [core.int]));
+      checkType(m, dart.fnTypeFuzzy(core.int, [core.int]), false, true);
 
       // Test inherited signatures
       class P extends O {
-        new() {};
         m(x) {return x;};
       };
+      (P.new = function() {}).prototype = P.prototype;
       dart.setSignature(P, {});
-      var obj = new P();
+      var obj = new P.new();
       var m = dart.bind(obj, 'm');
-      checkType(m, dart.functionType(core.Object, [core.int]));
-      checkType(m, dart.functionType(core.int, [core.int]), false, true);
+      checkType(m, dart.fnTypeFuzzy(core.Object, [core.int]));
+      checkType(m, dart.fnTypeFuzzy(core.int, [core.int]), false, true);
     });
 
     test('Object members', () => {
@@ -767,7 +828,7 @@ define(['dart_sdk'], function(dart_sdk) {
       let nullString = dart.toString(null);
       assert.equal(nullString, 'null');
 
-      let map = new Map();
+      let map = Map.new();
       let mapHash = dart.hashCode(map);
       checkType(mapHash, core.int);
       assert.equal(mapHash, map.hashCode);
@@ -796,8 +857,8 @@ define(['dart_sdk'], function(dart_sdk) {
   suite('subtyping', function() {
     'use strict';
 
-    let functionType = dart.functionType;
-    let definiteFunctionType = dart.definiteFunctionType;
+    let fnTypeFuzzy = dart.fnTypeFuzzy;
+    let fnType = dart.fnType;
     let typedef = dart.typedef;
     let isSubtype = dart.isSubtype;
     let int = core.int;
@@ -825,15 +886,15 @@ define(['dart_sdk'], function(dart_sdk) {
 
     function always2(t1, t2) {
       always(t1, t2);
-      always(functionType(t1, [t2]), functionType(t2, [t1]));
+      always(fnTypeFuzzy(t1, [t2]), fnTypeFuzzy(t2, [t1]));
     }
     function never2(t1, t2) {
       never(t1, t2);
-      maybe(functionType(t1, [t2]), functionType(t2, [t1]));
+      maybe(fnTypeFuzzy(t1, [t2]), fnTypeFuzzy(t2, [t1]));
     }
     function maybe2(t1, t2) {
       maybe(t1, t2);
-      maybe(functionType(t1, [t2]), functionType(t2, [t1]));
+      maybe(fnTypeFuzzy(t1, [t2]), fnTypeFuzzy(t2, [t1]));
     }
 
     function run_test(func1, func2, func2opt, func1extra, func2extra) {
@@ -910,23 +971,23 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('basic function types', () => {
       function func1(S) {
-        return functionType(S, []);
+        return fnTypeFuzzy(S, []);
       }
 
       function func2(S, T) {
-        return functionType(S, [T]);
+        return fnTypeFuzzy(S, [T]);
       }
 
       function func2opt(S, T) {
-        return functionType(S, [], [T]);
+        return fnTypeFuzzy(S, [], [T]);
       }
 
       function func1extra(S) {
-        return functionType(S, [], {extra: int});
+        return fnTypeFuzzy(S, [], {extra: int});
       }
 
       function func2extra(S, T) {
-        return functionType(S, [T], {extra: int});
+        return fnTypeFuzzy(S, [T], {extra: int});
       }
 
       run_test(func1, func2, func2opt, func1extra, func2extra);
@@ -950,8 +1011,8 @@ define(['dart_sdk'], function(dart_sdk) {
         for (let bottom of bottoms) {
           always(bottom, top);
           always(
-              definiteFunctionType(bottom, [top]),
-              definiteFunctionType(top, [bottom]));
+              fnType(bottom, [top]),
+              fnType(top, [bottom]));
         }
       }
 
@@ -961,8 +1022,8 @@ define(['dart_sdk'], function(dart_sdk) {
             always(t1, t2);
             always(t2, t1);
 
-            let t11 = definiteFunctionType(t1, [t1]);
-            let t22 = definiteFunctionType(t2, [t2]);
+            let t11 = fnType(t1, [t1]);
+            let t22 = fnType(t2, [t2]);
             always(t11, t22);
             always(t22, t11);
           }
@@ -972,23 +1033,23 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('basic typedefs', () => {
       function func1(S) {
-        return dart.typedef('Func1', () => functionType(S, []))
+        return dart.typedef('Func1', () => fnTypeFuzzy(S, []))
       }
 
       function func2(S, T) {
-        return dart.typedef('Func2', () => functionType(S, [T]))
+        return dart.typedef('Func2', () => fnTypeFuzzy(S, [T]))
       }
 
       function func2opt(S, T) {
-        return dart.typedef('Func2', () => functionType(S, [], [T]))
+        return dart.typedef('Func2', () => fnTypeFuzzy(S, [], [T]))
       }
 
       function func1extra(S) {
-        return dart.typedef('Func1', () => functionType(S, [], {extra: int}))
+        return dart.typedef('Func1', () => fnTypeFuzzy(S, [], {extra: int}))
       }
 
       function func2extra(S, T) {
-        return dart.typedef('Func2', () => functionType(S, [T], {extra: int}))
+        return dart.typedef('Func2', () => fnTypeFuzzy(S, [T], {extra: int}))
       }
 
       run_test(func1, func2, func2opt, func1extra, func2extra);
@@ -996,126 +1057,130 @@ define(['dart_sdk'], function(dart_sdk) {
 
     test('basic generic typedefs', () => {
       let func1 = dart.generic(
-        (S) => dart.typedef('Func1', () => functionType(S, [])));
+        (S) => dart.typedef('Func1', () => fnTypeFuzzy(S, [])));
 
       let func2 = dart.generic(
-        (S, T) => dart.typedef('Func2', () => functionType(S, [T])));
+        (S, T) => dart.typedef('Func2', () => fnTypeFuzzy(S, [T])));
 
       let func2opt = dart.generic(
-        (S, T) => dart.typedef('Func2', () => functionType(S, [], [T])));
+        (S, T) => dart.typedef('Func2', () => fnTypeFuzzy(S, [], [T])));
 
       let func1extra = dart.generic(
-        (S) => dart.typedef('Func1', () => functionType(S, [], {extra: int})));
+        (S) => dart.typedef('Func1', () => fnTypeFuzzy(S, [], {extra: int})));
 
       let func2extra = dart.generic(
         (S, T) => dart.typedef('Func2',
-                               () => functionType(S, [T], {extra: int})));
+                               () => fnTypeFuzzy(S, [T], {extra: int})));
 
       run_test(func1, func2, func2opt, func1extra, func2extra);
     });
 
     test('fuzzy function types', () => {
-      always(functionType(int, [int]), functionType(dyn, [dyn]));
-      always(functionType(int, [], [int]), functionType(dyn, [], [dyn]));
-      always(functionType(int, [], [int]), functionType(dyn, [dyn]));
-      always(functionType(int, [], [int]), functionType(dyn, []));
-      always(functionType(int, [int], {extra: int}), functionType(dyn, [dyn]));
+      always(fnTypeFuzzy(int, [int]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dyn, [], [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dyn, []));
+      always(fnTypeFuzzy(int, [int], {extra: int}), fnTypeFuzzy(dyn, [dyn]));
 
-      always(functionType(dyn, [dyn]), functionType(dyn, [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dyn, [], [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dyn, [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dyn, []));
-      always(functionType(dyn, [dyn], {extra: dyn}), functionType(dyn, [dyn]));
+      always(fnTypeFuzzy(dyn, [dyn]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dyn, [], [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dyn, []));
+      always(fnTypeFuzzy(dyn, [dyn], {extra: dyn}), fnTypeFuzzy(dyn, [dyn]));
     });
 
     test('void function types', () => {
-      always(functionType(int, [int]), functionType(dart.void, [dyn]));
-      always(functionType(int, [], [int]), functionType(dart.void, [], [dyn]));
-      always(functionType(int, [], [int]), functionType(dart.void, [dyn]));
-      always(functionType(int, [], [int]), functionType(dart.void, []));
-      always(functionType(int, [int], {extra: int}), functionType(dart.void, [dyn]));
+      always(fnTypeFuzzy(int, [int]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dart.void, [], [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(int, [], [int]), fnTypeFuzzy(dart.void, []));
+      always(fnTypeFuzzy(int, [int], {extra: int}), fnTypeFuzzy(dart.void, [dyn]));
 
-      always(functionType(dart.void, [int]), functionType(dart.void, [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dart.void, [], [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dart.void, [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dart.void, []));
-      always(functionType(dart.void, [int], {extra: int}), functionType(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [int]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dart.void, [], [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dart.void, []));
+      always(fnTypeFuzzy(dart.void, [int], {extra: int}), fnTypeFuzzy(dart.void, [dyn]));
 
-      always(functionType(dyn, [dyn]), functionType(dart.void, [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dart.void, [], [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dart.void, [dyn]));
-      always(functionType(dyn, [], [dyn]), functionType(dart.void, []));
-      always(functionType(dyn, [dyn], {extra: dyn}), functionType(dart.void, [dyn]));
+      always(fnTypeFuzzy(dyn, [dyn]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dart.void, [], [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dyn, [], [dyn]), fnTypeFuzzy(dart.void, []));
+      always(fnTypeFuzzy(dyn, [dyn], {extra: dyn}), fnTypeFuzzy(dart.void, [dyn]));
 
-      always(functionType(dart.void, [dyn]), functionType(dart.void, [dyn]));
-      always(functionType(dart.void, [], [dyn]), functionType(dart.void, [], [dyn]));
-      always(functionType(dart.void, [], [dyn]), functionType(dart.void, [dyn]));
-      always(functionType(dart.void, [], [dyn]), functionType(dart.void, []));
-      always(functionType(dart.void, [dyn], {extra: dyn}), functionType(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [dyn]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [dyn]), fnTypeFuzzy(dart.void, [], [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [dyn]), fnTypeFuzzy(dart.void, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [dyn]), fnTypeFuzzy(dart.void, []));
+      always(fnTypeFuzzy(dart.void, [dyn], {extra: dyn}), fnTypeFuzzy(dart.void, [dyn]));
 
-      always(functionType(dart.void, [int]), functionType(dyn, [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dyn, [], [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dyn, [dyn]));
-      always(functionType(dart.void, [], [int]), functionType(dyn, []));
-      always(functionType(dart.void, [int], {extra: int}), functionType(dyn, [dyn]));
+      always(fnTypeFuzzy(dart.void, [int]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dyn, [], [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dyn, [dyn]));
+      always(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(dyn, []));
+      always(fnTypeFuzzy(dart.void, [int], {extra: int}), fnTypeFuzzy(dyn, [dyn]));
 
-      never(functionType(dart.void, [int]), functionType(int, [dyn]));
-      never(functionType(dart.void, [], [int]), functionType(int, [], [dyn]));
-      never(functionType(dart.void, [], [int]), functionType(int, [dyn]));
-      never(functionType(dart.void, [], [int]), functionType(int, []));
-      never(functionType(dart.void, [int], {extra: int}), functionType(int, [dyn]));
+      never(fnTypeFuzzy(dart.void, [int]), fnTypeFuzzy(int, [dyn]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, [], [dyn]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, [dyn]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, []));
+      never(fnTypeFuzzy(dart.void, [int], {extra: int}), fnTypeFuzzy(int, [dyn]));
 
-      never(functionType(dart.void, [int]), functionType(int, [int]));
-      never(functionType(dart.void, [], [int]), functionType(int, [], [int]));
-      never(functionType(dart.void, [], [int]), functionType(int, [int]));
-      never(functionType(dart.void, [], [int]), functionType(int, []));
-      never(functionType(dart.void, [int], {extra: int}), functionType(int, [int]));
+      never(fnTypeFuzzy(dart.void, [int]), fnTypeFuzzy(int, [int]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, [], [int]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, [int]));
+      never(fnTypeFuzzy(dart.void, [], [int]), fnTypeFuzzy(int, []));
+      never(fnTypeFuzzy(dart.void, [int], {extra: int}), fnTypeFuzzy(int, [int]));
     });
 
     test('higher-order typedef', () => {
       let Func$ = dart.generic((S, T) =>
                                dart.typedef('Func', () =>
-                                            functionType(T, [S])));
+                                            fnTypeFuzzy(T, [S])));
       let Func2$ = dart.generic((R, S, T) =>
                                 dart.typedef('Func2', () =>
-                                             functionType(T, [Func$(R, S)])));
+                                             fnTypeFuzzy(T, [Func$(R, S)])));
 
-      maybe(functionType(int, [functionType(int, [num])]),
-            functionType(num, [functionType(int, [int])]));
-      maybe(functionType(int, [Func$(num, int)]),
-            functionType(num, [Func$(int, int)]));
+      maybe(fnTypeFuzzy(int, [fnTypeFuzzy(int, [num])]),
+            fnTypeFuzzy(num, [fnTypeFuzzy(int, [int])]));
+      maybe(fnTypeFuzzy(int, [Func$(num, int)]),
+            fnTypeFuzzy(num, [Func$(int, int)]));
       maybe(Func2$(num, int, int), Func2$(int, int, num));
     });
 
     test('mixed types', () => {
-      let AA$ = dart.generic((T) => class AA extends core.Object {});
+      let AA$ = dart.generic((T) => {
+        class AA extends core.Object {}
+        (AA.new = function() {}).prototype = AA.prototype;
+        return AA;
+      });
 
       always(int, dyn);
       maybe(dyn, int);
 
-      never(functionType(int, [int]), int);
+      never(fnTypeFuzzy(int, [int]), int);
 
-      never(int, functionType(int, [int]));
+      never(int, fnTypeFuzzy(int, [int]));
 
       always(AA$(int), AA$(dyn));
       maybe(AA$(dyn), AA$(int));
       never(AA$(core.Object), AA$(int));
 
-      always(AA$(functionType(int, [int])), AA$(dyn));
-      maybe(AA$(dyn), AA$(functionType(int, [int])));
-      never(AA$(core.Object), AA$(functionType(int, [int])));
+      always(AA$(fnTypeFuzzy(int, [int])), AA$(dyn));
+      maybe(AA$(dyn), AA$(fnTypeFuzzy(int, [int])));
+      never(AA$(core.Object), AA$(fnTypeFuzzy(int, [int])));
 
-      always(AA$(functionType(int, [int])), AA$(functionType(dyn, [dyn])));
-      maybe(AA$(functionType(dyn, [dyn])), AA$(functionType(int, [int])));
-      maybe(AA$(functionType(core.Object, [core.Object])),
-            AA$(functionType(int, [int])));
+      always(AA$(fnTypeFuzzy(int, [int])), AA$(fnTypeFuzzy(dyn, [dyn])));
+      maybe(AA$(fnTypeFuzzy(dyn, [dyn])), AA$(fnTypeFuzzy(int, [int])));
+      maybe(AA$(fnTypeFuzzy(core.Object, [core.Object])),
+            AA$(fnTypeFuzzy(int, [int])));
     });
   });
 
   suite('canonicalization', function() {
     'use strict';
-    let functionType = dart.functionType;
-    let definiteFunctionType = dart.definiteFunctionType;
+    let fnTypeFuzzy = dart.fnTypeFuzzy;
+    let fnType = dart.fnType;
     let typedef = dart.typedef;
     let generic = dart.generic;
 
@@ -1129,12 +1194,16 @@ define(['dart_sdk'], function(dart_sdk) {
 
     class A {}
 
-    let AA$ = generic((T, U) => class AA extends core.Object {});
+    let AA$ = generic((T, U) => {
+      class AA extends core.Object {}
+      (AA.new = function() {}).prototype = AA.prototype;
+      return AA;
+    });
     let AA = AA$();
 
-    let Func2 = typedef('Func2', () => functionType(dynamic, [dynamic, dynamic]));
+    let Func2 = typedef('Func2', () => fnTypeFuzzy(dynamic, [dynamic, dynamic]));
 
-    let FuncG$ = generic((T, U) => typedef('FuncG', () => functionType(T, [T, U])))
+    let FuncG$ = generic((T, U) => typedef('FuncG', () => fnTypeFuzzy(T, [T, U])))
     let FuncG = FuncG$();
 
     test('base types', () => {
@@ -1165,53 +1234,53 @@ define(['dart_sdk'], function(dart_sdk) {
     });
 
     test('function types', () => {
-      assert.equal(functionType(dynamic, [dynamic, dynamic]),
-                   functionType(dynamic, [dynamic, dynamic]))
+      assert.equal(fnTypeFuzzy(dynamic, [dynamic, dynamic]),
+                   fnTypeFuzzy(dynamic, [dynamic, dynamic]))
 
-      assert.notEqual(definiteFunctionType(dynamic, [dynamic, dynamic]),
-                      functionType(dynamic, [dynamic, dynamic]))
+      assert.notEqual(fnType(dynamic, [dynamic, dynamic]),
+                      fnTypeFuzzy(dynamic, [dynamic, dynamic]))
 
-      assert.equal(functionType(dynamic, [dynamic, dynamic]),
-                   functionType(dynamic, [bottom, bottom]))
+      assert.equal(fnTypeFuzzy(dynamic, [dynamic, dynamic]),
+                   fnTypeFuzzy(dynamic, [bottom, bottom]))
 
-      assert.equal(functionType(dynamic, [], [dynamic, dynamic]),
-                   functionType(dynamic, [], [dynamic, dynamic]))
+      assert.equal(fnTypeFuzzy(dynamic, [], [dynamic, dynamic]),
+                   fnTypeFuzzy(dynamic, [], [dynamic, dynamic]))
 
-      assert.notEqual(definiteFunctionType(dynamic, [], [dynamic, dynamic]),
-                      functionType(dynamic, [], [dynamic, dynamic]))
+      assert.notEqual(fnType(dynamic, [], [dynamic, dynamic]),
+                      fnTypeFuzzy(dynamic, [], [dynamic, dynamic]))
 
-      assert.equal(functionType(dynamic, [], [dynamic, dynamic]),
-                   functionType(dynamic, [], [bottom, bottom]))
+      assert.equal(fnTypeFuzzy(dynamic, [], [dynamic, dynamic]),
+                   fnTypeFuzzy(dynamic, [], [bottom, bottom]))
 
-      assert.equal(functionType(dynamic, [], {extra: dynamic}),
-                   functionType(dynamic, [], {extra: dynamic}))
+      assert.equal(fnTypeFuzzy(dynamic, [], {extra: dynamic}),
+                   fnTypeFuzzy(dynamic, [], {extra: dynamic}))
 
-      assert.notEqual(definiteFunctionType(dynamic, [], {extra: dynamic}),
-                      functionType(dynamic, [], {extra: dynamic}))
+      assert.notEqual(fnType(dynamic, [], {extra: dynamic}),
+                      fnTypeFuzzy(dynamic, [], {extra: dynamic}))
 
-      assert.equal(functionType(dynamic, [], {extra: dynamic}),
-                   functionType(dynamic, [], {extra: bottom}))
+      assert.equal(fnTypeFuzzy(dynamic, [], {extra: dynamic}),
+                   fnTypeFuzzy(dynamic, [], {extra: bottom}))
 
-      assert.equal(functionType(int, [int, int]),
-                   functionType(int, [int, int]))
+      assert.equal(fnTypeFuzzy(int, [int, int]),
+                   fnTypeFuzzy(int, [int, int]))
 
-      assert.equal(functionType(int, [], [int, int]),
-                   functionType(int, [], [int, int]))
+      assert.equal(fnTypeFuzzy(int, [], [int, int]),
+                   fnTypeFuzzy(int, [], [int, int]))
 
-      assert.equal(functionType(int, [int, int], {extra: int}),
-                   functionType(int, [int, int], {extra: int}))
+      assert.equal(fnTypeFuzzy(int, [int, int], {extra: int}),
+                   fnTypeFuzzy(int, [int, int], {extra: int}))
 
-      assert.equal(functionType(int, [int, int, int, int, int]),
-                   functionType(int, [int, int, int, int, int]))
+      assert.equal(fnTypeFuzzy(int, [int, int, int, int, int]),
+                   fnTypeFuzzy(int, [int, int, int, int, int]))
 
-      assert.notEqual(functionType(int, [int, int, int, int, int]),
-                      functionType(int, [int, int, int], [int, int]))
+      assert.notEqual(fnTypeFuzzy(int, [int, int, int, int, int]),
+                      fnTypeFuzzy(int, [int, int, int], [int, int]))
 
-      assert.notEqual(functionType(String, [int, int, int, int, int]),
-                      functionType(int, [int, int, int, int, int]))
+      assert.notEqual(fnTypeFuzzy(String, [int, int, int, int, int]),
+                      fnTypeFuzzy(int, [int, int, int, int, int]))
 
-      assert.notEqual(functionType(String, []),
-                   functionType(int, []))
+      assert.notEqual(fnTypeFuzzy(String, []),
+                   fnTypeFuzzy(int, []))
     });
   });
 
@@ -1219,7 +1288,7 @@ define(['dart_sdk'], function(dart_sdk) {
     'use strict';
 
     test('fixed length list', () => {
-      let list = new core.List(10);
+      let list = core.List.new(10);
       list[0] = 42;
       assert.throws(() => list.add(42));
     });

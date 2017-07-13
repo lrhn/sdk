@@ -14,7 +14,6 @@ const WHITESPACE = const [
   0x85,
   0xA0,
   0x1680,
-  0x180E,
   0x2000,
   0x2001,
   0x2002,
@@ -42,8 +41,8 @@ main() {
     Expect.equals("a", ("a" + c).trim(), "a-$name");
     Expect.equals("a", (c + "a").trim(), "$name-a");
     Expect.equals("a", (c + c + "a" + c + c).trim(), "$name around");
-    Expect.equals("a" + c + "a", (c + c + "a" + c + "a" + c + c).trim(),
-                  "$name many");
+    Expect.equals(
+        "a" + c + "a", (c + c + "a" + c + "a" + c + c).trim(), "$name many");
   }
   Expect.equals("", new String.fromCharCodes(WHITESPACE).trim(), "ALL");
 }

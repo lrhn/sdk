@@ -2,31 +2,22 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.domain.execution;
-
-import 'dart:async';
-
-import 'package:analysis_server/plugin/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
 import 'package:analysis_server/src/analysis_server.dart';
-import 'package:analysis_server/src/constants.dart';
-import 'package:analysis_server/src/context_manager.dart';
 import 'package:analysis_server/src/domain_execution.dart';
 import 'package:analysis_server/src/plugin/server_plugin.dart';
-import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/file_system/memory_file_system.dart';
 import 'package:analyzer/instrumentation/instrumentation.dart';
-import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/sdk.dart';
 import 'package:analyzer/src/generated/source.dart';
 import 'package:analyzer/src/generated/source_io.dart';
 import 'package:plugin/manager.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
-import 'package:typed_mock/typed_mock.dart';
 
 import 'analysis_abstract.dart';
 import 'mocks.dart';
-import 'operation/operation_queue_test.dart';
 
 main() {
   defineReflectiveSuite(() {
@@ -45,7 +36,6 @@ main() {
           new MockServerChannel(),
           provider,
           new MockPackageMapProvider(),
-          null,
           serverPlugin,
           new AnalysisServerOptions(),
           new DartSdkManager('', false),
@@ -90,186 +80,88 @@ main() {
       });
     });
 
-    group('mapUri', () {
-      String contextId;
-
-      void createExecutionContextIdForFile(String path) {
-        Request request = new ExecutionCreateContextParams(path).toRequest('0');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseSuccess('0'));
-        ExecutionCreateContextResult result =
-            new ExecutionCreateContextResult.fromResponse(response);
-        contextId = result.id;
-      }
-
-      setUp(() {
-        Folder folder = provider.newFile('/a/b.dart', '').parent;
-        server.folderMap.putIfAbsent(folder, () {
-          SourceFactory factory =
-              new SourceFactory([new ResourceUriResolver(provider)]);
-          AnalysisContext context =
-              AnalysisEngine.instance.createAnalysisContext();
-          context.sourceFactory = factory;
-          return context;
-        });
-        createExecutionContextIdForFile('/a/b.dart');
-      });
-
-      tearDown(() {
-        Request request =
-            new ExecutionDeleteContextParams(contextId).toRequest('1');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseSuccess('1'));
-      });
-
-      group('file to URI', () {
-        test('does not exist', () {
-          Request request =
-              new ExecutionMapUriParams(contextId, file: '/a/c.dart')
-                  .toRequest('2');
-          Response response = handler.handleRequest(request);
-          expect(response, isResponseFailure('2'));
-        });
-
-        test('directory', () {
-          provider.newFolder('/a/d');
-          Request request =
-              new ExecutionMapUriParams(contextId, file: '/a/d').toRequest('2');
-          Response response = handler.handleRequest(request);
-          expect(response, isResponseFailure('2'));
-        });
-      });
-
-      group('URI to file', () {
-        test('invalid', () {
-          Request request =
-              new ExecutionMapUriParams(contextId, uri: 'foo:///a/b.dart')
-                  .toRequest('2');
-          Response response = handler.handleRequest(request);
-          expect(response, isResponseFailure('2'));
-        });
-      });
-
-      test('invalid context id', () {
-        Request request =
-            new ExecutionMapUriParams('xxx', uri: '').toRequest('4');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseFailure('4'));
-      });
-
-      test('both file and uri', () {
-        Request request =
-            new ExecutionMapUriParams('xxx', file: '', uri: '').toRequest('5');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseFailure('5'));
-      });
-
-      test('neither file nor uri', () {
-        Request request = new ExecutionMapUriParams('xxx').toRequest('6');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseFailure('6'));
-      });
-    });
-
-    group('setSubscriptions', () {
-      test('failure - invalid service name', () {
-        expect(handler.onFileAnalyzed, isNull);
-
-        Request request = new Request('0', EXECUTION_SET_SUBSCRIPTIONS, {
-          SUBSCRIPTIONS: ['noSuchService']
-        });
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseFailure('0'));
-        expect(handler.onFileAnalyzed, isNull);
-      });
-
-      test('success - setting and clearing', () {
-        expect(handler.onFileAnalyzed, isNull);
-
-        Request request =
-            new ExecutionSetSubscriptionsParams([ExecutionService.LAUNCH_DATA])
-                .toRequest('0');
-        Response response = handler.handleRequest(request);
-        expect(response, isResponseSuccess('0'));
-        expect(handler.onFileAnalyzed, isNotNull);
-
-        request = new ExecutionSetSubscriptionsParams([]).toRequest('0');
-        response = handler.handleRequest(request);
-        expect(response, isResponseSuccess('0'));
-        expect(handler.onFileAnalyzed, isNull);
-      });
-    });
-
-    test('onAnalysisComplete - success - setting and clearing', () {
-      Source source1 = new TestSource('/a.dart');
-      Source source2 = new TestSource('/b.dart');
-      Source source3 = new TestSource('/c.dart');
-      Source source4 = new TestSource('/d.dart');
-      Source source5 = new TestSource('/e.html');
-      Source source6 = new TestSource('/f.html');
-      Source source7 = new TestSource('/g.html');
-
-      AnalysisContext context = new AnalysisContextMock();
-      when(context.launchableClientLibrarySources)
-          .thenReturn([source1, source2]);
-      when(context.launchableServerLibrarySources)
-          .thenReturn([source2, source3]);
-      when(context.librarySources).thenReturn([source4]);
-      when(context.htmlSources).thenReturn([source5]);
-      when(context.getLibrariesReferencedFromHtml(anyObject))
-          .thenReturn([source6, source7]);
-
-      ContextManager manager = new ServerContextManagerMock();
-      when(manager.isInAnalysisRoot(anyString)).thenReturn(true);
-
-      AnalysisServer server = new AnalysisServerMock();
-      when(server.analysisContexts).thenReturn([context]);
-      when(server.contextManager).thenReturn(manager);
-
-      StreamController controller = new StreamController.broadcast(sync: true);
-      when(server.onFileAnalyzed).thenReturn(controller.stream);
-
-      List<String> unsentNotifications = <String>[
-        source1.fullName,
-        source2.fullName,
-        source3.fullName,
-        source4.fullName,
-        source5.fullName
-      ];
-      when(server.sendNotification(anyObject))
-          .thenInvoke((Notification notification) {
-        ExecutionLaunchDataParams params =
-            new ExecutionLaunchDataParams.fromNotification(notification);
-
-        String fileName = params.file;
-        expect(unsentNotifications.remove(fileName), isTrue);
-
-        if (fileName == source1.fullName) {
-          expect(params.kind, ExecutableKind.CLIENT);
-        } else if (fileName == source2.fullName) {
-          expect(params.kind, ExecutableKind.EITHER);
-        } else if (fileName == source3.fullName) {
-          expect(params.kind, ExecutableKind.SERVER);
-        } else if (fileName == source4.fullName) {
-          expect(params.kind, ExecutableKind.NOT_EXECUTABLE);
-        } else if (fileName == source5.fullName) {
-          var referencedFiles = params.referencedFiles;
-          expect(referencedFiles, isNotNull);
-          expect(referencedFiles.length, equals(2));
-          expect(referencedFiles[0], equals(source6.fullName));
-          expect(referencedFiles[1], equals(source7.fullName));
-        }
-      });
-
-      ExecutionDomainHandler handler = new ExecutionDomainHandler(server);
-      Request request =
-          new ExecutionSetSubscriptionsParams([ExecutionService.LAUNCH_DATA])
-              .toRequest('0');
-      handler.handleRequest(request);
-
-//      controller.add(null);
-      expect(unsentNotifications, isEmpty);
-    });
+    // TODO(brianwilkerson) Re-enable these tests if we re-enable the
+    // execution.mapUri request.
+//    group('mapUri', () {
+//      String contextId;
+//
+//      void createExecutionContextIdForFile(String path) {
+//        Request request = new ExecutionCreateContextParams(path).toRequest('0');
+//        Response response = handler.handleRequest(request);
+//        expect(response, isResponseSuccess('0'));
+//        ExecutionCreateContextResult result =
+//            new ExecutionCreateContextResult.fromResponse(response);
+//        contextId = result.id;
+//      }
+//
+//      setUp(() {
+//        Folder folder = provider.newFile('/a/b.dart', '').parent;
+//        server.folderMap.putIfAbsent(folder, () {
+//          SourceFactory factory =
+//              new SourceFactory([new ResourceUriResolver(provider)]);
+//          AnalysisContext context =
+//              AnalysisEngine.instance.createAnalysisContext();
+//          context.sourceFactory = factory;
+//          return context;
+//        });
+//        createExecutionContextIdForFile('/a/b.dart');
+//      });
+//
+//      tearDown(() {
+//        Request request =
+//            new ExecutionDeleteContextParams(contextId).toRequest('1');
+//        Response response = handler.handleRequest(request);
+//        expect(response, isResponseSuccess('1'));
+//      });
+//
+//      group('file to URI', () {
+//        test('does not exist', () {
+//          Request request =
+//              new ExecutionMapUriParams(contextId, file: '/a/c.dart')
+//                  .toRequest('2');
+//          Response response = handler.handleRequest(request);
+//          expect(response, isResponseFailure('2'));
+//        });
+//
+//        test('directory', () {
+//          provider.newFolder('/a/d');
+//          Request request =
+//              new ExecutionMapUriParams(contextId, file: '/a/d').toRequest('2');
+//          Response response = handler.handleRequest(request);
+//          expect(response, isResponseFailure('2'));
+//        });
+//      });
+//
+//      group('URI to file', () {
+//        test('invalid', () {
+//          Request request =
+//              new ExecutionMapUriParams(contextId, uri: 'foo:///a/b.dart')
+//                  .toRequest('2');
+//          Response response = handler.handleRequest(request);
+//          expect(response, isResponseFailure('2'));
+//        });
+//      });
+//
+//      test('invalid context id', () {
+//        Request request =
+//            new ExecutionMapUriParams('xxx', uri: '').toRequest('4');
+//        Response response = handler.handleRequest(request);
+//        expect(response, isResponseFailure('4'));
+//      });
+//
+//      test('both file and uri', () {
+//        Request request =
+//            new ExecutionMapUriParams('xxx', file: '', uri: '').toRequest('5');
+//        Response response = handler.handleRequest(request);
+//        expect(response, isResponseFailure('5'));
+//      });
+//
+//      test('neither file nor uri', () {
+//        Request request = new ExecutionMapUriParams('xxx').toRequest('6');
+//        Response response = handler.handleRequest(request);
+//        expect(response, isResponseFailure('6'));
+//      });
+//    });
   });
 }
 

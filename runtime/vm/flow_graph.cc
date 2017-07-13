@@ -46,6 +46,7 @@ FlowGraph::FlowGraph(const ParsedFunction& parsed_function,
       loop_headers_(NULL),
       loop_invariant_loads_(NULL),
       deferred_prefixes_(parsed_function.deferred_prefixes()),
+      await_token_positions_(NULL),
       captured_parameters_(new (zone()) BitVector(zone(), variable_count())),
       inlining_id_(-1) {
   DiscoverBlocks();
@@ -83,11 +84,15 @@ void FlowGraph::ReplaceCurrentInstruction(ForwardInstructionIterator* iterator,
     }
   }
   if (current->ArgumentCount() != 0) {
-    // This is a call instruction. Must remove original push arguments.
+    // Replacing a call instruction with something else.  Must remove
+    // superfluous push arguments.
     for (intptr_t i = 0; i < current->ArgumentCount(); ++i) {
       PushArgumentInstr* push = current->PushArgumentAt(i);
-      push->ReplaceUsesWith(push->value()->definition());
-      push->RemoveFromGraph();
+      if (replacement == NULL || i >= replacement->ArgumentCount() ||
+          replacement->PushArgumentAt(i) != push) {
+        push->ReplaceUsesWith(push->value()->definition());
+        push->RemoveFromGraph();
+      }
     }
   }
   iterator->RemoveCurrentFromGraph();
@@ -415,6 +420,7 @@ void FlowGraph::ComputeIsReceiver(PhiInstr* phi) const {
 
 
 bool FlowGraph::IsReceiver(Definition* def) const {
+  def = def->OriginalDefinition();  // Could be redefined.
   if (def->IsParameter()) return (def->AsParameter()->index() == 0);
   if (!def->IsPhi() || graph_entry()->catch_entries().is_empty()) return false;
   PhiInstr* phi = def->AsPhi();
@@ -459,6 +465,19 @@ bool FlowGraph::InstanceCallNeedsClassCheck(InstanceCallInstr* call,
     }
   }
   return true;
+}
+
+
+Instruction* FlowGraph::CreateCheckClass(Definition* to_check,
+                                         const Cids& cids,
+                                         intptr_t deopt_id,
+                                         TokenPosition token_pos) {
+  if (cids.IsMonomorphic() && cids.MonomorphicReceiverCid() == kSmiCid) {
+    return new (zone())
+        CheckSmiInstr(new (zone()) Value(to_check), deopt_id, token_pos);
+  }
+  return new (zone())
+      CheckClassInstr(new (zone()) Value(to_check), deopt_id, cids, token_pos);
 }
 
 
@@ -969,15 +988,25 @@ void FlowGraph::Rename(GrowableArray<PhiInstr*>* live_phis,
   // Add global constants to the initial definitions.
   constant_null_ = GetConstant(Object::ZoneHandle());
   constant_dead_ = GetConstant(Symbols::OptimizedOut());
-  constant_empty_context_ =
-      GetConstant(Context::Handle(isolate()->object_store()->empty_context()));
+  constant_empty_context_ = GetConstant(Object::empty_context());
+
+  // Check if inlining_parameters include a type argument vector parameter.
+  const intptr_t inlined_type_args_param =
+      (FLAG_reify_generic_functions && (inlining_parameters != NULL) &&
+       function().IsGeneric())
+          ? 1
+          : 0;
 
   // Add parameters to the initial definitions and renaming environment.
   if (inlining_parameters != NULL) {
     // Use known parameters.
-    ASSERT(parameter_count() == inlining_parameters->length());
+    ASSERT(inlined_type_args_param + parameter_count() ==
+           inlining_parameters->length());
     for (intptr_t i = 0; i < parameter_count(); ++i) {
-      Definition* defn = (*inlining_parameters)[i];
+      // If inlined_type_args_param == 1, then (*inlining_parameters)[0]
+      // is the passed-in type args. We do not add it to env[0] but to
+      // env[parameter_count()] below.
+      Definition* defn = (*inlining_parameters)[inlined_type_args_param + i];
       AllocateSSAIndexes(defn);
       AddToInitialDefinitions(defn);
       env.Add(defn);
@@ -997,10 +1026,29 @@ void FlowGraph::Rename(GrowableArray<PhiInstr*>* live_phis,
   // Initialize all locals in the renaming environment  For OSR, the locals have
   // already been handled as parameters.
   if (!IsCompiledForOsr()) {
-    for (intptr_t i = parameter_count(); i < variable_count(); ++i) {
+    intptr_t i = parameter_count();
+    if (FLAG_reify_generic_functions && function().IsGeneric()) {
+      // The first local is the slot holding the copied passed-in type args.
+      // TODO(regis): Do we need the SpecialParameterInstr if the type_args_var
+      // is not needed? Add an assert for now:
+      ASSERT(parsed_function().function_type_arguments() != NULL);
+      Definition* defn;
+      if (inlining_parameters == NULL) {
+        defn = new SpecialParameterInstr(SpecialParameterInstr::kTypeArgs,
+                                         Thread::kNoDeoptId);
+      } else {
+        defn = (*inlining_parameters)[0];
+      }
+      AllocateSSAIndexes(defn);
+      AddToInitialDefinitions(defn);
+      env.Add(defn);
+      ++i;
+    }
+    for (; i < variable_count(); ++i) {
       if (i == CurrentContextEnvIndex()) {
         if (function().IsClosureFunction()) {
-          CurrentContextInstr* context = new CurrentContextInstr();
+          SpecialParameterInstr* context = new SpecialParameterInstr(
+              SpecialParameterInstr::kContext, Thread::kNoDeoptId);
           context->set_ssa_temp_index(alloc_ssa_temp_index());  // New SSA temp.
           AddToInitialDefinitions(context);
           env.Add(context);
@@ -1036,7 +1084,7 @@ void FlowGraph::AttachEnvironment(Instruction* instr,
     Value* use = it.CurrentValue();
     use->definition()->AddEnvUse(use);
   }
-  if (instr->CanDeoptimize()) {
+  if (instr->ComputeCanDeoptimize()) {
     instr->env()->set_deopt_id(instr->deopt_id());
   }
 }
@@ -1287,10 +1335,30 @@ void FlowGraph::RemoveDeadPhis(GrowableArray<PhiInstr*>* live_phis) {
 }
 
 
+RedefinitionInstr* FlowGraph::EnsureRedefinition(Instruction* prev,
+                                                 Definition* original,
+                                                 CompileType compile_type) {
+  RedefinitionInstr* first = prev->next()->AsRedefinition();
+  if (first != NULL && (first->constrained_type() != NULL)) {
+    if ((first->value()->definition() == original) &&
+        first->constrained_type()->IsEqualTo(&compile_type)) {
+      // Already redefined. Do nothing.
+      return NULL;
+    }
+  }
+  RedefinitionInstr* redef = new RedefinitionInstr(new Value(original));
+  redef->set_constrained_type(new CompileType(compile_type));
+  InsertAfter(prev, redef, NULL, FlowGraph::kValue);
+  RenameDominatedUses(original, redef, redef);
+  return redef;
+}
+
+
 void FlowGraph::RemoveRedefinitions() {
   // Remove redefinition instructions inserted to inhibit hoisting.
   for (BlockIterator block_it = reverse_postorder_iterator(); !block_it.Done();
        block_it.Advance()) {
+    thread()->CheckForSafepoint();
     for (ForwardInstructionIterator instr_it(block_it.Current());
          !instr_it.Done(); instr_it.Advance()) {
       RedefinitionInstr* redefinition = instr_it.Current()->AsRedefinition();
@@ -1815,7 +1883,7 @@ void FlowGraph::WidenSmiToInt32() {
 
   // Step 2. For each block in the graph compute which loop it belongs to.
   // We will use this information later during computation of the widening's
-  // gain: we are going to assume that only conversion occuring inside the
+  // gain: we are going to assume that only conversion occurring inside the
   // same loop should be counted against the gain, all other conversions
   // can be hoisted and thus cost nothing compared to the loop cost itself.
   const ZoneGrowableArray<BlockEntryInstr*>& loop_headers = LoopHeaders();
@@ -1995,7 +2063,7 @@ void FlowGraph::EliminateEnvironments() {
     }
     for (ForwardInstructionIterator it(block); !it.Done(); it.Advance()) {
       Instruction* current = it.Current();
-      if (!current->CanDeoptimize() &&
+      if (!current->ComputeCanDeoptimize() &&
           (!current->MayThrow() || !current->GetBlock()->InsideTryBlock())) {
         // Instructions that can throw need an environment for optimized
         // try-catch.
@@ -2242,20 +2310,18 @@ void FlowGraph::TryMergeTruncDivMod(
         (*merge_candidates)[k] = NULL;  // Clear it.
         ASSERT(curr_instr->HasUses());
         AppendExtractNthOutputForMerged(
-            curr_instr, MergedMathInstr::OutputIndexOf(curr_instr->op_kind()),
+            curr_instr, TruncDivModInstr::OutputIndexOf(curr_instr->op_kind()),
             kTagged, kSmiCid);
         ASSERT(other_binop->HasUses());
         AppendExtractNthOutputForMerged(
-            other_binop, MergedMathInstr::OutputIndexOf(other_binop->op_kind()),
-            kTagged, kSmiCid);
-
-        ZoneGrowableArray<Value*>* args = new (Z) ZoneGrowableArray<Value*>(2);
-        args->Add(new (Z) Value(curr_instr->left()->definition()));
-        args->Add(new (Z) Value(curr_instr->right()->definition()));
+            other_binop,
+            TruncDivModInstr::OutputIndexOf(other_binop->op_kind()), kTagged,
+            kSmiCid);
 
         // Replace with TruncDivMod.
-        MergedMathInstr* div_mod = new (Z) MergedMathInstr(
-            args, curr_instr->deopt_id(), MergedMathInstr::kTruncDivMod);
+        TruncDivModInstr* div_mod = new (Z) TruncDivModInstr(
+            curr_instr->left()->CopyWithType(),
+            curr_instr->right()->CopyWithType(), curr_instr->deopt_id());
         curr_instr->ReplaceWith(div_mod, NULL);
         other_binop->ReplaceUsesWith(div_mod);
         other_binop->RemoveFromGraph();

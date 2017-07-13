@@ -12,6 +12,9 @@ import "test_suite.dart";
 import "utils.dart";
 
 // Multitests are Dart test scripts containing lines of the form
+// " [some dart code] //# [key]: [error type]"
+//
+// To support legacy multi tests we also handle lines of the form
 // " [some dart code] /// [key]: [error type]"
 //
 // For each key in the file, a new test file is made containing all
@@ -28,10 +31,10 @@ import "utils.dart";
 //
 // For example: file I_am_a_multitest.dart
 //   aaa
-//   bbb /// 02: runtime error
-//   ccc /// 02: continued
-//   ddd /// 07: static type warning
-//   eee /// 10: ok
+//   bbb //# 02: runtime error
+//   ccc //# 02: continued
+//   ddd //# 07: static type warning
+//   eee //# 10: ok
 //   fff
 //
 // should create four tests:
@@ -41,59 +44,62 @@ import "utils.dart";
 //
 // I_am_a_multitest_02.dart
 //   aaa
-//   bbb /// 02: runtime error
-//   ccc /// 02: continued
+//   bbb //# 02: runtime error
+//   ccc //# 02: continued
 //   fff
 //
 // I_am_a_multitest_07.dart
 //   aaa
-//   ddd /// 07: static type warning
+//   ddd //# 07: static type warning
 //   fff
 //
 // and I_am_a_multitest_10.dart
 //   aaa
-//   eee /// 10: ok
+//   eee //# 10: ok
 //   fff
 //
 // Note that it is possible to indicate more than one acceptable outcome
 // in the case of dynamic and static type warnings
 //   aaa
-//   ddd /// 07: static type warning, dynamic type error
+//   ddd //# 07: static type warning, dynamic type error
 //   fff
+
+/// Until legacy multitests are ported we need to support both /// and //#
+final _multitestMarker = new RegExp(r"//[/#]");
 
 void ExtractTestsFromMultitest(Path filePath, Map<String, String> tests,
     Map<String, Set<String>> outcomes) {
   // Read the entire file into a byte buffer and transform it to a
   // String. This will treat the file as ascii but the only parts
   // we are interested in will be ascii in any case.
-  List bytes = new File(filePath.toNativePath()).readAsBytesSync();
-  String contents = decodeUtf8(bytes);
-  int first_newline = contents.indexOf('\n');
-  final String line_separator = (first_newline == 0 ||
-      contents[first_newline - 1] != '\r') ? '\n' : '\r\n';
-  List<String> lines = contents.split(line_separator);
+  var bytes = new File(filePath.toNativePath()).readAsBytesSync();
+  var contents = decodeUtf8(bytes);
+  var firstNewline = contents.indexOf('\n');
+  var lineSeparator =
+      (firstNewline == 0 || contents[firstNewline - 1] != '\r') ? '\n' : '\r\n';
+  var lines = contents.split(lineSeparator);
   if (lines.last == '') lines.removeLast();
   bytes = null;
   contents = null;
-  Set<String> validMultitestOutcomes = new Set<String>.from([
+  var validMultitestOutcomes = [
     'ok',
     'compile-time error',
     'runtime error',
     'static type warning',
     'dynamic type error',
     'checked mode compile-time error'
-  ]);
+  ].toSet();
 
   // Create the set of multitests, which will have a new test added each
   // time we see a multitest line with a new key.
-  Map<String, List<String>> testsAsLines = new Map<String, List<String>>();
+  var testsAsLines = <String, List<String>>{};
 
   // Add the default case with key "none".
-  testsAsLines['none'] = new List<String>();
+  testsAsLines['none'] = <String>[];
   outcomes['none'] = new Set<String>();
 
-  int lineCount = 0;
-  for (String line in lines) {
+  var lineCount = 0;
+  for (var line in lines) {
     lineCount++;
     var annotation = new _Annotation.from(line);
     if (annotation != null) {
@@ -123,10 +129,10 @@ void ExtractTestsFromMultitest(Path filePath, Map<String, String> tests,
   // joining the lines.
   var marker =
       '// Test created from multitest named ${filePath.toNativePath()}.'
-      '$line_separator';
+      '$lineSeparator';
   for (var test in testsAsLines.values) test.add(marker);
 
-  var keysToDelete = [];
+  var keysToDelete = <String>[];
   // Check that every key (other than the none case) has at least one outcome
   for (var outcomeKey in outcomes.keys) {
     if (outcomeKey != 'none' && outcomes[outcomeKey].isEmpty) {
@@ -143,12 +149,12 @@ void ExtractTestsFromMultitest(Path filePath, Map<String, String> tests,
   keysToDelete.forEach(testsAsLines.remove);
 
   // Copy all the tests into the output map tests, as multiline strings.
-  for (String key in testsAsLines.keys) {
-    tests[key] = testsAsLines[key].join(line_separator);
+  for (var key in testsAsLines.keys) {
+    tests[key] = testsAsLines[key].join(lineSeparator);
   }
 }
 
-// Represents a mutlitest annotation in the special /// comment.
+// Represents a mutlitest annotation in the special //# comment.
 class _Annotation {
   String key;
   String rest;
@@ -157,11 +163,11 @@ class _Annotation {
   factory _Annotation.from(String line) {
     // Do an early return with "null" if this is not a valid multitest
     // annotation.
-    if (!line.contains('///')) {
+    if (!line.contains(_multitestMarker)) {
       return null;
     }
     var parts = line
-        .split('///')[1]
+        .split(_multitestMarker)[1]
         .split(':')
         .map((s) => s.trim())
         .where((s) => s.length > 0)
@@ -182,10 +188,10 @@ class _Annotation {
 // Find all relative imports and copy them into the dir that contains
 // the generated tests.
 Set<String> _findAllRelativeImports(Path topLibrary) {
-  Set<Path> toSearch = new Set<Path>.from([topLibrary]);
-  Set<String> foundImports = new Set<String>();
-  Path libraryDir = topLibrary.directoryPath;
-  RegExp relativeImportRegExp = new RegExp(
+  var toSearch = [topLibrary].toSet();
+  var foundImports = new Set<String>();
+  var libraryDir = topLibrary.directoryPath;
+  var relativeImportRegExp = new RegExp(
       '^(?:@.*\\s+)?' // Allow for a meta-data annotation.
       '(import|part)'
       '\\s+["\']'
@@ -220,12 +226,8 @@ Set<String> _findAllRelativeImports(Path topLibrary) {
   return foundImports;
 }
 
-Future doMultitest(
-    Path filePath,
-    String outputDir,
-    Path suiteDir,
-    CreateTest doTest,
-    bool hotReload) {
+Future doMultitest(Path filePath, String outputDir, Path suiteDir,
+    CreateTest doTest, bool hotReload) {
   void writeFile(String filepath, String content) {
     final File file = new File(filepath);
 
@@ -306,8 +308,10 @@ String suiteNameFromPath(Path suiteDir) {
 
 Path createMultitestDirectory(String outputDir, Path suiteDir, Path sourceDir) {
   Path relative = sourceDir.relativeTo(suiteDir);
-  Path path = new Path(outputDir).append('generated_tests')
-      .append(suiteNameFromPath(suiteDir)).join(relative);
+  Path path = new Path(outputDir)
+      .append('generated_tests')
+      .append(suiteNameFromPath(suiteDir))
+      .join(relative);
   TestUtils.mkdirRecursive(TestUtils.currentWorkingDirectory, path);
   return new Path(new File(path.toNativePath()).absolute.path);
 }

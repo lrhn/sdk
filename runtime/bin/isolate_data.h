@@ -52,6 +52,15 @@ class IsolateData {
   char* package_root;
   char* packages_file;
   uint8_t* udp_receive_buffer;
+  void* kernel_program;
+
+  void UpdatePackagesFile(const char* packages_file_) {
+    if (packages_file != NULL) {
+      free(packages_file);
+      packages_file = NULL;
+    }
+    packages_file = strdup(packages_file_);
+  }
 
   // While loading a loader is associated with the isolate.
   bool HasLoader() const { return loader_ != NULL; }
@@ -67,6 +76,8 @@ class IsolateData {
   void set_dependencies(MallocGrowableArray<char*>* deps) {
     dependencies_ = deps;
   }
+
+  void OnIsolateShutdown();
 
  private:
   Dart_Handle builtin_lib_;

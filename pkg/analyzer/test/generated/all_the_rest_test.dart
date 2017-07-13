@@ -948,7 +948,8 @@ zap: baz
     int offset = src.indexOf('baz');
     int length = 'baz'.length;
 
-    SourceSpan span = new SourceFile(src).span(offset, offset + length);
+    SourceSpan span = new SourceSpanBase(
+        new SourceLocation(offset), new SourceLocation(offset + length), 'baz');
 
     reporter.reportErrorForSpan(
         AnalysisOptionsWarningCode.UNSUPPORTED_OPTION_WITH_LEGAL_VALUE,
@@ -1742,8 +1743,7 @@ on String catch (e, s) { return 1; }''');
   }
 
   void _assertHasReturn(bool expectedResult, String source) {
-    Statement statement =
-        parseStatement(source, [], enableLazyAssignmentOperators);
+    Statement statement = parseStatement(source, enableLazyAssignmentOperators);
     expect(ExitDetector.exits(statement), expectedResult);
   }
 

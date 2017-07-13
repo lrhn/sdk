@@ -3,13 +3,15 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import "dart:io";
-import "dart:isolate";
 import "dart:async";
+import "../../../tools/testing/dart/command.dart";
+import "../../../tools/testing/dart/configuration.dart";
+import "../../../tools/testing/dart/expectation.dart";
+import "../../../tools/testing/dart/options.dart";
 import "../../../tools/testing/dart/test_runner.dart";
 import "../../../tools/testing/dart/test_suite.dart";
 import "../../../tools/testing/dart/test_progress.dart" as progress;
-import "../../../tools/testing/dart/status_file_parser.dart";
-import "../../../tools/testing/dart/test_options.dart";
+import "../../../tools/testing/dart/utils.dart";
 import "process_test_util.dart";
 
 final DEFAULT_TIMEOUT = 20;
@@ -41,7 +43,7 @@ class TestController {
         print("stdout = [$stdout]");
         print("stderr = [$stderr]");
         throw "Test case ${testCase.displayName} passed unexpectedly, "
-              "result == ${testCase.result}";
+            "result == ${testCase.result}";
       }
     } else {
       if (testCase.unexpectedOutput) {
@@ -52,7 +54,7 @@ class TestController {
         print("stdout = [$stdout]");
         print("stderr = [$stderr]");
         throw "Test case ${testCase.displayName} failed, "
-              "result == ${testCase.result}";
+            "result == ${testCase.result}";
       }
     }
   }
@@ -60,27 +62,27 @@ class TestController {
   static void finished() {
     if (numTests != numCompletedTests) {
       throw "bad completion count. "
-            "expected: $numTests, actual: $numCompletedTests";
+          "expected: $numTests, actual: $numCompletedTests";
     }
   }
 }
 
-
 class CustomTestSuite extends TestSuite {
-  CustomTestSuite(Map configuration) : super(configuration, "CustomTestSuite");
+  CustomTestSuite(Configuration configuration)
+      : super(configuration, "CustomTestSuite");
 
-  void forEachTest(TestCaseEvent onTest, Map testCache, [onDone]) {
+  Future forEachTest(TestCaseEvent onTest, Map testCache, [onDone]) async {
     void enqueueTestCase(testCase) {
       TestController.numTests++;
       onTest(testCase);
     }
 
-    var testCaseCrash = _makeCrashTestCase("crash", [Expectation.CRASH]);
-    var testCasePass = _makeNormalTestCase("pass", [Expectation.PASS]);
-    var testCaseFail = _makeNormalTestCase("fail", [Expectation.FAIL]);
-    var testCaseTimeout = _makeNormalTestCase("timeout", [Expectation.TIMEOUT]);
+    var testCaseCrash = _makeCrashTestCase("crash", [Expectation.crash]);
+    var testCasePass = _makeNormalTestCase("pass", [Expectation.pass]);
+    var testCaseFail = _makeNormalTestCase("fail", [Expectation.fail]);
+    var testCaseTimeout = _makeNormalTestCase("timeout", [Expectation.timeout]);
     var testCaseFailUnexpected =
-        _makeNormalTestCase("fail-unexpected", [Expectation.PASS]);
+        _makeNormalTestCase("fail-unexpected", [Expectation.pass]);
 
     enqueueTestCase(testCaseCrash);
     enqueueTestCase(testCasePass);
@@ -96,17 +98,13 @@ class CustomTestSuite extends TestSuite {
   TestCase _makeNormalTestCase(name, expectations) {
     var args = packageOptions();
     args.addAll([Platform.script.toFilePath(), name]);
-    var command = CommandBuilder.instance.getProcessCommand(
-        'custom', Platform.executable,
-        args,
-        {});
+    var command = Command.process('custom', Platform.executable, args, {});
     return _makeTestCase(name, DEFAULT_TIMEOUT, command, expectations);
   }
 
   _makeCrashTestCase(name, expectations) {
-    var crashCommand = CommandBuilder.instance.getProcessCommand(
-        'custom_crash', getProcessTestFileName(), ["0", "0", "1", "1"],
-        {});
+    var crashCommand = Command.process(
+        'custom_crash', getProcessTestFileName(), ["0", "0", "1", "1"], {});
     // The crash test sometimes times out. Run it with a large timeout
     // to help diagnose the delay.
     // The test loads a new executable, which may sometimes take a long time.
@@ -116,25 +114,27 @@ class CustomTestSuite extends TestSuite {
   }
 
   _makeTestCase(name, timeout, command, expectations) {
-    var configuration = new TestOptionsParser()
-        .parse(['--timeout', '$timeout'])[0];
-    return new TestCase(name,
-                        [command],
-                        configuration,
-                        new Set<Expectation>.from(expectations));
+    var configuration = new OptionsParser().parse(['--timeout', '$timeout'])[0];
+    return new TestCase(name, [command], configuration,
+        new Set<Expectation>.from(expectations));
   }
 }
 
 void testProcessQueue() {
   var maxProcesses = 2;
   var maxBrowserProcesses = maxProcesses;
-  var config = new TestOptionsParser().parse(['--nobatch'])[0];
-  new ProcessQueue(config, maxProcesses, maxBrowserProcesses,
-      new DateTime.now(), [new CustomTestSuite(config)],
-      [new EventListener()], TestController.finished);
+  var config = new OptionsParser().parse(['--noBatch'])[0];
+  new ProcessQueue(
+      config,
+      maxProcesses,
+      maxBrowserProcesses,
+      new DateTime.now(),
+      [new CustomTestSuite(config)],
+      [new EventListener()],
+      TestController.finished);
 }
 
-class EventListener extends progress.EventListener{
+class EventListener extends progress.EventListener {
   void done(TestCase test) {
     TestController.processCompletedTest(test);
   }
@@ -158,7 +158,7 @@ void main(List<String> arguments) {
         break;
       case 'timeout':
         // This process should be killed by the test after DEFAULT_TIMEOUT
-        new Timer(new Duration(hours: 42), (){ });
+        new Timer(new Duration(hours: 42), () {});
         break;
       default:
         throw "Unknown option ${arguments[0]} passed to test_runner_test";

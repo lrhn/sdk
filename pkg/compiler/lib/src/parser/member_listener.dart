@@ -90,8 +90,9 @@ class MemberListener extends NodeListener {
   }
 
   @override
-  void endFactoryMethod(Token beginToken, Token endToken) {
-    super.endFactoryMethod(beginToken, endToken);
+  void endFactoryMethod(
+      Token beginToken, Token factoryKeyword, Token endToken) {
+    super.endFactoryMethod(beginToken, factoryKeyword, endToken);
     FunctionExpression method = popNode();
     pushNode(null);
     String name = getMethodNameHack(method.name);
@@ -131,10 +132,10 @@ class MemberListener extends NodeListener {
   }
 
   @override
-  void endFieldInitializer(Token assignmentOperator) {
+  void endFieldInitializer(Token assignmentOperator, Token token) {
     pushNode(null); // Super expects an expression, but
     // ClassElementParser just skips expressions.
-    super.endFieldInitializer(assignmentOperator);
+    super.endFieldInitializer(assignmentOperator, token);
   }
 
   @override
@@ -154,6 +155,10 @@ class MemberListener extends NodeListener {
   @override
   void endMetadata(Token beginToken, Token periodBeforeName, Token endToken) {
     super.endMetadata(beginToken, periodBeforeName, endToken);
-    pushMetadata(new PartialMetadataAnnotation(beginToken, endToken));
+    // TODO(paulberry,ahe): type variable metadata should not be ignored.  See
+    // dartbug.com/5841.
+    if (!inTypeVariable) {
+      pushMetadata(new PartialMetadataAnnotation(beginToken, endToken));
+    }
   }
 }

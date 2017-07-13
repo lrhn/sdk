@@ -11,6 +11,7 @@ import '../common/resolution.dart' show ResolutionImpact, ResolutionWorkItem;
 import '../common/tasks.dart' show CompilerTask;
 import '../compiler.dart' show Compiler;
 import '../elements/elements.dart';
+import '../elements/entities.dart' show Entity;
 import '../universe/world_impact.dart' show WorldImpact;
 import 'json_serializer.dart';
 import 'serialization.dart';
@@ -22,6 +23,9 @@ abstract class LibraryDeserializer {
   /// Loads the [LibraryElement] associated with a library under [uri], or null
   /// if no serialized information is available for the given library.
   Future<LibraryElement> readLibrary(Uri uri);
+
+  /// Returns `true` if [element] has been deserialized.
+  bool isDeserialized(Entity element);
 }
 
 /// Task that supports deserialization of elements.
@@ -55,7 +59,7 @@ class SerializationTask extends CompilerTask implements LibraryDeserializer {
   }
 
   /// Returns `true` if [element] has been deserialized.
-  bool isDeserialized(Element element) {
+  bool isDeserialized(Entity element) {
     return deserializer != null && deserializer.isDeserialized(element);
   }
 
@@ -70,7 +74,7 @@ class SerializationTask extends CompilerTask implements LibraryDeserializer {
   }
 
   /// Creates the [ResolutionWorkItem] for the deserialized [element].
-  ResolutionWorkItem createResolutionWorkItem(Element element) {
+  ResolutionWorkItem createResolutionWorkItem(MemberElement element) {
     assert(deserializer != null);
     assert(isDeserialized(element));
     return new DeserializedResolutionWorkItem(
@@ -135,7 +139,7 @@ class SerializationTask extends CompilerTask implements LibraryDeserializer {
 ///
 /// This will not resolve the element but only compute the [WorldImpact].
 class DeserializedResolutionWorkItem implements ResolutionWorkItem {
-  final Element element;
+  final MemberElement element;
   final WorldImpact worldImpact;
 
   DeserializedResolutionWorkItem(this.element, this.worldImpact);
@@ -150,7 +154,7 @@ class DeserializedResolutionWorkItem implements ResolutionWorkItem {
 /// elements.
 abstract class DeserializerSystem {
   Future<LibraryElement> readLibrary(Uri resolvedUri);
-  bool isDeserialized(Element element);
+  bool isDeserialized(Entity element);
   bool hasResolvedAst(ExecutableElement element);
   ResolvedAst getResolvedAst(ExecutableElement element);
   bool hasResolutionImpact(Element element);

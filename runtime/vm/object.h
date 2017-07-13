@@ -245,9 +245,9 @@ class Object {
   RawObject* raw() const { return raw_; }
   void operator=(RawObject* value) { initializeHandle(this, value); }
 
-  uword CompareAndSwapTags(uword old_tags, uword new_tags) const {
-    return AtomicOperations::CompareAndSwapWord(&raw()->ptr()->tags_, old_tags,
-                                                new_tags);
+  uint32_t CompareAndSwapTags(uint32_t old_tags, uint32_t new_tags) const {
+    return AtomicOperations::CompareAndSwapUint32(&raw()->ptr()->tags_,
+                                                  old_tags, new_tags);
   }
   bool IsCanonical() const { return raw()->IsCanonical(); }
   void SetCanonical() const { raw()->SetCanonical(); }
@@ -364,6 +364,10 @@ class Object {
     ASSERT(null_type_arguments_ != NULL);
     return *null_type_arguments_;
   }
+  static const TypeArguments& empty_type_arguments() {
+    ASSERT(empty_type_arguments_ != NULL);
+    return *empty_type_arguments_;
+  }
 
   static const Array& empty_array() {
     ASSERT(empty_array_ != NULL);
@@ -372,6 +376,11 @@ class Object {
   static const Array& zero_array() {
     ASSERT(zero_array_ != NULL);
     return *zero_array_;
+  }
+
+  static const Context& empty_context() {
+    ASSERT(empty_context_ != NULL);
+    return *empty_context_;
   }
 
   static const ContextScope& empty_context_scope() {
@@ -422,6 +431,16 @@ class Object {
     ASSERT(transition_sentinel_ != NULL);
     return *transition_sentinel_;
   }
+
+#if defined(HASH_IN_OBJECT_HEADER)
+  static uint32_t GetCachedHash(const RawObject* obj) {
+    return obj->ptr()->hash_;
+  }
+
+  static void SetCachedHash(RawObject* obj, uint32_t hash) {
+    obj->ptr()->hash_ = hash;
+  }
+#endif
 
   // Compiler's constant propagation constants.
   static const Instance& unknown_constant() {
@@ -783,8 +802,10 @@ class Object {
   static String* null_string_;
   static Instance* null_instance_;
   static TypeArguments* null_type_arguments_;
+  static TypeArguments* empty_type_arguments_;
   static Array* empty_array_;
   static Array* zero_array_;
+  static Context* empty_context_;
   static ContextScope* empty_context_scope_;
   static ObjectPool* empty_object_pool_;
   static PcDescriptors* empty_descriptors_;
@@ -1162,6 +1183,7 @@ class Class : public Object {
   RawFunction* LookupFunctionAllowPrivate(const String& name) const;
   RawFunction* LookupGetterFunction(const String& name) const;
   RawFunction* LookupSetterFunction(const String& name) const;
+  RawFunction* LookupCallFunctionForTypeTest() const;
   RawField* LookupInstanceField(const String& name) const;
   RawField* LookupStaticField(const String& name) const;
   RawField* LookupField(const String& name) const;
@@ -1547,6 +1569,14 @@ class UnresolvedClass : public Object {
 };
 
 
+// Classification of type genericity according to type parameter owners.
+enum Genericity {
+  kAny,              // Consider type params of current class and functions.
+  kCurrentClass,     // Consider type params of current class only.
+  kFunctions,        // Consider type params of current and parent functions.
+};
+
+
 // A TypeArguments is an array of AbstractType.
 class TypeArguments : public Object {
  public:
@@ -1579,10 +1609,12 @@ class TypeArguments : public Object {
   }
 
   // Check if this type argument vector would consist solely of DynamicType if
-  // it was instantiated from a raw (null) instantiator, i.e. consider each type
-  // parameter as it would be first instantiated from a vector of dynamic types.
+  // it was instantiated from both a raw (null) instantiator typearguments and
+  // a raw (null) function type arguments, i.e. consider each class type
+  // parameter and function type parameters as it would be first instantiated
+  // from a vector of dynamic types.
   // Consider only a prefix of length 'len'.
-  bool IsRawInstantiatedRaw(intptr_t len) const {
+  bool IsRawWhenInstantiatedFromRaw(intptr_t len) const {
     return IsDynamicTypes(true, 0, len);
   }
 
@@ -1624,11 +1656,16 @@ class TypeArguments : public Object {
                              TrailPtr trail = NULL) const;
 
   // Check if the vector is instantiated (it must not be null).
-  bool IsInstantiated(TrailPtr trail = NULL) const {
-    return IsSubvectorInstantiated(0, Length(), trail);
+  bool IsInstantiated(Genericity genericity = kAny,
+                      intptr_t num_free_fun_type_params = kMaxInt32,
+                      TrailPtr trail = NULL) const {
+    return IsSubvectorInstantiated(0, Length(), genericity,
+                                   num_free_fun_type_params, trail);
   }
   bool IsSubvectorInstantiated(intptr_t from_index,
                                intptr_t len,
+                               Genericity genericity = kAny,
+                               intptr_t num_free_fun_type_params = kMaxInt32,
                                TrailPtr trail = NULL) const;
   bool IsUninstantiatedIdentity() const;
   bool CanShareInstantiatorTypeArguments(const Class& instantiator_class) const;
@@ -1655,16 +1692,18 @@ class TypeArguments : public Object {
   // Canonicalize only if instantiated, otherwise returns 'this'.
   RawTypeArguments* Canonicalize(TrailPtr trail = NULL) const;
 
-  // Returns a formatted list of occuring type arguments with their URI.
+  // Returns a formatted list of occurring type arguments with their URI.
   RawString* EnumerateURIs() const;
 
   // Return 'this' if this type argument vector is instantiated, i.e. if it does
   // not refer to type parameters. Otherwise, return a new type argument vector
   // where each reference to a type parameter is replaced with the corresponding
-  // type of the instantiator type argument vector.
+  // type from the various type argument vectors (class instantiator, function,
+  // or parent functions via the current context).
   // If bound_error is not NULL, it may be set to reflect a bound error.
   RawTypeArguments* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -1674,6 +1713,7 @@ class TypeArguments : public Object {
   // finalization at compile time.
   RawTypeArguments* InstantiateAndCanonicalizeFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error) const;
 
   // Return true if this type argument vector has cached instantiations.
@@ -1715,7 +1755,7 @@ class TypeArguments : public Object {
 
   // Check if the subvector of length 'len' starting at 'from_index' of this
   // type argument vector consists solely of DynamicType.
-  // If raw_instantiated is true, consider each type parameter to be first
+  // If raw_instantiated is true, consider each class type parameter to be first
   // instantiated from a vector of dynamic types.
   bool IsDynamicTypes(bool raw_instantiated,
                       intptr_t from_index,
@@ -1748,6 +1788,7 @@ class TypeArguments : public Object {
   friend class AbstractType;
   friend class Class;
   friend class ClearTypeHashVisitor;
+  friend class Object;
 };
 
 
@@ -1856,6 +1897,8 @@ class ICData : public Object {
 
   intptr_t NumArgsTested() const;
 
+  intptr_t TypeArgsLen() const;
+
   intptr_t deopt_id() const {
 #if defined(DART_PRECOMPILED_RUNTIME)
     UNREACHABLE();
@@ -1878,13 +1921,13 @@ class ICData : public Object {
   V(BinaryMintOp)                                                              \
   V(DoubleToSmi)                                                               \
   V(CheckSmi)                                                                  \
+  V(CheckClass)                                                                \
   V(Unknown)                                                                   \
   V(PolymorphicInstanceCallTestFail)                                           \
   V(UnaryMintOp)                                                               \
   V(BinaryDoubleOp)                                                            \
   V(UnaryOp)                                                                   \
   V(UnboxInteger)                                                              \
-  V(CheckClass)                                                                \
   V(CheckArrayBound)                                                           \
   V(AtCall)                                                                    \
   V(GuardField)                                                                \
@@ -1918,10 +1961,15 @@ class ICData : public Object {
   // the final one.
   intptr_t Length() const;
 
+  // Takes O(result) time!
   intptr_t NumberOfChecks() const;
 
   // Discounts any checks with usage of zero.
+  // Takes O(result)) time!
   intptr_t NumberOfUsedChecks() const;
+
+  // Takes O(n) time!
+  bool NumberOfChecksIs(intptr_t n) const;
 
   static intptr_t InstanceSize() {
     return RoundedAllocationSize(sizeof(RawICData));
@@ -2009,7 +2057,8 @@ class ICData : public Object {
   intptr_t GetClassIdAt(intptr_t index, intptr_t arg_nr) const;
 
   RawFunction* GetTargetAt(intptr_t index) const;
-  RawFunction* GetTargetForReceiverClassId(intptr_t class_id) const;
+  RawFunction* GetTargetForReceiverClassId(intptr_t class_id,
+                                           intptr_t* count_return) const;
 
   RawObject* GetTargetOrCodeAt(intptr_t index) const;
   void SetCodeAt(intptr_t index, const Code& value) const;
@@ -2040,7 +2089,6 @@ class ICData : public Object {
   bool AllTargetsHaveSameOwner(intptr_t owner_cid) const;
   bool AllReceiversAreNumbers() const;
   bool HasOneTarget() const;
-  bool HasOnlyDispatcherOrImplicitAccessorTargets() const;
   bool HasReceiverClassId(intptr_t class_id) const;
 
   static RawICData* New(const Function& owner,
@@ -2171,43 +2219,38 @@ class Function : public Object {
   // function type with uninstantiated type arguments 'T' and 'R' as elements of
   // its type argument vector.
   RawType* SignatureType() const;
+  RawType* ExistingSignatureType() const;
+
+  // Allocate and return a signature function equivalent to this function.
+  RawFunction* CanonicalSignatureFunction(TrailPtr trail) const;
 
   // Update the signature type (with a canonical version).
   void SetSignatureType(const Type& value) const;
 
-  // Build a string of the form 'C<T, R>(T, {B b, C c}) => R' representing the
+  // Return a new function with instantiated result and parameter types.
+  RawFunction* InstantiateSignatureFrom(
+      const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
+      Heap::Space space) const;
+
+  // Build a string of the form '(T, {B b, C c}) => R' representing the
   // internal signature of the given function. In this example, T and R are
   // type parameters of class C, the owner of the function.
-  RawString* Signature() const {
-    const bool instantiate = false;
-    return BuildSignature(instantiate, kInternalName, TypeArguments::Handle());
-  }
+  RawString* Signature() const { return BuildSignature(kInternalName); }
 
   // Build a string of the form '(T, {B b, C c}) => R' representing the
   // user visible signature of the given function. In this example, T and R are
-  // type parameters of class C, the owner of the function, also called the
-  // scope class of the function type.
-  // Implicit parameters are hidden, as well as the prefix denoting the
-  // scope class and its type parameters.
+  // type parameters of class C, the owner of the function.
+  // Implicit parameters are hidden.
   RawString* UserVisibleSignature() const {
-    const bool instantiate = false;
-    return BuildSignature(instantiate, kUserVisibleName,
-                          TypeArguments::Handle());
-  }
-
-  // Build a string of the form '(A, {B b, C c}) => D' representing the
-  // signature of the given function, where all generic types (e.g. '<T, R>' in
-  // 'C<T, R>(T, {B b, C c}) => R') are instantiated using the given
-  // instantiator type argument vector of a C instance (e.g. '<A, D>').
-  RawString* InstantiatedSignatureFrom(const TypeArguments& instantiator,
-                                       NameVisibility name_visibility) const {
-    const bool instantiate = true;
-    return BuildSignature(instantiate, name_visibility, instantiator);
+    return BuildSignature(kUserVisibleName);
   }
 
   // Returns true if the signature of this function is instantiated, i.e. if it
   // does not involve generic parameter types or generic result type.
-  bool HasInstantiatedSignature() const;
+  bool HasInstantiatedSignature(Genericity genericity = kAny,
+                                intptr_t num_free_fun_type_params = kMaxInt32,
+                                TrailPtr trail = NULL) const;
 
   // Build a string of the form 'T, {B b, C c}' representing the user
   // visible formal parameters of the function.
@@ -2258,6 +2301,13 @@ class Function : public Object {
     return NumTypeParameters(Thread::Current());
   }
 
+  // Returns true if this function has the same number of type parameters with
+  // equal bounds as the other function. Type parameter names are ignored.
+  bool HasSameTypeParametersAndBounds(const Function& other) const;
+
+  // Return the number of type parameters declared in parent generic functions.
+  intptr_t NumParentTypeParameters() const;
+
   // Return a TypeParameter if the type_name is a type parameter of this
   // function or of one of its parent functions.
   // Unless NULL, adjust function_level accordingly (in and out parameter).
@@ -2268,15 +2318,24 @@ class Function : public Object {
   // Return true if this function declares type parameters.
   bool IsGeneric() const { return NumTypeParameters(Thread::Current()) > 0; }
 
+  // Return true if any parent function of this function is generic.
+  bool HasGenericParent() const;
+
   // Not thread-safe; must be called in the main thread.
   // Sets function's code and code's function.
-  void InstallOptimizedCode(const Code& code, bool is_osr) const;
+  void InstallOptimizedCode(const Code& code) const;
   void AttachCode(const Code& value) const;
   void SetInstructions(const Code& value) const;
   void ClearCode() const;
 
   // Disables optimized code and switches to unoptimized code.
   void SwitchToUnoptimizedCode() const;
+
+  // Ensures that the function has code. If there is no code it compiles the
+  // unoptimized version of the code.  If the code contains errors, it calls
+  // Exceptions::PropagateError and does not return.  Normally returns the
+  // current code, whether it is optimized or unoptimized.
+  RawCode* EnsureHasCode() const;
 
   // Disables optimized code and switches to unoptimized code (or the lazy
   // compilation stub).
@@ -2397,6 +2456,7 @@ class Function : public Object {
       case RawFunction::kInvokeFieldDispatcher:
         return true;
       case RawFunction::kClosureFunction:
+      case RawFunction::kSignatureFunction:
       case RawFunction::kConstructor:
       case RawFunction::kImplicitStaticFinalGetter:
       case RawFunction::kIrregexpFunction:
@@ -2420,7 +2480,11 @@ class Function : public Object {
       case RawFunction::kIrregexpFunction:
         return true;
       case RawFunction::kClosureFunction:
+      case RawFunction::kSignatureFunction:
       case RawFunction::kConstructor:
+      case RawFunction::kMethodExtractor:
+      case RawFunction::kNoSuchMethodDispatcher:
+      case RawFunction::kInvokeFieldDispatcher:
         return false;
       default:
         UNREACHABLE();
@@ -2570,24 +2634,22 @@ class Function : public Object {
 #endif
   }
 
-  void* kernel_function() const {
+  intptr_t kernel_offset() const {
 #if defined(DART_PRECOMPILED_RUNTIME)
-    return NULL;
+    return 0;
 #else
-    return raw_ptr()->kernel_function_;
+    return raw_ptr()->kernel_offset_;
 #endif
   }
 
-  void set_kernel_function(void* kernel_function) const {
+  void set_kernel_offset(intptr_t kernel_offset) const {
 #if !defined(DART_PRECOMPILED_RUNTIME)
-    StoreNonPointer(&raw_ptr()->kernel_function_, kernel_function);
+    StoreNonPointer(&raw_ptr()->kernel_offset_, kernel_offset);
 #endif
   }
 
   bool IsOptimizable() const;
-  bool IsNativeAutoSetupScope() const;
   void SetIsOptimizable(bool value) const;
-  void SetIsNativeAutoSetupScope(bool value) const;
 
   bool CanBeInlined() const;
 
@@ -2604,14 +2666,16 @@ class Function : public Object {
 
   // Returns true if the argument counts are valid for calling this function.
   // Otherwise, it returns false and the reason (if error_message is not NULL).
-  bool AreValidArgumentCounts(intptr_t num_arguments,
+  bool AreValidArgumentCounts(intptr_t num_type_arguments,
+                              intptr_t num_arguments,
                               intptr_t num_named_arguments,
                               String* error_message) const;
 
-  // Returns true if the total argument count and the names of optional
-  // arguments are valid for calling this function.
+  // Returns true if the type argument count, total argument count and the names
+  // of optional arguments are valid for calling this function.
   // Otherwise, it returns false and the reason (if error_message is not NULL).
-  bool AreValidArguments(intptr_t num_arguments,
+  bool AreValidArguments(intptr_t num_type_arguments,
+                         intptr_t num_arguments,
                          const Array& argument_names,
                          String* error_message) const;
   bool AreValidArguments(const ArgumentsDescriptor& args_desc,
@@ -2633,32 +2697,28 @@ class Function : public Object {
 
   // Returns true if the type of this function is a subtype of the type of
   // the other function.
-  bool IsSubtypeOf(const TypeArguments& type_arguments,
-                   const Function& other,
-                   const TypeArguments& other_type_arguments,
+  bool IsSubtypeOf(const Function& other,
                    Error* bound_error,
+                   TrailPtr bound_trail,
                    Heap::Space space) const {
-    return TypeTest(kIsSubtypeOf, type_arguments, other, other_type_arguments,
-                    bound_error, space);
+    return TypeTest(kIsSubtypeOf, other, bound_error, bound_trail, space);
   }
 
   // Returns true if the type of this function is more specific than the type of
   // the other function.
-  bool IsMoreSpecificThan(const TypeArguments& type_arguments,
-                          const Function& other,
-                          const TypeArguments& other_type_arguments,
+  bool IsMoreSpecificThan(const Function& other,
                           Error* bound_error,
+                          TrailPtr bound_trail,
                           Heap::Space space) const {
-    return TypeTest(kIsMoreSpecificThan, type_arguments, other,
-                    other_type_arguments, bound_error, space);
+    return TypeTest(kIsMoreSpecificThan, other, bound_error, bound_trail,
+                    space);
   }
 
   // Check the subtype or 'more specific' relationship.
   bool TypeTest(TypeTestKind test_kind,
-                const TypeArguments& type_arguments,
                 const Function& other,
-                const TypeArguments& other_type_arguments,
                 Error* bound_error,
+                TrailPtr bound_trail,
                 Heap::Space space) const;
 
   bool IsDispatcherOrImplicitAccessor() const {
@@ -2791,7 +2851,8 @@ class Function : public Object {
                           bool is_external,
                           bool is_native,
                           const Object& owner,
-                          TokenPosition token_pos);
+                          TokenPosition token_pos,
+                          Heap::Space space = Heap::kOld);
 
   // Allocates a new Function object representing a closure function.
   static RawFunction* NewClosureFunction(const String& name,
@@ -2800,8 +2861,11 @@ class Function : public Object {
 
   // Allocates a new Function object representing a signature function.
   // The owner is the scope class of the function type.
-  static RawFunction* NewSignatureFunction(const Class& owner,
-                                           TokenPosition token_pos);
+  // The parent is the enclosing function or null if none.
+  static RawFunction* NewSignatureFunction(const Object& owner,
+                                           const Function& parent,
+                                           TokenPosition token_pos,
+                                           Heap::Space space = Heap::kOld);
 
   static RawFunction* NewEvalFunction(const Class& owner,
                                       const Script& script,
@@ -2966,20 +3030,16 @@ class Function : public Object {
   void set_kind_tag(uint32_t value) const;
   void set_data(const Object& value) const;
 
-  static RawFunction* New();
+  static RawFunction* New(Heap::Space space = Heap::kOld);
 
   RawString* QualifiedName(NameVisibility name_visibility) const;
 
   void BuildSignatureParameters(
       Thread* thread,
       Zone* zone,
-      bool instantiate,
       NameVisibility name_visibility,
-      const TypeArguments& instantiator,
       GrowableHandlePtrArray<const String>* pieces) const;
-  RawString* BuildSignature(bool instantiate,
-                            NameVisibility name_visibility,
-                            const TypeArguments& instantiator) const;
+  RawString* BuildSignature(NameVisibility name_visibility) const;
 
   // Checks the type of the formal parameter at the given position for
   // subtyping or 'more specific' relationship between the type of this function
@@ -2987,10 +3047,9 @@ class Function : public Object {
   bool TestParameterType(TypeTestKind test_kind,
                          intptr_t parameter_position,
                          intptr_t other_parameter_position,
-                         const TypeArguments& type_arguments,
                          const Function& other,
-                         const TypeArguments& other_type_arguments,
                          Error* bound_error,
+                         TrailPtr bound_trail,
                          Heap::Space space) const;
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(Function, Object);
@@ -3052,7 +3111,7 @@ class SignatureData : public Object {
   RawType* signature_type() const { return raw_ptr()->signature_type_; }
   void set_signature_type(const Type& value) const;
 
-  static RawSignatureData* New();
+  static RawSignatureData* New(Heap::Space space = Heap::kOld);
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(SignatureData, Object);
   friend class Class;
@@ -3131,17 +3190,17 @@ class Field : public Object {
     set_kind_bits(DoubleInitializedBit::update(value, raw_ptr()->kind_bits_));
   }
 
-  void* kernel_field() const {
+  intptr_t kernel_offset() const {
 #if defined(DART_PRECOMPILED_RUNTIME)
     return NULL;
 #else
-    return raw_ptr()->kernel_field_;
+    return raw_ptr()->kernel_offset_;
 #endif
   }
 
-  void set_kernel_field(void* kernel_field) const {
+  void set_kernel_offset(intptr_t kernel_offset) const {
 #if !defined(DART_PRECOMPILED_RUNTIME)
-    StoreNonPointer(&raw_ptr()->kernel_field_, kernel_field);
+    StoreNonPointer(&raw_ptr()->kernel_offset_, kernel_offset);
 #endif
   }
 
@@ -3555,6 +3614,30 @@ class Script : public Object {
   }
   void set_compile_time_constants(const Array& value) const;
 
+  const uint8_t* kernel_data() { return raw_ptr()->kernel_data_; }
+  void set_kernel_data(const uint8_t* kernel_data) const;
+
+  intptr_t kernel_data_size() { return raw_ptr()->kernel_data_size_; }
+  void set_kernel_data_size(const intptr_t kernel_data_size) const;
+
+  intptr_t kernel_script_index() { return raw_ptr()->kernel_script_index_; }
+  void set_kernel_script_index(const intptr_t kernel_script_index) const;
+
+  RawTypedData* kernel_string_offsets() const {
+    return raw_ptr()->kernel_string_offsets_;
+  }
+  void set_kernel_string_offsets(const TypedData& offsets) const;
+
+  RawTypedData* kernel_string_data() const {
+    return raw_ptr()->kernel_string_data_;
+  }
+  void set_kernel_string_data(const TypedData& data) const;
+
+  RawTypedData* kernel_canonical_names() const {
+    return raw_ptr()->kernel_canonical_names_;
+  }
+  void set_kernel_canonical_names(const TypedData& names) const;
+
   RawTokenStream* tokens() const {
     ASSERT(kind() != RawScript::kKernelTag);
     return raw_ptr()->tokens_;
@@ -3566,7 +3649,7 @@ class Script : public Object {
 
   void set_yield_positions(const Array& value) const;
 
-  RawArray* yield_positions() const { return raw_ptr()->yield_positions_; }
+  RawArray* yield_positions() const;
 
   void Tokenize(const String& private_key, bool use_shared_tokens = true) const;
 
@@ -3618,8 +3701,8 @@ class Script : public Object {
   void set_kind(RawScript::Kind value) const;
   void set_load_timestamp(int64_t value) const;
   void set_tokens(const TokenStream& value) const;
-  RawArray* line_starts() const { return raw_ptr()->line_starts_; }
-  RawArray* debug_positions() const { return raw_ptr()->debug_positions_; }
+  RawArray* line_starts() const;
+  RawArray* debug_positions() const;
 
   static RawScript* New();
 
@@ -3744,7 +3827,6 @@ class Library : public Object {
   void AddClass(const Class& cls) const;
   void AddObject(const Object& obj, const String& name) const;
   void ReplaceObject(const Object& obj, const String& name) const;
-  bool RemoveObject(const Object& obj, const String& name) const;
   RawObject* LookupReExport(const String& name,
                             ZoneGrowableArray<intptr_t>* visited = NULL) const;
   RawObject* LookupObjectAllowPrivate(const String& name) const;
@@ -3753,6 +3835,7 @@ class Library : public Object {
   RawObject* LookupImportedObject(const String& name) const;
   RawClass* LookupClass(const String& name) const;
   RawClass* LookupClassAllowPrivate(const String& name) const;
+  RawClass* SlowLookupClassAllowMultiPartPrivate(const String& name) const;
   RawClass* LookupLocalClass(const String& name) const;
   RawField* LookupFieldAllowPrivate(const String& name) const;
   RawField* LookupLocalField(const String& name) const;
@@ -3778,13 +3861,13 @@ class Library : public Object {
   void AddClassMetadata(const Class& cls,
                         const Object& tl_owner,
                         TokenPosition token_pos,
-                        kernel::TreeNode* kernel_node = NULL) const;
+                        intptr_t kernel_offset = 0) const;
   void AddFieldMetadata(const Field& field,
                         TokenPosition token_pos,
-                        kernel::TreeNode* kernel_node = NULL) const;
+                        intptr_t kernel_offset = 0) const;
   void AddFunctionMetadata(const Function& func,
                            TokenPosition token_pos,
-                           kernel::TreeNode* kernel_node = NULL) const;
+                           intptr_t kernel_offset = 0) const;
   void AddLibraryMetadata(const Object& tl_owner,
                           TokenPosition token_pos) const;
   void AddTypeParameterMetadata(const TypeParameter& param,
@@ -3807,7 +3890,7 @@ class Library : public Object {
   RawLibrary* ImportLibraryAt(intptr_t index) const;
   bool ImportsCorelib() const;
 
-  void DropDependencies() const;
+  void DropDependenciesAndCaches() const;
 
   // Resolving native methods for script loaded in the library.
   Dart_NativeEntryResolver native_entry_resolver() const {
@@ -3871,7 +3954,7 @@ class Library : public Object {
   static RawLibrary* InternalLibrary();
   static RawLibrary* IsolateLibrary();
   static RawLibrary* MathLibrary();
-#if !defined(PRODUCT)
+#if !defined(DART_PRECOMPILED_RUNTIME)
   static RawLibrary* MirrorsLibrary();
 #endif
   static RawLibrary* NativeWrappersLibrary();
@@ -3912,6 +3995,11 @@ class Library : public Object {
   void CheckReload(const Library& replacement,
                    IsolateReloadContext* context) const;
 
+  // Returns a closure of top level function 'name' in the exported namespace
+  // of this library. If a top level function 'name' does not exist we look
+  // for a top level getter 'name' that returns a closure.
+  RawObject* GetFunctionClosure(const String& name) const;
+
  private:
   static const int kInitialImportsCapacity = 4;
   static const int kImportsCapacityIncrement = 8;
@@ -3926,22 +4014,23 @@ class Library : public Object {
   void InitClassDictionary() const;
 
   RawArray* resolved_names() const { return raw_ptr()->resolved_names_; }
-  void InitResolvedNamesCache(intptr_t size) const;
-  void AllocateExportedNamesCache() const;
-  void InitExportedNamesCache() const;
-  static void InvalidateExportedNamesCaches();
   bool LookupResolvedNamesCache(const String& name, Object* obj) const;
   void AddToResolvedNamesCache(const String& name, const Object& obj) const;
+  void InitResolvedNamesCache() const;
+  void ClearResolvedNamesCache() const;
   void InvalidateResolvedName(const String& name) const;
   void InvalidateResolvedNamesCache() const;
 
   RawArray* exported_names() const { return raw_ptr()->exported_names_; }
   bool LookupExportedNamesCache(const String& name, Object* obj) const;
   void AddToExportedNamesCache(const String& name, const Object& obj) const;
+  void InitExportedNamesCache() const;
+  void ClearExportedNamesCache() const;
+  static void InvalidateExportedNamesCaches();
 
 
   void InitImportList() const;
-  void GrowDictionary(const Array& dict, intptr_t dict_size) const;
+  void RehashDictionary(const Array& old_dict, intptr_t new_dict_size) const;
   static RawLibrary* NewLibraryHelper(const String& url, bool import_core_lib);
   RawObject* LookupEntry(const String& name, intptr_t* index) const;
 
@@ -3952,18 +4041,19 @@ class Library : public Object {
   void AddMetadata(const Object& owner,
                    const String& name,
                    TokenPosition token_pos,
-                   kernel::TreeNode* kernel_node = NULL) const;
+                   intptr_t kernel_offset = 0) const;
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(Library, Object);
 
   friend class Bootstrap;
   friend class Class;
   friend class Debugger;
-  friend class Isolate;
   friend class DictionaryIterator;
+  friend class Isolate;
+  friend class LibraryDeserializationCluster;
   friend class Namespace;
   friend class Object;
-  friend class LibraryDeserializationCluster;
+  friend class Precompiler;
 };
 
 
@@ -4150,9 +4240,6 @@ class Instructions : public Object {
 #elif defined(TARGET_ARCH_ARM64)
   static const intptr_t kCheckedEntryOffset = 16;
   static const intptr_t kUncheckedEntryOffset = 40;
-#elif defined(TARGET_ARCH_MIPS)
-  static const intptr_t kCheckedEntryOffset = 12;
-  static const intptr_t kUncheckedEntryOffset = 52;
 #elif defined(TARGET_ARCH_DBC)
   static const intptr_t kCheckedEntryOffset = 0;
   static const intptr_t kUncheckedEntryOffset = 0;
@@ -4377,12 +4464,20 @@ class PcDescriptors : public Object {
     intptr_t cur_try_index_;
   };
 
+  intptr_t Length() const;
+  bool Equals(const PcDescriptors& other) const {
+    if (Length() != other.Length()) {
+      return false;
+    }
+    NoSafepointScope no_safepoint;
+    return memcmp(raw_ptr(), other.raw_ptr(), InstanceSize(Length())) == 0;
+  }
+
  private:
   static const char* KindAsStr(RawPcDescriptors::Kind kind);
 
   static RawPcDescriptors* New(intptr_t length);
 
-  intptr_t Length() const;
   void SetLength(intptr_t value) const;
   void CopyData(GrowableArray<uint8_t>* data);
 
@@ -4512,12 +4607,15 @@ class ExceptionHandlers : public Object {
   uword HandlerPCOffset(intptr_t try_index) const;
   intptr_t OuterTryIndex(intptr_t try_index) const;
   bool NeedsStackTrace(intptr_t try_index) const;
+  bool IsGenerated(intptr_t try_index) const;
 
   void SetHandlerInfo(intptr_t try_index,
                       intptr_t outer_try_index,
                       uword handler_pc_offset,
                       bool needs_stacktrace,
-                      bool has_catch_all) const;
+                      bool has_catch_all,
+                      TokenPosition token_pos,
+                      bool is_generated) const;
 
   RawArray* GetHandledTypes(intptr_t try_index) const;
   void SetHandledTypes(intptr_t try_index, const Array& handled_types) const;
@@ -4550,51 +4648,6 @@ class ExceptionHandlers : public Object {
   FINAL_HEAP_OBJECT_IMPLEMENTATION(ExceptionHandlers, Object);
   friend class Class;
   friend class Object;
-};
-
-
-// Holds deopt information at one deoptimization point. The information consists
-// of two parts:
-//  - first a prefix consiting of kMaterializeObject instructions describing
-//    objects which had their allocation removed as part of AllocationSinking
-//    pass and have to be materialized;
-//  - followed by a list of DeoptInstr objects, specifying transformation
-//    information for each slot in unoptimized frame(s).
-// Arguments for object materialization (class of instance to be allocated and
-// field-value pairs) are added as artificial slots to the expression stack
-// of the bottom-most frame. They are removed from the stack at the very end
-// of deoptimization by the deoptimization stub.
-class DeoptInfo : public AllStatic {
- public:
-  // Size of the frame part of the translation not counting kMaterializeObject
-  // instructions in the prefix.
-  static intptr_t FrameSize(const TypedData& packed);
-
-  // Returns the number of kMaterializeObject instructions in the prefix.
-  static intptr_t NumMaterializations(const GrowableArray<DeoptInstr*>&);
-
-  // Unpack the entire translation into an array of deoptimization
-  // instructions.  This copies any shared suffixes into the array.
-  static void Unpack(const Array& table,
-                     const TypedData& packed,
-                     GrowableArray<DeoptInstr*>* instructions);
-
-  // Size of the frame part of the translation not counting kMaterializeObject
-  // instructions in the prefix.
-  static const char* ToCString(const Array& table, const TypedData& packed);
-
-  // Returns true iff decompression yields the same instructions as the
-  // original.
-  static bool VerifyDecompression(const GrowableArray<DeoptInstr*>& original,
-                                  const Array& deopt_table,
-                                  const TypedData& packed);
-
-
- private:
-  static void UnpackInto(const Array& table,
-                         const TypedData& packed,
-                         GrowableArray<DeoptInstr*>* instructions,
-                         intptr_t length);
 };
 
 
@@ -4639,8 +4692,7 @@ class Code : public Object {
   void set_is_alive(bool value) const;
 
   uword PayloadStart() const {
-    const Instructions& instr = Instructions::Handle(instructions());
-    return instr.PayloadStart();
+    return Instructions::PayloadStart(instructions());
   }
   uword UncheckedEntryPoint() const {
     const Instructions& instr = Instructions::Handle(instructions());
@@ -4650,10 +4702,7 @@ class Code : public Object {
     const Instructions& instr = Instructions::Handle(instructions());
     return instr.CheckedEntryPoint();
   }
-  intptr_t Size() const {
-    const Instructions& instr = Instructions::Handle(instructions());
-    return instr.Size();
-  }
+  intptr_t Size() const { return Instructions::Size(instructions()); }
   RawObjectPool* GetObjectPool() const { return object_pool(); }
   bool ContainsInstructionAt(uword addr) const {
     const Instructions& instr = Instructions::Handle(instructions());
@@ -4681,6 +4730,9 @@ class Code : public Object {
     StorePointer(&raw_ptr()->code_source_map_, code_source_map.raw());
   }
 
+  RawArray* await_token_positions() const;
+  void set_await_token_positions(const Array& await_token_positions) const;
+
   // Used during reloading (see object_reload.cc). Calls Reset on all ICDatas
   // that are embedded inside the Code object.
   void ResetICDatas(Zone* zone) const;
@@ -4695,6 +4747,16 @@ class Code : public Object {
 #endif
   }
   void set_deopt_info_array(const Array& array) const;
+
+#if !defined(DART_PRECOMPILED_RUNTIME) && !defined(DART_PRECOMPILER)
+  RawSmi* variables() const { return raw_ptr()->catch_entry_.variables_; }
+  void set_variables(const Smi& smi) const;
+#else
+  RawTypedData* catch_entry_state_maps() const {
+    return raw_ptr()->catch_entry_.catch_entry_state_maps_;
+  }
+  void set_catch_entry_state_maps(const TypedData& maps) const;
+#endif
 
   RawArray* stackmaps() const { return raw_ptr()->stackmaps_; }
   void set_stackmaps(const Array& maps) const;
@@ -4794,7 +4856,7 @@ class Code : public Object {
       intptr_t pc_offset,
       GrowableArray<const Function*>* functions,
       GrowableArray<TokenPosition>* token_positions) const;
-  // Same as above, expect the pc is intepreted as a return address (as needed
+  // Same as above, expect the pc is interpreted as a return address (as needed
   // for a stack trace or the bottom frames of a profiler sample).
   void GetInlinedFunctionsAtReturnAddress(
       intptr_t pc_offset,
@@ -5005,7 +5067,7 @@ class Code : public Object {
   friend class FunctionSerializationCluster;
   friend class CodeSerializationCluster;
   friend class CodePatcher;  // for set_instructions
-  friend class Precompiler;  // for set_instructions
+  friend class ProgramVisitor;  // for set_instructions
   // So that the RawFunction pointer visitor can determine whether code the
   // function points to is optimized.
   friend class RawFunction;
@@ -5065,6 +5127,7 @@ class Context : public Object {
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(Context, Object);
   friend class Class;
+  friend class Object;
 };
 
 
@@ -5191,7 +5254,7 @@ class MegamorphicCache : public Object {
  private:
   friend class Class;
   friend class MegamorphicCacheTable;
-  friend class Precompiler;
+  friend class ProgramVisitor;
 
   static RawMegamorphicCache* New();
 
@@ -5223,19 +5286,22 @@ class SubtypeTestCache : public Object {
     kInstanceClassIdOrFunction = 0,
     kInstanceTypeArguments = 1,
     kInstantiatorTypeArguments = 2,
-    kTestResult = 3,
-    kTestEntryLength = 4,
+    kFunctionTypeArguments = 3,
+    kTestResult = 4,
+    kTestEntryLength = 5,
   };
 
   intptr_t NumberOfChecks() const;
   void AddCheck(const Object& instance_class_id_or_function,
                 const TypeArguments& instance_type_arguments,
                 const TypeArguments& instantiator_type_arguments,
+                const TypeArguments& function_type_arguments,
                 const Bool& test_result) const;
   void GetCheck(intptr_t ix,
                 Object* instance_class_id_or_function,
                 TypeArguments* instance_type_arguments,
                 TypeArguments* instantiator_type_arguments,
+                TypeArguments* function_type_arguments,
                 Bool* test_result) const;
 
   static RawSubtypeTestCache* New();
@@ -5398,9 +5464,6 @@ class UnwindError : public Error {
   bool is_user_initiated() const { return raw_ptr()->is_user_initiated_; }
   void set_is_user_initiated(bool value) const;
 
-  bool is_vm_restart() const { return raw_ptr()->is_vm_restart_; }
-  void set_is_vm_restart(bool value) const;
-
   RawString* message() const { return raw_ptr()->message_; }
 
   static intptr_t InstanceSize() {
@@ -5473,9 +5536,11 @@ class Instance : public Object {
   virtual RawTypeArguments* GetTypeArguments() const;
   virtual void SetTypeArguments(const TypeArguments& value) const;
 
-  // Check if the type of this instance is a subtype of the given type.
-  bool IsInstanceOf(const AbstractType& type,
-                    const TypeArguments& type_instantiator,
+  // Check if the type of this instance is a subtype of the given other type.
+  // The type argument vectors are used to instantiate the other type if needed.
+  bool IsInstanceOf(const AbstractType& other,
+                    const TypeArguments& other_instantiator_type_arguments,
+                    const TypeArguments& other_function_type_arguments,
                     Error* bound_error) const;
 
   bool IsValidNativeIndex(int index) const {
@@ -5545,7 +5610,7 @@ class Instance : public Object {
 
   static intptr_t NextFieldOffset() { return sizeof(RawInstance); }
 
-  // The follwoing raw methods are used for morphing.
+  // The following raw methods are used for morphing.
   // They are needed due to the extraction of the class in IsValidFieldOffset.
   RawObject** RawFieldAddrAtOffset(intptr_t offset) const {
     return reinterpret_cast<RawObject**>(raw_value() - kHeapObjectTag + offset);
@@ -5658,7 +5723,9 @@ class AbstractType : public Instance {
   virtual RawTypeArguments* arguments() const;
   virtual void set_arguments(const TypeArguments& value) const;
   virtual TokenPosition token_pos() const;
-  virtual bool IsInstantiated(TrailPtr trail = NULL) const;
+  virtual bool IsInstantiated(Genericity genericity = kAny,
+                              intptr_t num_free_fun_type_params = kMaxInt32,
+                              TrailPtr trail = NULL) const;
   virtual bool CanonicalizeEquals(const Instance& other) const {
     return Equals(other);
   }
@@ -5671,11 +5738,13 @@ class AbstractType : public Instance {
   // Check if this type represents a function type.
   virtual bool IsFunctionType() const { return false; }
 
-  // Instantiate this type using the given type argument vector.
+  // Instantiate this type using the given type argument vectors and possibly
+  // the current context.
   // Return a new type, or return 'this' if it is already instantiated.
   // If bound_error is not NULL, it may be set to reflect a bound error.
   virtual RawAbstractType* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -5738,7 +5807,7 @@ class AbstractType : public Instance {
     return BuildName(kUserVisibleName);
   }
 
-  // Returns a formatted list of occuring types with their URI.
+  // Returns a formatted list of occurring types with their URI.
   virtual RawString* EnumerateURIs() const;
 
   virtual intptr_t Hash() const;
@@ -5768,6 +5837,9 @@ class AbstractType : public Instance {
 
   // Check if this type represents the 'int' type.
   bool IsIntType() const;
+
+  // Check if this type represents the '_int64' type.
+  bool IsInt64Type() const;
 
   // Check if this type represents the 'double' type.
   bool IsDoubleType() const;
@@ -5873,10 +5945,15 @@ class Type : public AbstractType {
   virtual RawTypeArguments* arguments() const { return raw_ptr()->arguments_; }
   virtual void set_arguments(const TypeArguments& value) const;
   virtual TokenPosition token_pos() const { return raw_ptr()->token_pos_; }
-  virtual bool IsInstantiated(TrailPtr trail = NULL) const;
+  virtual bool IsInstantiated(Genericity genericity = kAny,
+                              intptr_t num_free_fun_type_params = kMaxInt32,
+                              TrailPtr trail = NULL) const;
   virtual bool IsEquivalent(const Instance& other, TrailPtr trail = NULL) const;
   virtual bool IsRecursive() const;
-  // If signature is not null, this type represents a function type.
+  // If signature is not null, this type represents a function type. Note that
+  // the signature fully represents the type and type arguments can be ignored.
+  // However, in case of a generic typedef, they document how the typedef class
+  // was parameterized to obtain the actual signature.
   RawFunction* signature() const;
   void set_signature(const Function& value) const;
   virtual bool IsFunctionType() const {
@@ -5884,6 +5961,7 @@ class Type : public AbstractType {
   }
   virtual RawAbstractType* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -5921,6 +5999,9 @@ class Type : public AbstractType {
 
   // The 'int' type.
   static RawType* IntType();
+
+  // The '_int64' type.
+  static RawType* Int64Type();
 
   // The 'Smi' type.
   static RawType* SmiType();
@@ -5977,15 +6058,18 @@ class Type : public AbstractType {
 
 
 // A TypeRef is used to break cycles in the representation of recursive types.
-// Its only field is the recursive AbstractType it refers to.
+// Its only field is the recursive AbstractType it refers to, which can
+// temporarily be null during finalization.
 // Note that the cycle always involves type arguments.
 class TypeRef : public AbstractType {
  public:
   virtual bool IsFinalized() const {
-    return AbstractType::Handle(type()).IsFinalized();
+    const AbstractType& ref_type = AbstractType::Handle(type());
+    return !ref_type.IsNull() && ref_type.IsFinalized();
   }
   virtual bool IsBeingFinalized() const {
-    return AbstractType::Handle(type()).IsBeingFinalized();
+    const AbstractType& ref_type = AbstractType::Handle(type());
+    return ref_type.IsNull() || ref_type.IsBeingFinalized();
   }
   virtual bool IsMalformed() const {
     return AbstractType::Handle(type()).IsMalformed();
@@ -6011,11 +6095,14 @@ class TypeRef : public AbstractType {
   virtual TokenPosition token_pos() const {
     return AbstractType::Handle(type()).token_pos();
   }
-  virtual bool IsInstantiated(TrailPtr trail = NULL) const;
+  virtual bool IsInstantiated(Genericity genericity = kAny,
+                              intptr_t num_free_fun_type_params = kMaxInt32,
+                              TrailPtr trail = NULL) const;
   virtual bool IsEquivalent(const Instance& other, TrailPtr trail = NULL) const;
   virtual bool IsRecursive() const { return true; }
   virtual RawTypeRef* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -6082,7 +6169,6 @@ class TypeParameter : public AbstractType {
   RawString* name() const { return raw_ptr()->name_; }
   intptr_t index() const { return raw_ptr()->index_; }
   void set_index(intptr_t value) const;
-  intptr_t parent_level() const { return raw_ptr()->parent_level_; }
   RawAbstractType* bound() const { return raw_ptr()->bound_; }
   void set_bound(const AbstractType& value) const;
   // Returns true if bounded_type is below upper_bound, otherwise return false
@@ -6095,11 +6181,14 @@ class TypeParameter : public AbstractType {
                   TrailPtr bound_trail,
                   Heap::Space space) const;
   virtual TokenPosition token_pos() const { return raw_ptr()->token_pos_; }
-  virtual bool IsInstantiated(TrailPtr trail = NULL) const { return false; }
+  virtual bool IsInstantiated(Genericity genericity = kAny,
+                              intptr_t num_free_fun_type_params = kMaxInt32,
+                              TrailPtr trail = NULL) const;
   virtual bool IsEquivalent(const Instance& other, TrailPtr trail = NULL) const;
   virtual bool IsRecursive() const { return false; }
   virtual RawAbstractType* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -6126,7 +6215,6 @@ class TypeParameter : public AbstractType {
   static RawTypeParameter* New(const Class& parameterized_class,
                                const Function& parameterized_function,
                                intptr_t index,
-                               intptr_t parent_level,
                                const String& name,
                                const AbstractType& bound,
                                TokenPosition token_pos);
@@ -6139,7 +6227,6 @@ class TypeParameter : public AbstractType {
   void set_parameterized_function(const Function& value) const;
   void set_name(const String& value) const;
   void set_token_pos(TokenPosition token_pos) const;
-  void set_parent_level(intptr_t value) const;
   void set_type_state(int8_t state) const;
 
   static RawTypeParameter* New();
@@ -6189,17 +6276,21 @@ class BoundedType : public AbstractType {
   virtual TokenPosition token_pos() const {
     return AbstractType::Handle(type()).token_pos();
   }
-  virtual bool IsInstantiated(TrailPtr trail = NULL) const {
+  virtual bool IsInstantiated(Genericity genericity = kAny,
+                              intptr_t num_free_fun_type_params = kMaxInt32,
+                              TrailPtr trail = NULL) const {
     // It is not possible to encounter an instantiated bounded type with an
     // uninstantiated upper bound. Therefore, we do not need to check if the
     // bound is instantiated. Moreover, doing so could lead into cycles, as in
     // class C<T extends C<C>> { }.
-    return AbstractType::Handle(type()).IsInstantiated();
+    return AbstractType::Handle(type()).IsInstantiated(
+        genericity, num_free_fun_type_params, trail);
   }
   virtual bool IsEquivalent(const Instance& other, TrailPtr trail = NULL) const;
   virtual bool IsRecursive() const;
   virtual RawAbstractType* InstantiateFrom(
       const TypeArguments& instantiator_type_arguments,
+      const TypeArguments& function_type_arguments,
       Error* bound_error,
       TrailPtr instantiation_trail,
       TrailPtr bound_trail,
@@ -6653,8 +6744,11 @@ class String : public Instance {
   // All strings share the same maximum element count to keep things
   // simple.  We choose a value that will prevent integer overflow for
   // 2 byte strings, since it is the worst case.
-  static const intptr_t kSizeofRawString =
-      sizeof(RawInstance) + (2 * kWordSize);
+#if defined(HASH_IN_OBJECT_HEADER)
+  static const intptr_t kSizeofRawString = sizeof(RawInstance) + kWordSize;
+#else
+  static const intptr_t kSizeofRawString = sizeof(RawInstance) + 2 * kWordSize;
+#endif
   static const intptr_t kMaxElements = kSmiMax / kTwoByteChar;
 
   class CodePointIterator : public ValueObject {
@@ -6690,18 +6784,20 @@ class String : public Instance {
   static intptr_t length_offset() { return OFFSET_OF(RawString, length_); }
 
   intptr_t Hash() const {
-    intptr_t result = Smi::Value(raw_ptr()->hash_);
+    intptr_t result = GetCachedHash(raw());
     if (result != 0) {
       return result;
     }
     result = String::Hash(*this, 0, this->Length());
-    this->SetHash(result);
+    SetCachedHash(raw(), result);
     return result;
   }
 
+  static intptr_t Hash(RawString* raw);
+
   bool HasHash() const {
     ASSERT(Smi::New(0) == NULL);
-    return (raw_ptr()->hash_ != NULL);
+    return GetCachedHash(raw()) != 0;
   }
 
   static intptr_t hash_offset() { return OFFSET_OF(RawString, hash_); }
@@ -6711,7 +6807,7 @@ class String : public Instance {
   static intptr_t Hash(const int32_t* characters, intptr_t len);
   static intptr_t HashRawSymbol(const RawString* symbol) {
     ASSERT(symbol->IsCanonical());
-    intptr_t result = Smi::Value(symbol->ptr()->hash_);
+    intptr_t result = GetCachedHash(symbol);
     ASSERT(result != 0);
     return result;
   }
@@ -6930,6 +7026,16 @@ class String : public Instance {
                           intptr_t end,
                           double* result);
 
+#if !defined(HASH_IN_OBJECT_HEADER)
+  static uint32_t GetCachedHash(const RawString* obj) {
+    return Smi::Value(obj->ptr()->hash_);
+  }
+
+  static void SetCachedHash(RawString* obj, uintptr_t hash) {
+    obj->ptr()->hash_ = Smi::New(hash);
+  }
+#endif
+
  protected:
   // These two operate on an array of Latin-1 encoded characters.
   // They are protected to avoid mistaking Latin-1 for UTF-8, but used
@@ -6943,11 +7049,7 @@ class String : public Instance {
     StoreSmi(&raw_ptr()->length_, Smi::New(value));
   }
 
-  void SetHash(intptr_t value) const {
-    // This is only safe because we create a new Smi, which does not cause
-    // heap allocation.
-    StoreSmi(&raw_ptr()->hash_, Smi::New(value));
-  }
+  void SetHash(intptr_t value) const { SetCachedHash(raw(), value); }
 
   template <typename HandleType, typename ElementType, typename CallbackType>
   static void ReadFromImpl(SnapshotReader* reader,
@@ -7006,6 +7108,12 @@ class OneByteString : public AllStatic {
   static intptr_t InstanceSize(intptr_t len) {
     ASSERT(sizeof(RawOneByteString) == String::kSizeofRawString);
     ASSERT(0 <= len && len <= kMaxElements);
+#if defined(HASH_IN_OBJECT_HEADER)
+    // We have to pad zero-length raw strings so that they can be externalized.
+    // If we don't pad, then the external string object does not fit in the
+    // memory allocated for the raw string.
+    if (len == 0) return InstanceSize(1);
+#endif
     return String::RoundedAllocationSize(sizeof(RawOneByteString) +
                                          (len * kBytesPerElement));
   }
@@ -7139,6 +7247,10 @@ class TwoByteString : public AllStatic {
   static intptr_t InstanceSize(intptr_t len) {
     ASSERT(sizeof(RawTwoByteString) == String::kSizeofRawString);
     ASSERT(0 <= len && len <= kMaxElements);
+    // We have to pad zero-length raw strings so that they can be externalized.
+    // If we don't pad, then the external string object does not fit in the
+    // memory allocated for the raw string.
+    if (len == 0) return InstanceSize(1);
     return String::RoundedAllocationSize(sizeof(RawTwoByteString) +
                                          (len * kBytesPerElement));
   }
@@ -7504,7 +7616,10 @@ class Array : public Instance {
   // object or a regular Object so that it can be traversed during garbage
   // collection. The backing array of the original Growable Object Array is
   // set to an empty array.
-  static RawArray* MakeArray(const GrowableObjectArray& growable_array);
+  // If the unique parameter is false, the function is allowed to return
+  // a shared Array instance.
+  static RawArray* MakeFixedLength(const GrowableObjectArray& growable_array,
+                                   bool unique = false);
 
   RawArray* Slice(intptr_t start,
                   intptr_t count,
@@ -7618,8 +7733,6 @@ class GrowableObjectArray : public Instance {
     // reusing the type argument vector of the instantiator.
     ASSERT(value.IsNull() || ((value.Length() >= 1) && value.IsInstantiated() &&
                               value.IsCanonical()));
-    const Array& contents = Array::Handle(data());
-    contents.SetTypeArguments(value);
     StorePointer(&raw_ptr()->type_arguments_, value.raw());
   }
 
@@ -7670,7 +7783,7 @@ class GrowableObjectArray : public Instance {
     return &(DataArray()->data()[index]);
   }
 
-  static const int kDefaultInitialCapacity = 4;
+  static const int kDefaultInitialCapacity = 0;
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(GrowableObjectArray, Instance);
   friend class Array;
@@ -7813,29 +7926,15 @@ class TypedData : public Instance {
   virtual bool CanonicalizeEquals(const Instance& other) const;
   virtual uword ComputeCanonicalTableHash() const;
 
-#if defined(HOST_ARCH_IA32) || defined(HOST_ARCH_X64)
 #define TYPED_GETTER_SETTER(name, type)                                        \
   type Get##name(intptr_t byte_offset) const {                                 \
     NoSafepointScope no_safepoint;                                             \
-    return *reinterpret_cast<type*>(DataAddr(byte_offset));                    \
+    return ReadUnaligned(reinterpret_cast<type*>(DataAddr(byte_offset)));      \
   }                                                                            \
   void Set##name(intptr_t byte_offset, type value) const {                     \
     NoSafepointScope no_safepoint;                                             \
-    *reinterpret_cast<type*>(DataAddr(byte_offset)) = value;                   \
+    StoreUnaligned(reinterpret_cast<type*>(DataAddr(byte_offset)), value);     \
   }
-#else  // defined(HOST_ARCH_IA32) || defined(HOST_ARCH_X64)
-#define TYPED_GETTER_SETTER(name, type)                                        \
-  type Get##name(intptr_t byte_offset) const {                                 \
-    NoSafepointScope no_safepoint;                                             \
-    type result;                                                               \
-    memmove(&result, DataAddr(byte_offset), sizeof(type));                     \
-    return result;                                                             \
-  }                                                                            \
-  void Set##name(intptr_t byte_offset, type value) const {                     \
-    NoSafepointScope no_safepoint;                                             \
-    memmove(DataAddr(byte_offset), &value, sizeof(type));                      \
-  }
-#endif  // defined(HOST_ARCH_IA32) || defined(HOST_ARCH_X64)
 
   TYPED_GETTER_SETTER(Int8, int8_t)
   TYPED_GETTER_SETTER(Uint8, uint8_t)
@@ -8295,23 +8394,25 @@ class LinkedHashMap : public Instance {
 
 class Closure : public Instance {
  public:
-  RawFunction* function() const { return raw_ptr()->function_; }
-  void set_function(const Function& function) const {
-    // TODO(regis): Only used from deferred_objects.cc. Remove once fixed.
-    StorePointer(&raw_ptr()->function_, function.raw());
+  RawTypeArguments* instantiator_type_arguments() const {
+    return raw_ptr()->instantiator_type_arguments_;
   }
+  static intptr_t instantiator_type_arguments_offset() {
+    return OFFSET_OF(RawClosure, instantiator_type_arguments_);
+  }
+
+  RawTypeArguments* function_type_arguments() const {
+    return raw_ptr()->function_type_arguments_;
+  }
+  static intptr_t function_type_arguments_offset() {
+    return OFFSET_OF(RawClosure, function_type_arguments_);
+  }
+
+  RawFunction* function() const { return raw_ptr()->function_; }
   static intptr_t function_offset() { return OFFSET_OF(RawClosure, function_); }
 
   RawContext* context() const { return raw_ptr()->context_; }
-  void set_context(const Context& context) const {
-    // TODO(regis): Only used from deferred_objects.cc. Remove once fixed.
-    StorePointer(&raw_ptr()->context_, context.raw());
-  }
   static intptr_t context_offset() { return OFFSET_OF(RawClosure, context_); }
-
-  static intptr_t type_arguments_offset() {
-    return OFFSET_OF(RawClosure, type_arguments_);
-  }
 
   static intptr_t InstanceSize() {
     return RoundedAllocationSize(sizeof(RawClosure));
@@ -8324,7 +8425,9 @@ class Closure : public Instance {
     return true;
   }
 
-  static RawClosure* New(const Function& function,
+  static RawClosure* New(const TypeArguments& instantiator_type_arguments,
+                         const TypeArguments& function_type_arguments,
+                         const Function& function,
                          const Context& context,
                          Heap::Space space = Heap::kNew);
 
@@ -8427,12 +8530,10 @@ class StackTrace : public Instance {
                             const StackTrace& async_link,
                             Heap::Space space = Heap::kNew);
 
-  // The argument 'max_frames' limits the number of printed frames.
-  static const char* ToCStringInternal(const StackTrace& stack_trace,
-                                       intptr_t* frame_index,
-                                       intptr_t max_frames = kMaxInt32);
-
  private:
+  static const char* ToDartCString(const StackTrace& stack_trace_in);
+  static const char* ToDwarfCString(const StackTrace& stack_trace_in);
+
   void set_code_array(const Array& code_array) const;
   void set_pc_offset_array(const Array& pc_offset_array) const;
   bool expand_inlined() const;
@@ -8830,7 +8931,7 @@ bool String::Equals(const String& str) const {
 
 
 intptr_t Library::UrlHash() const {
-  intptr_t result = Smi::Value(url()->ptr()->hash_);
+  intptr_t result = String::GetCachedHash(url());
   ASSERT(result != 0);
   return result;
 }

@@ -5,14 +5,14 @@ define(['dart_sdk'], function(dart_sdk) {
   const dartx = dart_sdk.dartx;
   const destructuring = Object.create(null);
   const src__varargs = Object.create(null);
-  let intAnddynamic__Todynamic = () => (intAnddynamic__Todynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [core.int, dart.dynamic], [dart.dynamic])))();
-  let intAnddynamic__Todynamic$ = () => (intAnddynamic__Todynamic$ = dart.constFn(dart.definiteFunctionType(dart.dynamic, [core.int, dart.dynamic], {c: dart.dynamic})))();
-  let intAnddynamicTodynamic = () => (intAnddynamicTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [core.int, dart.dynamic])))();
-  let intAnddynamicAnddynamicTodynamic = () => (intAnddynamicAnddynamicTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [core.int, dart.dynamic, dart.dynamic])))();
-  let __Todynamic = () => (__Todynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [], [core.int, dart.dynamic, dart.dynamic])))();
-  let __Todynamic$ = () => (__Todynamic$ = dart.constFn(dart.definiteFunctionType(dart.dynamic, [], {let: core.int, function: dart.dynamic, arguments: dart.dynamic})))();
-  let __Todynamic$0 = () => (__Todynamic$0 = dart.constFn(dart.definiteFunctionType(dart.dynamic, [], {constructor: core.int, valueOf: dart.dynamic, hasOwnProperty: dart.dynamic})))();
-  let dynamicTodynamic = () => (dynamicTodynamic = dart.constFn(dart.definiteFunctionType(dart.dynamic, [dart.dynamic])))();
+  let intAnddynamic__Todynamic = () => (intAnddynamic__Todynamic = dart.constFn(dart.fnType(dart.dynamic, [core.int, dart.dynamic], [dart.dynamic])))();
+  let intAnddynamic__Todynamic$ = () => (intAnddynamic__Todynamic$ = dart.constFn(dart.fnType(dart.dynamic, [core.int, dart.dynamic], {c: dart.dynamic})))();
+  let intAnddynamicTodynamic = () => (intAnddynamicTodynamic = dart.constFn(dart.fnType(dart.dynamic, [core.int, dart.dynamic])))();
+  let intAnddynamicAnddynamicTodynamic = () => (intAnddynamicAnddynamicTodynamic = dart.constFn(dart.fnType(dart.dynamic, [core.int, dart.dynamic, dart.dynamic])))();
+  let __Todynamic = () => (__Todynamic = dart.constFn(dart.fnType(dart.dynamic, [], [core.int, dart.dynamic, dart.dynamic])))();
+  let __Todynamic$ = () => (__Todynamic$ = dart.constFn(dart.fnType(dart.dynamic, [], {let: core.int, function: dart.dynamic, arguments: dart.dynamic})))();
+  let __Todynamic$0 = () => (__Todynamic$0 = dart.constFn(dart.fnType(dart.dynamic, [], {constructor: core.int, valueOf: dart.dynamic, hasOwnProperty: dart.dynamic})))();
+  let dynamicTodynamic = () => (dynamicTodynamic = dart.constFn(dart.fnType(dart.dynamic, [dart.dynamic])))();
   destructuring.f = function(a, b, c = 1) {
     destructuring.f(a, b, c);
   };
@@ -71,18 +71,22 @@ define(['dart_sdk'], function(dart_sdk) {
     destructuring.f(constructor, valueOf, hasOwnProperty);
   };
   dart.fn(destructuring.names_clashing_with_object_props, __Todynamic$0());
-  src__varargs._Rest = class _Rest extends core.Object {
-    new() {
+  src__varargs._Rest = class _Rest extends core.Object {};
+  (src__varargs._Rest.new = function() {
+  }).prototype = src__varargs._Rest.prototype;
+  dart.defineLazy(src__varargs, {
+    get rest() {
+      return dart.const(new src__varargs._Rest.new());
     }
-  };
-  dart.setSignature(src__varargs._Rest, {
-    constructors: () => ({new: dart.definiteFunctionType(src__varargs._Rest, [])})
   });
-  src__varargs.rest = dart.const(new src__varargs._Rest());
   src__varargs.spread = function(args) {
-    dart.throw(new core.StateError('The spread function cannot be called, ' + 'it should be compiled away.'));
+    dart.throw(new core.StateError.new('The spread function cannot be called, ' + 'it should be compiled away.'));
   };
   dart.fn(src__varargs.spread, dynamicTodynamic());
+  dart.trackLibraries("destructuring", {
+    "destructuring.dart": destructuring,
+    "package:js/src/varargs.dart": src__varargs
+  }, null);
   // Exports:
   return {
     destructuring: destructuring,

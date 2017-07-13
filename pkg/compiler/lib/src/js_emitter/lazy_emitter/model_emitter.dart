@@ -23,12 +23,15 @@ import 'package:js_runtime/shared/embedded_names.dart'
 import '../../../compiler_new.dart';
 import '../../compiler.dart' show Compiler;
 import '../../constants/values.dart' show ConstantValue, FunctionConstantValue;
-import '../../core_types.dart' show CommonElements;
+import '../../common_elements.dart' show CommonElements;
 import '../../elements/elements.dart' show ClassElement, MethodElement;
 import '../../js/js.dart' as js;
 import '../../js_backend/js_backend.dart'
     show JavaScriptBackend, Namer, ConstantEmitter;
+import '../../js_backend/interceptor_data.dart';
+import '../../world.dart';
 import '../constant_ordering.dart' show deepCompareConstants;
+import '../code_emitter_task.dart';
 import '../js_emitter.dart' show NativeEmitter;
 import '../js_emitter.dart' show NativeGenerator, buildTearOffCode;
 import '../model.dart';
@@ -38,6 +41,7 @@ class ModelEmitter {
   final Namer namer;
   ConstantEmitter constantEmitter;
   final NativeEmitter nativeEmitter;
+  final ClosedWorld _closedWorld;
 
   JavaScriptBackend get backend => compiler.backend;
 
@@ -49,12 +53,21 @@ class ModelEmitter {
 
   static const String typeNameProperty = r"builtin$cls";
 
-  ModelEmitter(Compiler compiler, Namer namer, this.nativeEmitter)
-      : this.compiler = compiler,
-        this.namer = namer {
+  ModelEmitter(this.compiler, this.namer, this.nativeEmitter, this._closedWorld,
+      CodeEmitterTask task) {
     this.constantEmitter = new ConstantEmitter(
-        compiler, namer, this.generateConstantReference, constantListGenerator);
+        compiler.options,
+        _closedWorld.commonElements,
+        compiler.codegenWorldBuilder,
+        _closedWorld.rtiNeed,
+        compiler.backend.rtiEncoder,
+        namer,
+        task,
+        this.generateConstantReference,
+        constantListGenerator);
   }
+
+  InterceptorData get _interceptorData => _closedWorld.interceptorData;
 
   js.Expression constantListGenerator(js.Expression array) {
     // TODO(floitsch): remove hard-coded name.
@@ -105,8 +118,10 @@ class ModelEmitter {
   }
 
   js.Expression generateStaticClosureAccess(MethodElement element) {
-    return js.js('#.#()',
-        [namer.globalObjectFor(element), namer.staticClosureName(element)]);
+    return js.js('#.#()', [
+      namer.globalObjectForMember(element),
+      namer.staticClosureName(element)
+    ]);
   }
 
   js.Expression generateConstantReference(ConstantValue value) {
@@ -134,8 +149,7 @@ class ModelEmitter {
     // We have to emit the deferred fragments first, since we need their
     // deferred hash (which depends on the output) when emitting the main
     // fragment.
-    List<js.Expression> fragmentsCode =
-        deferredFragments.map((DeferredFragment deferredUnit) {
+    List<js.Expression> fragmentsCode = deferredFragments.map((deferredUnit) {
       js.Expression types =
           program.metadataTypesForOutputUnit(deferredUnit.outputUnit);
       return emitDeferredFragment(types, deferredUnit, program.holders);
@@ -149,9 +163,12 @@ class ModelEmitter {
 
     program.finalizers.forEach((js.TokenFinalizer f) => f.finalizeTokens());
 
-    // TODO(johnnniwinther): Support source maps in this emitter.
+    // TODO(johnniwinther): Support source maps in this emitter.
     for (int i = 0; i < fragmentsCode.length; ++i) {
-      String code = js.createCodeBuffer(fragmentsCode[i], compiler).getText();
+      String code = js
+          .createCodeBuffer(fragmentsCode[i], compiler.options,
+              backend.sourceInformationStrategy)
+          .getText();
       totalSize += code.length;
       compiler.outputProvider(
           fragments[i + 1].outputFileName, deferredExtension, OutputType.jsPart)
@@ -159,7 +176,10 @@ class ModelEmitter {
         ..close();
     }
 
-    String mainCode = js.createCodeBuffer(mainAst, compiler).getText();
+    String mainCode = js
+        .createCodeBuffer(
+            mainAst, compiler.options, backend.sourceInformationStrategy)
+        .getText();
     compiler.outputProvider(mainFragment.outputFileName, 'js', OutputType.js)
       ..add(buildGeneratedBy(compiler))
       ..add(mainCode)
@@ -179,7 +199,7 @@ class ModelEmitter {
   /// See [_UnparsedNode] for details.
   js.Literal unparse(Compiler compiler, js.Node value,
       {bool protectForEval: true}) {
-    return new js.UnparsedNode(value, compiler, protectForEval);
+    return new js.UnparsedNode(value, compiler.options, protectForEval);
   }
 
   String buildGeneratedBy(compiler) {
@@ -202,7 +222,8 @@ class ModelEmitter {
     Map<String, dynamic> holes = {
       'deferredInitializer': emitDeferredInitializerGlobal(program.loadMap),
       'holders': emitHolders(program.holders),
-      'tearOff': buildTearOffCode(backend),
+      'tearOff': buildTearOffCode(compiler.options, backend.emitter.emitter,
+          backend.namer, _closedWorld.commonElements),
       'parseFunctionDescriptor':
           js.js.statement(parseFunctionDescriptorBoilerplate, {
         'argumentCount': js.string(namer.requiredParameterField),
@@ -210,7 +231,7 @@ class ModelEmitter {
         'callName': js.string(namer.callNameField)
       }),
       'cyclicThrow': backend.emitter
-          .staticFunctionAccess(backend.helpers.cyclicThrowHelper),
+          .staticFunctionAccess(_closedWorld.commonElements.cyclicThrowHelper),
       'outputContainsConstantList': program.outputContainsConstantList,
       'embeddedGlobals': emitEmbeddedGlobals(program),
       'readMetadataTypeFunction': readMetadataTypeFunction,
@@ -234,10 +255,11 @@ class ModelEmitter {
     Map<String, dynamic> nativeHoles = <String, dynamic>{};
 
     js.Statement nativeIsolateAffinityTagInitialization;
-    if (NativeGenerator.needsIsolateAffinityTagInitialization(backend)) {
+    if (NativeGenerator
+        .needsIsolateAffinityTagInitialization(_closedWorld.backendUsage)) {
       nativeIsolateAffinityTagInitialization =
           NativeGenerator.generateIsolateAffinityTagInitialization(
-              backend,
+              _closedWorld.backendUsage,
               generateEmbeddedGlobalAccess,
               // TODO(floitsch): internStringFunction.
               js.js("(function(x) { return x; })", []));
@@ -343,7 +365,7 @@ class ModelEmitter {
   js.Property emitMangledGlobalNames() {
     List<js.Property> names = <js.Property>[];
 
-    CommonElements commonElements = compiler.commonElements;
+    CommonElements commonElements = _closedWorld.commonElements;
     // We want to keep the original names for the most common core classes when
     // calling toString on them.
     List<ClassElement> nativeClassesNeedingUnmangledName = [
@@ -377,14 +399,13 @@ class ModelEmitter {
     List<js.Property> globals = <js.Property>[];
 
     js.ArrayInitializer fragmentUris(List<Fragment> fragments) {
-      return js.stringArray(fragments.map((DeferredFragment fragment) =>
-          "${fragment.outputFileName}.$deferredExtension"));
+      return js.stringArray(fragments
+          .map((fragment) => "${fragment.outputFileName}.$deferredExtension"));
     }
 
     js.ArrayInitializer fragmentHashes(List<Fragment> fragments) {
       // TODO(floitsch): the hash must depend on the generated code.
-      return js.numArray(
-          fragments.map((DeferredFragment fragment) => fragment.hashCode));
+      return js.numArray(fragments.map((fragment) => fragment.hashCode));
     }
 
     List<js.Property> uris = new List<js.Property>(loadMap.length);
@@ -715,14 +736,12 @@ class ModelEmitter {
     Iterable<Method> methods = cls.methods;
     Iterable<Method> isChecks = cls.isChecks;
     Iterable<Method> callStubs = cls.callStubs;
-    Iterable<Method> typeVariableReaderStubs = cls.typeVariableReaderStubs;
     Iterable<Method> noSuchMethodStubs = cls.noSuchMethodStubs;
     Iterable<Method> gettersSetters = _generateGettersSetters(cls);
     Iterable<Method> allMethods = [
       methods,
       isChecks,
       callStubs,
-      typeVariableReaderStubs,
       noSuchMethodStubs,
       gettersSetters
     ].expand((x) => x);
@@ -862,8 +881,7 @@ function parseFunctionDescriptor(proto, name, descriptor, typesOffset) {
 
         if (method.needsTearOff) {
           MethodElement element = method.element;
-          bool isIntercepted =
-              backend.interceptorData.isInterceptedMethod(element);
+          bool isIntercepted = _interceptorData.isInterceptedMethod(element);
           data.add(new js.LiteralBool(isIntercepted));
           data.add(js.quoteName(method.tearOffName));
           data.add((method.functionType));
@@ -877,7 +895,7 @@ function parseFunctionDescriptor(proto, name, descriptor, typesOffset) {
         return [js.quoteName(method.name), new js.ArrayInitializer(data)];
       } else {
         // TODO(floitsch): not the most efficient way...
-        return ([method]..addAll(method.parameterStubs))
+        return (<dynamic>[method]..addAll(method.parameterStubs))
             .expand(makeNameCodePair);
       }
     } else {
@@ -912,7 +930,7 @@ function parseFunctionDescriptor(proto, name, descriptor, typesOffset) {
         /// field whether the method is intercepted.
         // [name, [function, callName, tearOffName, functionType,
         //     stub1_name, stub1_callName, stub1_code, ...]
-        var data = [unparse(compiler, method.code)];
+        var data = <js.Expression>[unparse(compiler, method.code)];
         data.add(js.quoteName(method.callName));
         data.add(js.quoteName(method.tearOffName));
         data.add(method.functionType);
@@ -1027,7 +1045,7 @@ function parseFunctionDescriptor(proto, name, descriptor, typesOffset) {
       };
     } else {
       // Parse the tear off information and generate compile handlers.
-      // TODO(herhut): Share parser with instance methods.      
+      // TODO(herhut): Share parser with instance methods.
       function compileAllStubs(typesOffset) {
         var funs;
         var fun = compile(name, descriptor[0]);
@@ -1050,7 +1068,7 @@ function parseFunctionDescriptor(proto, name, descriptor, typesOffset) {
           if (typeof reflectionInfo == "number") {
             reflectionInfo = reflectionInfo + typesOffset;
           }
-          holder[descriptor[2]] = 
+          holder[descriptor[2]] =
               tearOff(funs, reflectionInfo, true, name, false);
         }
         if (pos < descriptor.length) {

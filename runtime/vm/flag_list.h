@@ -12,12 +12,6 @@
 #define USING_DBC false
 #endif
 
-#if defined(TARGET_OS_FUCHSIA)
-#define USING_FUCHSIA true
-#else
-#define USING_FUCHSIA false
-#endif
-
 // Don't use USING_MULTICORE outside of this file.
 #if defined(ARCH_IS_MULTI_CORE)
 #define USING_MULTICORE true
@@ -25,10 +19,11 @@
 #define USING_MULTICORE false
 #endif
 
-#if defined(DEBUG)
-#define USING_DEBUG true
+// Don't use USING_PRODUCT outside of this file.
+#if defined(PRODUCT)
+#define USING_PRODUCT true
 #else
-#define USING_DEBUG false
+#define USING_PRODUCT false
 #endif
 
 // List of all flags in the VM.
@@ -51,8 +46,6 @@
     "Run optimizing compilation in background")                                \
   R(background_compilation_stop_alot, false, bool, false,                      \
     "Stress test system: stop background compiler often.")                     \
-  P(background_finalization, bool, false,                                      \
-    "Run weak handle finalizers in background")                                \
   R(break_at_isolate_spawn, false, bool, false,                                \
     "Insert a one-time breakpoint at the entrypoint for all spawned isolates") \
   C(collect_code, false, true, bool, true,                                     \
@@ -73,11 +66,11 @@
   R(dump_megamorphic_stats, false, bool, false,                                \
     "Dump megamorphic cache statistics")                                       \
   R(dump_symbol_stats, false, bool, false, "Dump symbol table statistics")     \
+  P(dwarf_stack_traces, bool, false,                                           \
+    "Emit DWARF line number and inlining info"                                 \
+    "in dylib snapshots and don't symbolize stack traces.")                    \
   R(enable_asserts, false, bool, false, "Enable assert statements.")           \
-  R(enable_malloc_hooks, false, bool, USING_DEBUG,                             \
-    "Enable native memory statistic collection. Enabled by default in Debug "  \
-    "mode")                                                                    \
-  C(enable_mirrors, false, false, bool, true,                                  \
+  P(enable_mirrors, bool, true,                                                \
     "Disable to make importing dart:mirrors an error.")                        \
   R(enable_type_checks, false, bool, false, "Enable type checks.")             \
   R(error_on_bad_override, false, bool, false,                                 \
@@ -101,8 +94,7 @@
   P(interpret_irregexp, bool, USING_DBC, "Use irregexp bytecode interpreter")  \
   P(lazy_dispatchers, bool, true, "Generate dispatchers lazily")               \
   P(link_natives_lazily, bool, false, "Link native calls lazily")              \
-  R(limit_ints_to_64_bits, false, bool, false,                                 \
-    "Throw a RangeError on 64-bit integer overflow");                          \
+  P(limit_ints_to_64_bits, bool, false, "Truncate integers to 64 bits")        \
   C(load_deferred_eagerly, true, true, bool, false,                            \
     "Load deferred libraries eagerly.")                                        \
   R(log_marker_tasks, false, bool, false,                                      \
@@ -137,13 +129,22 @@
     "Print additional memory and latency metrics for benchmarking.")           \
   R(print_ssa_liveranges, false, bool, false,                                  \
     "Print live ranges after allocation.")                                     \
+  R(print_stacktrace_at_api_error, false, bool, false,                         \
+    "Attempt to print a native stack trace when an API error is created.")     \
   C(print_stop_message, false, false, bool, false, "Print stop message.")      \
   D(print_variable_descriptors, bool, false,                                   \
     "Print variable descriptors in disassembly.")                              \
-  R(profiler, false, bool, !USING_DBC && !USING_FUCHSIA,                       \
-    "Enable the profiler.")                                                    \
+  R(profiler, false, bool, !USING_DBC, "Enable the profiler.")                 \
+  R(profiler_native_memory, false, bool, false,                                \
+    "Enable native memory statistic collection.")                              \
+  P(reify_generic_functions, bool, false,                                      \
+    "Enable reification of generic functions (not yet supported).")            \
   P(reorder_basic_blocks, bool, true, "Reorder basic blocks")                  \
-  R(causal_async_stacks, false, bool, true, "Improved async stacks")           \
+  P(causal_async_stacks, bool, !USING_PRODUCT, "Improved async stacks")        \
+  C(stress_async_stacks, false, false, bool, false,                            \
+    "Stress test async stack traces")                                          \
+  C(async_debugger, false, false, bool, true,                                  \
+    "Debugger support async functions.")                                       \
   R(support_ast_printer, false, bool, true, "Support the AST printer.")        \
   R(support_compiler_stats, false, bool, true, "Support compiler stats.")      \
   C(support_debugger, false, false, bool, true, "Support the debugger.")       \
@@ -154,6 +155,7 @@
   R(support_timeline, false, bool, true, "Support timeline.")                  \
   D(trace_cha, bool, false, "Trace CHA operations")                            \
   D(trace_field_guards, bool, false, "Trace changes in field's cids.")         \
+  C(trace_irregexp, false, false, bool, false, "Trace irregexps.")             \
   D(trace_isolates, bool, false, "Trace isolate creation and shut down.")      \
   D(trace_handles, bool, false, "Traces allocation of handles.")               \
   D(trace_kernel_binary, bool, false, "Trace Kernel reader/writer.")           \

@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:collection' show HashSet, Queue;
-import 'dart:convert' show BASE64, JSON, UTF8;
+import 'dart:convert' show JSON;
 import 'dart:io' show File;
 
 import 'package:analyzer/analyzer.dart'
@@ -32,6 +32,7 @@ import 'package:source_maps/source_maps.dart';
 
 import '../analyzer/context.dart' show AnalyzerOptions, createSourceFactory;
 import '../js_ast/js_ast.dart' as JS;
+import '../js_ast/js_ast.dart' show js;
 import 'code_generator.dart' show CodeGenerator;
 import 'error_helpers.dart' show errorSeverity, formatError, sortErrors;
 import 'extension_types.dart' show ExtensionTypeSet;
@@ -87,7 +88,11 @@ class ModuleCompiler {
 
     // Read the summaries.
     summaryData ??= new SummaryDataStore(options.summaryPaths,
-        resourceProvider: resourceProvider, recordDependencyInfo: true);
+        resourceProvider: resourceProvider,
+        recordDependencyInfo: true,
+        // TODO(vsm): Reset this to true once we cleanup internal build rules.
+        disallowOverlappingSummaries: false);
+
     var sdkSummaryBundle = sdk.getLinkedBundle();
     if (sdkSummaryBundle != null) {
       summaryData.addBundle(null, sdkSummaryBundle);
@@ -152,13 +157,11 @@ class ModuleCompiler {
 
     var compilingSdk = false;
     for (var sourcePath in unit.sources) {
-      var sourceUri = Uri.parse(sourcePath);
-      if (sourceUri.scheme == '') {
-        sourceUri = path.toUri(path.absolute(sourcePath));
-      } else if (sourceUri.scheme == 'dart') {
+      var sourceUri = _sourceToUri(sourcePath);
+      if (sourceUri.scheme == "dart") {
         compilingSdk = true;
       }
-      Source source = context.sourceFactory.forUri2(sourceUri);
+      var source = context.sourceFactory.forUri2(sourceUri);
 
       var fileUsage = 'You need to pass at least one existing .dart file as an'
           ' argument.';
@@ -212,9 +215,20 @@ class ModuleCompiler {
         errors.any((e) => _isFatalError(e, options))) {
       return new JSModuleFile.invalid(unit.name, messages, options);
     }
-    var codeGenerator =
-        new CodeGenerator(context, summaryData, options, _extensionTypes);
-    return codeGenerator.compile(unit, trees, messages);
+
+    try {
+      var codeGenerator =
+          new CodeGenerator(context, summaryData, options, _extensionTypes);
+      return codeGenerator.compile(unit, trees, messages);
+    } catch (e) {
+      if (errors.any((e) => _isFatalError(e, options))) {
+        // Force compilation failed.  Suppress the exception and report
+        // the static errors instead.
+        assert(options.unsafeForceCompile);
+        return new JSModuleFile.invalid(unit.name, messages, options);
+      }
+      rethrow;
+    }
   }
 }
 
@@ -240,7 +254,7 @@ class CompilerOptions {
   /// The file extension for summaries.
   final String summaryExtension;
 
-  /// Whether to preserve metdata only accessible via mirrors
+  /// Whether to preserve metdata only accessible via mirrors.
   final bool emitMetadata;
 
   /// Whether to force compilation of code with static errors.
@@ -252,20 +266,6 @@ class CompilerOptions {
 
   /// Whether to emit Closure Compiler-friendly code.
   final bool closure;
-
-  /// Hoist the types at instance creation sites
-  final bool hoistInstanceCreation;
-
-  /// Hoist types from class signatures
-  final bool hoistSignatureTypes;
-
-  /// Name types in type tests
-  final bool nameTypeTests;
-
-  /// Hoist types in type tests
-  final bool hoistTypeTests;
-
-  final bool useAngular2Whitelist;
 
   /// Enable ES6 destructuring of named parameters. Off by default.
   ///
@@ -302,11 +302,6 @@ class CompilerOptions {
       this.emitMetadata: false,
       this.closure: false,
       this.destructureNamedParams: false,
-      this.hoistInstanceCreation: true,
-      this.hoistSignatureTypes: false,
-      this.nameTypeTests: true,
-      this.hoistTypeTests: true,
-      this.useAngular2Whitelist: false,
       this.bazelMapping: const {},
       this.summaryOutPath});
 
@@ -321,11 +316,6 @@ class CompilerOptions {
         emitMetadata = args['emit-metadata'],
         closure = args['closure-experimental'],
         destructureNamedParams = args['destructure-named-params'],
-        hoistInstanceCreation = args['hoist-instance-creation'],
-        hoistSignatureTypes = args['hoist-signature-types'],
-        nameTypeTests = args['name-type-tests'],
-        hoistTypeTests = args['hoist-type-tests'],
-        useAngular2Whitelist = args['unsafe-angular2-whitelist'],
         bazelMapping = _parseBazelMappings(args['bazel-mapping']),
         summaryOutPath = args['summary-out'];
 
@@ -362,19 +352,6 @@ class CompilerOptions {
               'allowing access to private members across library boundaries.',
           defaultsTo: false,
           hide: hide)
-      ..addFlag('hoist-instance-creation',
-          help: 'Hoist the class type from generic instance creations',
-          defaultsTo: true,
-          hide: hide)
-      ..addFlag('hoist-signature-types',
-          help: 'Hoist types from class signatures',
-          defaultsTo: false,
-          hide: hide)
-      ..addFlag('name-type-tests',
-          help: 'Name types used in type tests', defaultsTo: true, hide: hide)
-      ..addFlag('hoist-type-tests',
-          help: 'Hoist types used in type tests', defaultsTo: true, hide: hide)
-      ..addFlag('unsafe-angular2-whitelist', defaultsTo: false, hide: hide)
       ..addOption('bazel-mapping',
           help:
               '--bazel-mapping=genfiles/to/library.dart,to/library.dart uses \n'
@@ -419,7 +396,9 @@ class BuildUnit {
   // build units.
   final Func1<Source, String> libraryToModule;
 
-  BuildUnit(this.name, this.libraryRoot, this.sources, this.libraryToModule);
+  BuildUnit(
+      String modulePath, this.libraryRoot, this.sources, this.libraryToModule)
+      : name = '${path.toUri(modulePath)}';
 }
 
 /// The output of Dart->JS compilation.
@@ -443,6 +422,13 @@ class JSModuleFile {
   /// The binary contents of the API summary file, including APIs from each of
   /// the libraries in this module.
   final List<int> summaryBytes;
+
+  /// Unique identifier indicating hole to inline the source map.
+  ///
+  /// We cannot generate the source map before the script it is for is
+  /// generated so we have generate the script including this id and then
+  /// replace the ID once the source map is generated.
+  static String sourceMapHoleID = 'SourceMap3G5a8h6JVhHfdGuDxZr1EF9GQC8y0e6u';
 
   JSModuleFile(
       this.name, this.errors, this.options, this.moduleTree, this.summaryBytes);
@@ -486,26 +472,24 @@ class JSModuleFile {
     if (options.sourceMap && sourceMap != null) {
       builtMap =
           placeSourceMap(sourceMap.build(jsUrl), mapUrl, options.bazelMapping);
-
       if (options.sourceMapComment) {
-        var relativeMapUrl = path
-            .toUri(
-                path.relative(path.fromUri(mapUrl), from: path.dirname(jsUrl)))
-            .toString();
+        var jsDir = path.dirname(path.fromUri(jsUrl));
+        var relative = path.relative(path.fromUri(mapUrl), from: jsDir);
+        var relativeMapUrl = path.toUri(relative).toString();
         assert(path.dirname(jsUrl) == path.dirname(mapUrl));
         printer.emit('\n//# sourceMappingURL=');
-        if (options.inlineSourceMap) {
-          var bytes = UTF8.encode(JSON.encode(builtMap));
-          var base64 = BASE64.encode(bytes);
-          printer..emit('data:application/json;base64,')..emit(base64);
-        } else {
-          printer.emit(relativeMapUrl);
-        }
+        printer.emit(relativeMapUrl);
         printer.emit('\n');
       }
     }
 
-    return new JSModuleCode(printer.getText(), builtMap);
+    var text = printer.getText();
+    var rawSourceMap = options.inlineSourceMap
+        ? js.escapedString(JSON.encode(builtMap), "'").value
+        : 'null';
+    text = text.replaceFirst(sourceMapHoleID, rawSourceMap);
+
+    return new JSModuleCode(text, builtMap);
   }
 
   /// Similar to [getCode] but immediately writes the resulting files.
@@ -515,7 +499,9 @@ class JSModuleFile {
   void writeCodeSync(ModuleFormat format, String jsPath,
       {bool singleOutFile: false}) {
     String mapPath = jsPath + '.map';
-    var code = getCode(format, jsPath, mapPath, singleOutFile: singleOutFile);
+    var code = getCode(
+        format, path.toUri(jsPath).toString(), path.toUri(mapPath).toString(),
+        singleOutFile: singleOutFile);
     var c = code.code;
     if (singleOutFile) {
       // In singleOutFile mode we wrap each module in an eval statement to
@@ -563,25 +549,56 @@ class JSModuleCode {
 }
 
 /// Adjusts the source paths in [sourceMap] to be relative to [sourceMapPath],
-/// and returns the new map.
+/// and returns the new map.  Relative paths are in terms of URIs ('/'), not
+/// local OS paths (e.g., windows '\').
 // TODO(jmesserly): find a new home for this.
 Map placeSourceMap(
     Map sourceMap, String sourceMapPath, Map<String, String> bazelMappings) {
-  var dir = path.dirname(sourceMapPath);
   var map = new Map.from(sourceMap);
+  // Convert to a local file path if it's not.
+  sourceMapPath = path.fromUri(_sourceToUri(sourceMapPath));
+  var sourceMapDir = path.dirname(path.absolute(sourceMapPath));
   var list = new List.from(map['sources']);
   map['sources'] = list;
-  String transformUri(String uri) {
-    var match = bazelMappings[path.absolute(uri)];
+
+  String makeRelative(String sourcePath) {
+    var uri = _sourceToUri(sourcePath);
+    if (uri.scheme == 'dart' || uri.scheme == 'package') return sourcePath;
+
+    // Convert to a local file path if it's not.
+    sourcePath = path.absolute(path.fromUri(uri));
+
+    // Allow bazel mappings to override.
+    var match = bazelMappings[sourcePath];
     if (match != null) return match;
 
-    // Fall back to a relative path.
-    return path.toUri(path.relative(path.fromUri(uri), from: dir)).toString();
+    // Fall back to a relative path against the source map itself.
+    sourcePath = path.relative(sourcePath, from: sourceMapDir);
+
+    // Convert from relative local path to relative URI.
+    return path.toUri(sourcePath).path;
   }
 
   for (int i = 0; i < list.length; i++) {
-    list[i] = transformUri(list[i]);
+    list[i] = makeRelative(list[i]);
   }
-  map['file'] = transformUri(map['file']);
+  map['file'] = makeRelative(map['file']);
   return map;
+}
+
+// Convert a source string to a Uri.  The [source] may be a Dart URI, a file
+// URI, or a local win/mac/linux path.
+Uri _sourceToUri(String source) {
+  var uri = Uri.parse(source);
+  var scheme = uri.scheme;
+  switch (scheme) {
+    case "dart":
+    case "package":
+    case "file":
+      // A valid URI.
+      return uri;
+    default:
+      // Assume a file path.
+      return new Uri.file(path.absolute(source));
+  }
 }

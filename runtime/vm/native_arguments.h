@@ -33,7 +33,7 @@ class Thread;
     uword current_sp = Simulator::Current()->get_register(SPREG);              \
     ASSERT(Utils::IsAligned(current_sp, OS::ActivationFrameAlignment()));      \
   }
-#elif defined(TARGET_OS_WINDOWS)
+#elif defined(HOST_OS_WINDOWS)
 // The compiler may dynamically align the stack on Windows, so do not check.
 #define CHECK_STACK_ALIGNMENT                                                  \
   {}
@@ -41,7 +41,7 @@ class Thread;
 #define CHECK_STACK_ALIGNMENT                                                  \
   {                                                                            \
     uword (*func)() = reinterpret_cast<uword (*)()>(                           \
-        StubCode::GetStackPointer_entry()->EntryPoint());                      \
+        StubCode::GetCStackPointer_entry()->EntryPoint());                     \
     uword current_sp = func();                                                 \
     ASSERT(Utils::IsAligned(current_sp, OS::ActivationFrameAlignment()));      \
   }
@@ -67,17 +67,6 @@ void VerifyOnTransition();
 #define DEOPTIMIZE_ALOT                                                        \
   {}
 
-#endif
-
-#ifndef PRODUCT
-#define TRACE_NATIVE_CALL(format, name)                                        \
-  if (FLAG_trace_natives) {                                                    \
-    OS::Print("Calling native: " format "\n", name);                           \
-  }
-#else
-#define TRACE_NATIVE_CALL(format, name)                                        \
-  do {                                                                         \
-  } while (0)
 #endif
 
 // Class NativeArguments is used to access arguments passed in from
@@ -112,10 +101,6 @@ class NativeArguments {
     // Tell MemorySanitizer the RawObject* was initialized (by generated code).
     MSAN_UNPOISON(arg_ptr, kWordSize);
     return *arg_ptr;
-  }
-
-  bool IsNativeAutoSetupScope() const {
-    return AutoSetupScopeBits::decode(argc_tag_);
   }
 
   int NativeArgCount() const {
@@ -163,19 +148,17 @@ class NativeArguments {
   static intptr_t retval_offset() {
     return OFFSET_OF(NativeArguments, retval_);
   }
-  static intptr_t AutoSetupScopeMask() {
-    return AutoSetupScopeBits::mask_in_place();
-  }
 
   static intptr_t ParameterCountForResolution(const Function& function) {
     ASSERT(function.is_native());
+    ASSERT(!function.IsGeneric());                // Not supported.
     ASSERT(!function.IsGenerativeConstructor());  // Not supported.
     intptr_t count = function.NumParameters();
     if (function.is_static() && function.IsClosureFunction()) {
       // The closure object is hidden and not accessible from native code.
       // However, if the function is an instance closure function, the captured
       // receiver located in the context is made accessible in native code at
-      // index 0, thereby hidding the closure object at index 0.
+      // index 0, thereby hiding the closure object at index 0.
       count--;
     }
     return count;
@@ -183,6 +166,7 @@ class NativeArguments {
 
   static int ComputeArgcTag(const Function& function) {
     ASSERT(function.is_native());
+    ASSERT(!function.IsGeneric());                // Not supported.
     ASSERT(!function.IsGenerativeConstructor());  // Not supported.
     int tag = ArgcBits::encode(function.NumParameters());
     int function_bits = 0;
@@ -193,9 +177,6 @@ class NativeArguments {
       function_bits |= kClosureFunctionBit;
     }
     tag = FunctionBits::update(function_bits, tag);
-    if (function.IsNativeAutoSetupScope()) {
-      tag = AutoSetupScopeBits::update(1, tag);
-    }
     return tag;
   }
 
@@ -209,13 +190,10 @@ class NativeArguments {
     kArgcSize = 24,
     kFunctionBit = 24,
     kFunctionSize = 2,
-    kAutoSetupScopeBit = 26,
   };
   class ArgcBits : public BitField<intptr_t, int32_t, kArgcBit, kArgcSize> {};
   class FunctionBits
       : public BitField<intptr_t, int, kFunctionBit, kFunctionSize> {};
-  class AutoSetupScopeBits
-      : public BitField<intptr_t, int, kAutoSetupScopeBit, 1> {};
   friend class Api;
   friend class BootstrapNatives;
   friend class Simulator;

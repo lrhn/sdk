@@ -4,12 +4,9 @@
 
 library fasta.export;
 
-import 'builder/builder.dart' show
-    Builder,
-    LibraryBuilder;
+import 'builder/builder.dart' show Builder, LibraryBuilder;
 
-import 'combinator.dart' show
-    Combinator;
+import 'combinator.dart' show Combinator;
 
 class Export {
   /// The library that is exporting [exported];
@@ -20,7 +17,9 @@ class Export {
 
   final List<Combinator> combinators;
 
-  Export(this.exporter, this.exported, this.combinators, int charOffset);
+  final int charOffset;
+
+  Export(this.exporter, this.exported, this.combinators, this.charOffset);
 
   Uri get fileUri => exporter.fileUri;
 

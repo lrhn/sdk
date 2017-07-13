@@ -4,17 +4,16 @@
 
 library fasta.formal_parameter_builder;
 
-import 'package:front_end/src/fasta/parser/parser.dart' show
-    FormalParameterType;
+import '../parser/parser.dart' show FormalParameterType;
 
-import 'builder.dart' show
-    LibraryBuilder,
-    MetadataBuilder,
-    ModifierBuilder,
-    TypeBuilder;
+import 'builder.dart'
+    show LibraryBuilder, MetadataBuilder, ModifierBuilder, TypeBuilder;
 
 abstract class FormalParameterBuilder<T extends TypeBuilder>
     extends ModifierBuilder {
+  @override
+  final int charOffset;
+
   final List<MetadataBuilder> metadata;
 
   final int modifiers;
@@ -29,8 +28,10 @@ abstract class FormalParameterBuilder<T extends TypeBuilder>
   FormalParameterType kind = FormalParameterType.REQUIRED;
 
   FormalParameterBuilder(this.metadata, this.modifiers, this.type, this.name,
-      this.hasThis, LibraryBuilder compilationUnit, int charOffset)
+      this.hasThis, LibraryBuilder compilationUnit, this.charOffset)
       : super(compilationUnit, charOffset);
+
+  String get debugName => "FormalParameterBuilder";
 
   bool get isRequired => kind.isRequired;
 
@@ -41,4 +42,9 @@ abstract class FormalParameterBuilder<T extends TypeBuilder>
   bool get isOptional => !isRequired;
 
   bool get isLocal => true;
+
+  @override
+  String get fullNameForErrors => name;
+
+  FormalParameterBuilder forFormalParameterInitializerScope();
 }

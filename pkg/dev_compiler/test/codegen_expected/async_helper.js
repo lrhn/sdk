@@ -4,16 +4,29 @@ define(['dart_sdk'], function(dart_sdk) {
   const dart = dart_sdk.dart;
   const dartx = dart_sdk.dartx;
   const async_helper = Object.create(null);
-  let VoidTodynamic = () => (VoidTodynamic = dart.constFn(dart.functionType(dart.dynamic, [])))();
-  let StringToException = () => (StringToException = dart.constFn(dart.definiteFunctionType(core.Exception, [core.String])))();
-  let _Action0Tovoid = () => (_Action0Tovoid = dart.constFn(dart.definiteFunctionType(dart.void, [async_helper._Action0])))();
-  let VoidTovoid = () => (VoidTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [])))();
-  let dynamicTovoid = () => (dynamicTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [dart.dynamic])))();
-  let FnTovoid = () => (FnTovoid = dart.constFn(dart.definiteFunctionType(dart.void, [VoidTodynamic()])))();
-  async_helper._initialized = false;
-  async_helper._Action0 = dart.typedef('_Action0', () => dart.functionType(dart.void, []));
-  async_helper._onAsyncEnd = null;
-  async_helper._asyncLevel = 0;
+  let VoidTodynamic = () => (VoidTodynamic = dart.constFn(dart.fnTypeFuzzy(dart.dynamic, [])))();
+  let StringToException = () => (StringToException = dart.constFn(dart.fnType(core.Exception, [core.String])))();
+  let _Action0Tovoid = () => (_Action0Tovoid = dart.constFn(dart.fnType(dart.void, [async_helper._Action0])))();
+  let VoidTovoid = () => (VoidTovoid = dart.constFn(dart.fnType(dart.void, [])))();
+  let dynamicTovoid = () => (dynamicTovoid = dart.constFn(dart.fnType(dart.void, [dart.dynamic])))();
+  let FnTovoid = () => (FnTovoid = dart.constFn(dart.fnType(dart.void, [VoidTodynamic()])))();
+  dart.defineLazy(async_helper, {
+    get _initialized() {
+      return false;
+    },
+    set _initialized(_) {}
+  });
+  async_helper._Action0 = dart.typedef('_Action0', () => dart.fnTypeFuzzy(dart.void, []));
+  dart.defineLazy(async_helper, {
+    get _onAsyncEnd() {
+      return null;
+    },
+    set _onAsyncEnd(_) {},
+    get _asyncLevel() {
+      return 0;
+    },
+    set _asyncLevel(_) {}
+  });
   async_helper._buildException = function(msg) {
     return core.Exception.new(dart.str`Fatal: ${msg}. This is most likely a bug in your test.`);
   };
@@ -30,7 +43,7 @@ define(['dart_sdk'], function(dart_sdk) {
     }
   });
   async_helper.asyncStart = function() {
-    if (dart.test(async_helper._initialized) && async_helper._asyncLevel == 0) {
+    if (dart.test(async_helper._initialized) && async_helper._asyncLevel === 0) {
       dart.throw(async_helper._buildException('asyncStart() was called even though we are done ' + 'with testing.'));
     }
     if (!dart.test(async_helper._initialized)) {
@@ -52,7 +65,7 @@ define(['dart_sdk'], function(dart_sdk) {
       }
     }
     async_helper._asyncLevel = dart.notNull(async_helper._asyncLevel) - 1;
-    if (async_helper._asyncLevel == 0) {
+    if (async_helper._asyncLevel === 0) {
       let callback = async_helper._onAsyncEnd;
       async_helper._onAsyncEnd = null;
       callback();
@@ -69,6 +82,9 @@ define(['dart_sdk'], function(dart_sdk) {
     dart.dsend(f(), 'then', async_helper.asyncSuccess);
   };
   dart.fn(async_helper.asyncTest, FnTovoid());
+  dart.trackLibraries("async_helper", {
+    "async_helper.dart": async_helper
+  }, null);
   // Exports:
   return {
     async_helper: async_helper

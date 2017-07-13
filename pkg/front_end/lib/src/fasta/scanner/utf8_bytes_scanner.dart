@@ -4,22 +4,17 @@
 
 library fasta.scanner.utf8_bytes_scanner;
 
-import 'dart:convert' show
-    UNICODE_BOM_CHARACTER_RUNE,
-    UTF8;
+import 'dart:convert' show UNICODE_BOM_CHARACTER_RUNE, UTF8;
 
-import '../scanner.dart' show
-    unicodeReplacementCharacter;
+import '../../scanner/token.dart' show SyntheticStringToken, TokenType;
 
-import 'precedence.dart' show
-    PrecedenceInfo;
+import '../../scanner/token.dart' as analyzer show StringToken;
 
-import 'token.dart' show
-    StringToken,
-    Token;
+import '../scanner.dart' show unicodeReplacementCharacter;
 
-import 'array_based_scanner.dart' show
-    ArrayBasedScanner;
+import 'token.dart' show CommentToken, DartDocToken, StringToken;
+
+import 'array_based_scanner.dart' show ArrayBasedScanner;
 
 /**
  * Scanner that reads from a UTF-8 encoded list of bytes and creates tokens
@@ -86,8 +81,10 @@ class Utf8BytesScanner extends ArrayBasedScanner {
    * array whose last element is '0' to signal the end of the file. If this
    * is not the case, the entire array is copied before scanning.
    */
-  Utf8BytesScanner(this.bytes, {bool includeComments: false})
-      : super(includeComments) {
+  Utf8BytesScanner(this.bytes,
+      {bool includeComments: false, bool scanGenericMethodComments: false})
+      : super(includeComments, scanGenericMethodComments,
+            numberOfBytesHint: bytes.length) {
     assert(bytes.last == 0);
     // Skip a leading BOM.
     if (containsBomAt(0)) byteOffset += 3;
@@ -202,14 +199,35 @@ class Utf8BytesScanner extends ArrayBasedScanner {
     }
   }
 
-  Token firstToken() => tokens.next;
-  Token previousToken() => tail;
-
-  void appendSubstringToken(PrecedenceInfo info, int start, bool asciiOnly,
+  @override
+  analyzer.StringToken createSubstringToken(
+      TokenType type, int start, bool asciiOnly,
       [int extraOffset = 0]) {
-    tail.next = new StringToken.fromUtf8Bytes(
-        info, bytes, start, byteOffset + extraOffset, asciiOnly, tokenStart);
-    tail = tail.next;
+    return new StringToken.fromUtf8Bytes(
+        type, bytes, start, byteOffset + extraOffset, asciiOnly, tokenStart,
+        precedingComments: comments);
+  }
+
+  @override
+  analyzer.StringToken createSyntheticSubstringToken(
+      TokenType type, int start, bool asciiOnly, String closingQuotes) {
+    String source = StringToken.decodeUtf8(bytes, start, byteOffset, asciiOnly);
+    return new SyntheticStringToken(
+        type, source + closingQuotes, start, source.length);
+  }
+
+  @override
+  CommentToken createCommentToken(TokenType type, int start, bool asciiOnly,
+      [int extraOffset = 0]) {
+    return new CommentToken.fromUtf8Bytes(
+        type, bytes, start, byteOffset + extraOffset, asciiOnly, tokenStart);
+  }
+
+  @override
+  DartDocToken createDartDocToken(TokenType type, int start, bool asciiOnly,
+      [int extraOffset = 0]) {
+    return new DartDocToken.fromUtf8Bytes(
+        type, bytes, start, byteOffset + extraOffset, asciiOnly, tokenStart);
   }
 
   bool atEndOfFile() => byteOffset >= bytes.length - 1;

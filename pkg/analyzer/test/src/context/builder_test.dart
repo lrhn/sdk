@@ -4,6 +4,7 @@
 
 library analyzer.test.src.context.context_builder_test;
 
+import 'package:analyzer/context/context_root.dart';
 import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/file_system/memory_file_system.dart';
 import 'package:analyzer/source/package_map_resolver.dart';
@@ -76,6 +77,7 @@ class ContextBuilderTest extends EngineTestCase {
   _MockLintRule _mockLintRule;
   _MockLintRule _mockLintRule2;
   _MockLintRule _mockLintRule3;
+  _MockLintRule _mockPublicMemberApiDocs;
 
   Uri convertedDirectoryUri(String directoryPath) {
     return new Uri.directory(resourceProvider.convertPath(directoryPath),
@@ -722,25 +724,82 @@ linter:
     AnalysisOptionsImpl expected = new AnalysisOptionsImpl();
     expected.lint = true;
     expected.lintRules = <Linter>[_mockLintRule];
+    String packagesFilePath =
+        resourceProvider.convertPath('/some/directory/path/.packages');
+    createFile(packagesFilePath, 'flutter:/pkg/flutter/lib/');
+    String optionsFilePath = resourceProvider
+        .convertPath('/pkg/flutter/lib/analysis_options_user.yaml');
     createFile(
-        resourceProvider.convertPath('/some/directory/path/.packages'),
-        '''
-flutter:/pkg/flutter/lib/
-''');
-    createFile(
-        resourceProvider
-            .convertPath('/pkg/flutter/lib/analysis_options_user.yaml'),
+        optionsFilePath,
         '''
 linter:
   rules:
     - mock_lint_rule
 ''');
-    AnalysisOptions options = builder.getAnalysisOptions(
-        resourceProvider.convertPath('/some/directory/path'));
-    // TODO(danrubel) fix on Windows
-    if (resourceProvider.absolutePathContext.separator != r'\') {
-      _expectEqualOptions(options, expected);
+    String projPath = resourceProvider.convertPath('/some/directory/path');
+    AnalysisOptions options = builder.getAnalysisOptions(projPath);
+    _expectEqualOptions(options, expected);
+  }
+
+  void test_getAnalysisOptions_default_flutter_disabled() {
+    _defineMockLintRules();
+    ArgParser argParser = new ArgParser();
+    defineAnalysisArguments(argParser);
+    ArgResults argResults =
+        argParser.parse(['--no-$packageDefaultAnalysisOptions']);
+
+    builderOptions = createContextBuilderOptions(argResults);
+    expect(builderOptions.packageDefaultAnalysisOptions, isFalse);
+    builder = new ContextBuilder(resourceProvider, sdkManager, contentCache,
+        options: builderOptions);
+
+    AnalysisOptionsImpl expected = new AnalysisOptionsImpl();
+
+    String packagesFilePath =
+        resourceProvider.convertPath('/some/directory/path/.packages');
+    createFile(packagesFilePath, 'flutter:/pkg/flutter/lib/');
+    String optionsFilePath = resourceProvider
+        .convertPath('/pkg/flutter/lib/analysis_options_user.yaml');
+    createFile(
+        optionsFilePath,
+        '''
+linter:
+  rules:
+    - mock_lint_rule
+''');
+    String projPath = resourceProvider.convertPath('/some/directory/path');
+    AnalysisOptions options = builder.getAnalysisOptions(projPath);
+    _expectEqualOptions(options, expected);
+  }
+
+  void test_getAnalysisOptions_default_flutter_repo() {
+    _defineMockLintRules();
+    AnalysisOptionsImpl defaultOptions = new AnalysisOptionsImpl();
+    builderOptions.defaultOptions = defaultOptions;
+    AnalysisOptionsImpl expected = new AnalysisOptionsImpl();
+    expected.lint = true;
+    expected.lintRules = <Linter>[_mockLintRule, _mockPublicMemberApiDocs];
+    String packagesFilePath =
+        resourceProvider.convertPath('/some/directory/path/.packages');
+    createFile(packagesFilePath, 'flutter:/pkg/flutter/lib/');
+    String optionsFilePath = resourceProvider
+        .convertPath('/pkg/flutter/lib/analysis_options_user.yaml');
+    createFile(
+        optionsFilePath,
+        '''
+linter:
+  rules:
+    - mock_lint_rule
+''');
+    String projPath = resourceProvider.convertPath('/some/directory/path');
+    AnalysisOptions options;
+    try {
+      ContextBuilderOptions.flutterRepo = true;
+      options = builder.getAnalysisOptions(projPath);
+    } finally {
+      ContextBuilderOptions.flutterRepo = false;
     }
+    _expectEqualOptions(options, expected);
   }
 
   void test_getAnalysisOptions_default_noOverrides() {
@@ -784,6 +843,26 @@ analyzer:
 ''');
 
     AnalysisOptions options = builder.getAnalysisOptions(path);
+    _expectEqualOptions(options, expected);
+  }
+
+  void test_getAnalysisOptions_gnWorkspace() {
+    String _p(String path) => resourceProvider.convertPath(path);
+    String projectPath = _p('/workspace/some/path');
+    resourceProvider.newFolder(_p('/workspace/.jiri_root'));
+    resourceProvider.newFile(
+        _p('/workspace/out/debug/gen/dart.sources/foo_pkg'),
+        _p('/workspace/foo_pkg/lib'));
+    resourceProvider.newFolder(projectPath);
+    ArgParser argParser = new ArgParser();
+    defineAnalysisArguments(argParser);
+    ArgResults argResults = argParser.parse([]);
+    builderOptions = createContextBuilderOptions(argResults);
+    expect(builderOptions.packageDefaultAnalysisOptions, isTrue);
+    builder = new ContextBuilder(resourceProvider, sdkManager, contentCache,
+        options: builderOptions);
+    AnalysisOptionsImpl expected = new AnalysisOptionsImpl();
+    AnalysisOptions options = builder.getAnalysisOptions(projectPath);
     _expectEqualOptions(options, expected);
   }
 
@@ -883,6 +962,23 @@ analyzer:
     _expectEqualOptions(options, expected);
   }
 
+  void test_getAnalysisOptions_optionsPath() {
+    String path = resourceProvider.convertPath('/some/directory/path');
+    String filePath =
+        pathContext.join(path, AnalysisEngine.ANALYSIS_OPTIONS_YAML_FILE);
+    resourceProvider.newFile(
+        filePath,
+        '''
+linter:
+  rules:
+    - empty_constructor_bodies
+''');
+
+    ContextRoot root = new ContextRoot(path, []);
+    builder.getAnalysisOptions(path, contextRoot: root);
+    expect(root.optionsFilePath, equals(filePath));
+  }
+
   void test_getOptionsFile_explicit() {
     String path = resourceProvider.convertPath('/some/directory/path');
     String filePath = resourceProvider.convertPath('/options/analysis.yaml');
@@ -947,6 +1043,8 @@ analyzer:
     Registry.ruleRegistry.registerDefault(_mockLintRule2);
     _mockLintRule3 = new _MockLintRule('mock_lint_rule3');
     Registry.ruleRegistry.register(_mockLintRule3);
+    _mockPublicMemberApiDocs = new _MockLintRule('public_member_api_docs');
+    Registry.ruleRegistry.register(_mockPublicMemberApiDocs);
   }
 
   void _expectEqualOptions(
@@ -963,9 +1061,6 @@ analyzer:
     expect(actual.generateImplicitErrors, expected.generateImplicitErrors);
     expect(actual.generateSdkErrors, expected.generateSdkErrors);
     expect(actual.hint, expected.hint);
-    expect(actual.incremental, expected.incremental);
-    expect(actual.incrementalApi, expected.incrementalApi);
-    expect(actual.incrementalValidation, expected.incrementalValidation);
     expect(actual.lint, expected.lint);
     expect(
       actual.lintRules.map((l) => l.name),
@@ -978,7 +1073,6 @@ analyzer:
     expect(actual.implicitDynamic, expected.implicitDynamic);
     expect(actual.trackCacheDependencies, expected.trackCacheDependencies);
     expect(actual.disableCacheFlushing, expected.disableCacheFlushing);
-    expect(actual.finerGrainedInvalidation, expected.finerGrainedInvalidation);
   }
 
   Uri _relativeUri(String path, {String from}) {

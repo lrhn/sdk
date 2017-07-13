@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
 
 #include <errno.h>
 #include <magenta/syscalls.h>
@@ -97,11 +97,11 @@ int64_t TimerUtils::GetCurrentMonotonicMicros() {
 
 
 void TimerUtils::Sleep(int64_t millis) {
-  mx_nanosleep(millis * kMicrosecondsPerMillisecond *
-               kNanosecondsPerMicrosecond);
+  mx_nanosleep(mx_deadline_after(millis * kMicrosecondsPerMillisecond *
+                                 kNanosecondsPerMicrosecond));
 }
 
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)

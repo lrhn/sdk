@@ -5,14 +5,17 @@
 library debugger_page_element;
 
 import 'dart:async';
-import 'dart:svg';
 import 'dart:html';
 import 'dart:math';
-import 'package:observatory/event.dart';
-import 'package:observatory/models.dart' as M;
+import 'dart:svg';
+
+import 'package:logging/logging.dart';
 import 'package:observatory/app.dart';
 import 'package:observatory/cli.dart';
 import 'package:observatory/debugger.dart';
+import 'package:observatory/event.dart';
+import 'package:observatory/models.dart' as M;
+import 'package:observatory/service.dart' as S;
 import 'package:observatory/src/elements/function_ref.dart';
 import 'package:observatory/src/elements/helpers/any_ref.dart';
 import 'package:observatory/src/elements/helpers/nav_bar.dart';
@@ -27,8 +30,6 @@ import 'package:observatory/src/elements/nav/top_menu.dart';
 import 'package:observatory/src/elements/nav/vm_menu.dart';
 import 'package:observatory/src/elements/source_inset.dart';
 import 'package:observatory/src/elements/source_link.dart';
-import 'package:observatory/service.dart' as S;
-import 'package:logging/logging.dart';
 
 // TODO(turnidge): Move Debugger, DebuggerCommand to debugger library.
 abstract class DebuggerCommand extends Command {
@@ -178,7 +179,7 @@ class PrintCommand extends DebuggerCommand {
       debugger.console.print(response.message);
     } else {
       debugger.console.print('= ', newline: false);
-      debugger.console.printRef(debugger.isolate, response, debugger.instances);
+      debugger.console.printRef(debugger.isolate, response, debugger.objects);
     }
   }
 
@@ -209,8 +210,7 @@ class DownCommand extends DebuggerCommand {
       debugger.downFrame(count);
       debugger.console.print('frame = ${debugger.currentFrame}');
     } catch (e) {
-      debugger.console.print(
-          'frame must be in range [${e.start}..${e.end-1}]');
+      debugger.console.print('frame must be in range [${e.start}..${e.end-1}]');
     }
     return new Future.value(null);
   }
@@ -244,8 +244,7 @@ class UpCommand extends DebuggerCommand {
       debugger.upFrame(count);
       debugger.console.print('frame = ${debugger.currentFrame}');
     } on RangeError catch (e) {
-      debugger.console.print(
-          'frame must be in range [${e.start}..${e.end-1}]');
+      debugger.console.print('frame must be in range [${e.start}..${e.end-1}]');
     }
     return new Future.value(null);
   }
@@ -281,8 +280,7 @@ class FrameCommand extends DebuggerCommand {
       debugger.currentFrame = frame;
       debugger.console.print('frame = ${debugger.currentFrame}');
     } on RangeError catch (e) {
-      debugger.console.print(
-          'frame must be in range [${e.start}..${e.end-1}]');
+      debugger.console.print('frame must be in range [${e.start}..${e.end-1}]');
     }
     return new Future.value(null);
   }
@@ -418,12 +416,12 @@ class RewindCommand extends DebuggerCommand {
         debugger.console.print('rewind expects 0 or 1 argument');
         return;
       } else if (count < 1 || count > debugger.stackDepth) {
-        debugger.console.print(
-            'frame must be in range [1..${debugger.stackDepth - 1}]');
+        debugger.console
+            .print('frame must be in range [1..${debugger.stackDepth - 1}]');
         return;
       }
       await debugger.rewind(count);
-    } on S.ServerRpcException catch(e) {
+    } on S.ServerRpcException catch (e) {
       if (e.code == S.ServerRpcException.kCannotResume) {
         debugger.console.printRed(e.data['details']);
       } else {
@@ -434,8 +432,7 @@ class RewindCommand extends DebuggerCommand {
 
   String helpShort = 'Rewind the stack to a previous frame';
 
-  String helpLong =
-      'Rewind the stack to a previous frame.\n'
+  String helpLong = 'Rewind the stack to a previous frame.\n'
       '\n'
       'Syntax: rewind\n'
       '        rewind <count>\n';
@@ -446,7 +443,6 @@ class ReloadCommand extends DebuggerCommand {
 
   Future run(List<String> args) async {
     try {
-      int count = 1;
       if (args.length > 0) {
         debugger.console.print('reload expects no arguments');
         return;
@@ -454,9 +450,8 @@ class ReloadCommand extends DebuggerCommand {
       await debugger.isolate.reloadSources();
       debugger.console.print('reload complete');
       await debugger.refreshStack();
-    } on S.ServerRpcException catch(e) {
+    } on S.ServerRpcException catch (e) {
       if (e.code == S.ServerRpcException.kIsolateReloadBarred ||
-          e.code == S.ServerRpcException.kIsolateReloadFailed ||
           e.code == S.ServerRpcException.kIsolateIsReloading) {
         debugger.console.printRed(e.data['details']);
       } else {
@@ -467,8 +462,7 @@ class ReloadCommand extends DebuggerCommand {
 
   String helpShort = 'Reload the sources for the current isolate';
 
-  String helpLong =
-      'Reload the sources for the current isolate.\n'
+  String helpLong = 'Reload the sources for the current isolate.\n'
       '\n'
       'Syntax: reload\n';
 }
@@ -606,9 +600,14 @@ class SetCommand extends DebuggerCommand {
     ],
     'causal-async-stacks': [
       _boolValues,
-      _setSaneAsyncStacks,
+      _setCausalAsyncStacks,
       (debugger, _) => debugger.saneAsyncStacks
     ],
+    'awaiter-stacks': [
+      _boolValues,
+      _setAwaiterStacks,
+      (debugger, _) => debugger.awaiterStacks
+    ]
   };
 
   static Future _setBreakOnException(debugger, name, value) async {
@@ -630,14 +629,20 @@ class SetCommand extends DebuggerCommand {
     debugger.console.print('${name} = ${value}');
   }
 
-  static Future _setSaneAsyncStacks(debugger, name, value) async {
+  static Future _setCausalAsyncStacks(debugger, name, value) async {
     if (value == 'true') {
-      debugger.saneAsyncStacks = true;
+      debugger.causalAsyncStacks = true;
     } else {
-      debugger.saneAsyncStacks = false;
+      debugger.causalAsyncStacks = false;
     }
     debugger.refreshStack();
     debugger.console.print('${name} = ${value}');
+  }
+
+  static Future _setAwaiterStacks(debugger, name, value) async {
+    debugger.awaiterStacks = (value == 'true');
+    debugger.refreshStack();
+    debugger.console.print('${name} == ${value}');
   }
 
   Future run(List<String> args) async {
@@ -1242,39 +1247,11 @@ class VmNameCommand extends DebuggerCommand {
       'Syntax: vm name <name>\n';
 }
 
-class VmRestartCommand extends DebuggerCommand {
-  VmRestartCommand(Debugger debugger) : super(debugger, 'restart', []);
-
-  Future handleModalInput(String line) async {
-    if (line == 'yes') {
-      debugger.console.printRed('Restarting VM...');
-      await debugger.vm.restart();
-      debugger.input.exitMode();
-    } else if (line == 'no') {
-      debugger.console.printRed('VM restart canceled.');
-      debugger.input.exitMode();
-    } else {
-      debugger.console.printRed("Please type 'yes' or 'no'");
-    }
-  }
-
-  Future run(List<String> args) async {
-    debugger.input.enterMode('Restart vm? (yes/no)', handleModalInput);
-  }
-
-  String helpShort = 'Restart a Dart virtual machine';
-
-  String helpLong = 'Restart a Dart virtual machine.\n'
-      '\n'
-      'Syntax: vm restart\n';
-}
-
 class VmCommand extends DebuggerCommand {
   VmCommand(Debugger debugger)
       : super(debugger, 'vm', [
           new VmListCommand(debugger),
           new VmNameCommand(debugger),
-          new VmRestartCommand(debugger),
         ]);
 
   Future run(List<String> args) async {
@@ -1396,14 +1373,23 @@ class ObservatoryDebugger extends Debugger {
 
   bool _upIsDown;
 
-  bool get saneAsyncStacks => _saneAsyncStacks;
-  void set saneAsyncStacks(bool value) {
+  bool get causalAsyncStacks => _causalAsyncStacks;
+  void set causalAsyncStacks(bool value) {
     settings.set('causal-async-stacks', value);
-    _saneAsyncStacks = value;
+    _causalAsyncStacks = value;
   }
 
-  bool _saneAsyncStacks;
+  bool _causalAsyncStacks;
 
+  bool get awaiterStacks => _awaiterStacks;
+  void set awaiterStacks(bool value) {
+    settings.set('awaiter-stacks', value);
+    _causalAsyncStacks = value;
+  }
+
+  bool _awaiterStacks;
+
+  static const String kAwaiterStackFrames = 'awaiterFrames';
   static const String kAsyncCausalStackFrames = 'asyncCausalFrames';
   static const String kStackFrames = 'frames';
 
@@ -1424,31 +1410,35 @@ class ObservatoryDebugger extends Debugger {
   }
 
   int get stackDepth {
-    if (saneAsyncStacks) {
-      var asyncCausalStackFrames = stack[kAsyncCausalStackFrames];
-      var stackFrames = stack[kStackFrames];
-      if (asyncCausalStackFrames == null) {
-        // No causal frames.
-        return stackFrames.length;
+    if (awaiterStacks) {
+      var awaiterStackFrames = stack[kAwaiterStackFrames];
+      if (awaiterStackFrames != null) {
+        return awaiterStackFrames.length;
       }
-      return asyncCausalStackFrames.length;
-    } else {
-      return stack[kStackFrames].length;
     }
+    if (causalAsyncStacks) {
+      var asyncCausalStackFrames = stack[kAsyncCausalStackFrames];
+      if (asyncCausalStackFrames != null) {
+        return asyncCausalStackFrames.length;
+      }
+    }
+    return stack[kStackFrames].length;
   }
 
   List get stackFrames {
-    if (saneAsyncStacks) {
-      var asyncCausalStackFrames = stack[kAsyncCausalStackFrames];
-      var stackFrames = stack[kStackFrames];
-      if (asyncCausalStackFrames == null) {
-        // No causal frames.
-        return stackFrames ?? [];
+    if (awaiterStacks) {
+      var awaiterStackFrames = stack[kAwaiterStackFrames];
+      if (awaiterStackFrames != null) {
+        return awaiterStackFrames;
       }
-      return asyncCausalStackFrames;
-    } else {
-      return stack[kStackFrames] ?? [];
     }
+    if (causalAsyncStacks) {
+      var asyncCausalStackFrames = stack[kAsyncCausalStackFrames];
+      if (asyncCausalStackFrames != null) {
+        return asyncCausalStackFrames;
+      }
+    }
+    return stack[kStackFrames] ?? [];
   }
 
   static final _history = [''];
@@ -1486,7 +1476,8 @@ class ObservatoryDebugger extends Debugger {
 
   void _loadSettings() {
     _upIsDown = settings.get('up-is-down');
-    _saneAsyncStacks = settings.get('causal-async-stacks') ?? true;
+    _causalAsyncStacks = settings.get('causal-async-stacks') ?? true;
+    _awaiterStacks = settings.get('awaiter-stacks') ?? true;
   }
 
   S.VM get vm => page.app.vm;
@@ -1655,7 +1646,7 @@ class ObservatoryDebugger extends Debugger {
           // This seems to be missing if we are paused-at-exception after
           // paused-at-isolate-exit. Maybe we shutdown part of the debugger too
           // soon?
-          console.printRef(isolate, event.exception, instances);
+          console.printRef(isolate, event.exception, objects);
         } else {
           console.print('Paused at ${script.name}:${line}:${col}');
         }
@@ -1698,7 +1689,7 @@ class ObservatoryDebugger extends Debugger {
     switch (event.kind) {
       case S.ServiceEvent.kVMUpdate:
         var vm = event.owner;
-        console.print("VM ${vm.target.networkAddress} renamed to '${vm.name}'");
+        console.print("VM ${vm.displayName} renamed to '${vm.name}'");
         break;
 
       case S.ServiceEvent.kIsolateStart:
@@ -1860,24 +1851,18 @@ class ObservatoryDebugger extends Debugger {
     console.printBold('\$ $command');
     return cmd.runCommand(command).then((_) {
       lastCommand = command;
-    }).catchError(
-      (e, s) {
-        console.printRed('Unable to execute command because the connection '
-                         'to the VM has been closed');
-      }, test: (e) => e is S.NetworkRpcException
-    ).catchError(
-      (e, s) {
-        console.printRed(e.toString());
-      }, test: (e) => e is CommandException
-    ).catchError(
-      (e, s) {
-        if (s != null) {
-          console.printRed('Internal error: $e\n$s');
-        } else {
-          console.printRed('Internal error: $e\n');
-        }
+    }).catchError((e, s) {
+      console.printRed('Unable to execute command because the connection '
+          'to the VM has been closed');
+    }, test: (e) => e is S.NetworkRpcException).catchError((e, s) {
+      console.printRed(e.toString());
+    }, test: (e) => e is CommandException).catchError((e, s) {
+      if (s != null) {
+        console.printRed('Internal error: $e\n$s');
+      } else {
+        console.printRed('Internal error: $e\n');
       }
-    );
+    });
   }
 
   String historyPrev(String command) {
@@ -2015,23 +2000,23 @@ class DebuggerPageElement extends HtmlElement implements Renderable {
 
   S.Isolate _isolate;
   ObservatoryDebugger _debugger;
-  M.InstanceRepository _instances;
+  M.ObjectRepository _objects;
   M.ScriptRepository _scripts;
   M.EventRepository _events;
 
-  factory DebuggerPageElement(S.Isolate isolate, M.InstanceRepository instances,
+  factory DebuggerPageElement(S.Isolate isolate, M.ObjectRepository objects,
       M.ScriptRepository scripts, M.EventRepository events) {
     assert(isolate != null);
-    assert(instances != null);
+    assert(objects != null);
     assert(scripts != null);
     assert(events != null);
     final e = document.createElement(tag.name);
     final debugger = new ObservatoryDebugger(isolate);
     debugger.page = e;
-    debugger.instances = instances;
+    debugger.objects = objects;
     e._isolate = isolate;
     e._debugger = debugger;
-    e._instances = instances;
+    e._objects = objects;
     e._scripts = scripts;
     e._events = events;
     return e;
@@ -2058,7 +2043,7 @@ class DebuggerPageElement extends HtmlElement implements Renderable {
 
     final stackDiv = new DivElement()..classes = ['stack'];
     final stackElement = new DebuggerStackElement(
-        _isolate, _debugger, stackDiv, _instances, _scripts, _events);
+        _isolate, _debugger, stackDiv, _objects, _scripts, _events);
     stackDiv.children = [stackElement];
     final consoleDiv = new DivElement()
       ..classes = ['console']
@@ -2170,7 +2155,7 @@ class DebuggerStackElement extends HtmlElement implements Renderable {
   static const tag = const Tag<DebuggerStackElement>('debugger-stack');
 
   S.Isolate _isolate;
-  M.InstanceRepository _instances;
+  M.ObjectRepository _objects;
   M.ScriptRepository _scripts;
   M.EventRepository _events;
   Element _scroller;
@@ -2207,20 +2192,20 @@ class DebuggerStackElement extends HtmlElement implements Renderable {
       S.Isolate isolate,
       ObservatoryDebugger debugger,
       Element scroller,
-      M.InstanceRepository instances,
+      M.ObjectRepository objects,
       M.ScriptRepository scripts,
       M.EventRepository events) {
     assert(isolate != null);
     assert(debugger != null);
     assert(scroller != null);
-    assert(instances != null);
+    assert(objects != null);
     assert(scripts != null);
     assert(events != null);
     final e = document.createElement(tag.name);
     e._isolate = isolate;
     e._debugger = debugger;
     e._scroller = scroller;
-    e._instances = instances;
+    e._objects = objects;
     e._scripts = scripts;
     e._events = events;
 
@@ -2278,7 +2263,7 @@ class DebuggerStackElement extends HtmlElement implements Renderable {
 
   _addFrame(List frameList, S.Frame frameInfo) {
     final frameElement = new DebuggerFrameElement(
-        _isolate, frameInfo, _scroller, _instances, _scripts, _events,
+        _isolate, frameInfo, _scroller, _objects, _scripts, _events,
         queue: app.queue);
 
     if (frameInfo.index == currentFrame) {
@@ -2296,7 +2281,7 @@ class DebuggerStackElement extends HtmlElement implements Renderable {
 
   _addMessage(List messageList, S.ServiceMessage messageInfo) {
     final messageElement = new DebuggerMessageElement(
-        _isolate, messageInfo, _instances, _scripts, _events,
+        _isolate, messageInfo, _objects, _scripts, _events,
         queue: app.queue);
 
     var li = new LIElement();
@@ -2311,7 +2296,10 @@ class DebuggerStackElement extends HtmlElement implements Renderable {
   void updateStackFrames(S.ServiceMap newStack) {
     List frameElements = _frameList.children;
     List newFrames;
-    if (_debugger.saneAsyncStacks &&
+    if (_debugger.awaiterStacks &&
+        (newStack[ObservatoryDebugger.kAwaiterStackFrames] != null)) {
+      newFrames = newStack[ObservatoryDebugger.kAwaiterStackFrames];
+    } else if (_debugger.causalAsyncStacks &&
         (newStack[ObservatoryDebugger.kAsyncCausalStackFrames] != null)) {
       newFrames = newStack[ObservatoryDebugger.kAsyncCausalStackFrames];
     } else {
@@ -2431,7 +2419,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
   M.Isolate _isolate;
   S.Frame _frame;
   S.Frame get frame => _frame;
-  M.InstanceRepository _instances;
+  M.ObjectRepository _objects;
   M.ScriptRepository _scripts;
   M.EventRepository _events;
 
@@ -2444,10 +2432,9 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
   bool _expanded = false;
 
   void setCurrent(bool value) {
-    Future load =
-        (_frame.function != null) ?
-        _frame.function.load() :
-        new Future.value(null);
+    Future load = (_frame.function != null)
+        ? _frame.function.load()
+        : new Future.value(null);
     load.then((func) {
       _current = value;
       if (_current) {
@@ -2467,14 +2454,14 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
       M.Isolate isolate,
       S.Frame frame,
       Element scroller,
-      M.InstanceRepository instances,
+      M.ObjectRepository objects,
       M.ScriptRepository scripts,
       M.EventRepository events,
       {RenderingQueue queue}) {
     assert(isolate != null);
     assert(frame != null);
     assert(scroller != null);
-    assert(instances != null);
+    assert(objects != null);
     assert(scripts != null);
     assert(events != null);
     final DebuggerFrameElement e = document.createElement(tag.name);
@@ -2482,7 +2469,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
     e._isolate = isolate;
     e._frame = frame;
     e._scroller = scroller;
-    e._instances = instances;
+    e._objects = objects;
     e._scripts = scripts;
     e._events = events;
     return e;
@@ -2507,8 +2494,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
     }
     if (_frame.kind == M.FrameKind.asyncSuspensionMarker) {
       final content = <Element>[
-        new SpanElement()
-          ..children = _createMarkerHeader(_frame.marker)
+        new SpanElement()..children = _createMarkerHeader(_frame.marker)
       ];
       children = content;
       return;
@@ -2551,7 +2537,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
                               _isolate,
                               _frame.function.location,
                               _scripts,
-                              _instances,
+                              _objects,
                               _events,
                               currentPos: _frame.location.tokenPos,
                               variables: _frame.variables,
@@ -2576,26 +2562,25 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
                                     ..classes = ['memberName']
                                     ..children = [
                                       anyRef(_isolate, homeMethod.dartOwner,
-                                          _instances,
+                                          _objects,
                                           queue: _r.queue)
                                     ]
                                 ]
-                      ]
-                        ..addAll(_frame.variables
-                            .map((v) => new DivElement()
-                              ..classes = ['memberItem']
-                              ..children = [
-                                new DivElement()
-                                  ..classes = ['memberName']
-                                  ..text = v.name,
-                                new DivElement()
-                                  ..classes = ['memberName']
-                                  ..children = [
-                                    anyRef(_isolate, v['value'], _instances,
-                                        queue: _r.queue)
-                                  ]
-                              ])
-                            .toList()))
+                      ]..addAll(_frame.variables
+                          .map((v) => new DivElement()
+                            ..classes = ['memberItem']
+                            ..children = [
+                              new DivElement()
+                                ..classes = ['memberName']
+                                ..text = v.name,
+                              new DivElement()
+                                ..classes = ['memberName']
+                                ..children = [
+                                  anyRef(_isolate, v['value'], _objects,
+                                      queue: _r.queue)
+                                ]
+                            ])
+                          .toList()))
                   ]
               ],
             new DivElement()
@@ -2630,7 +2615,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
       new DivElement()
         ..classes = ['frameSummary']
         ..children = content
-      ];
+    ];
   }
 
   List<Element> _createHeader() {
@@ -2684,8 +2669,7 @@ class DebuggerFrameElement extends HtmlElement implements Renderable {
       return frame.function == null;
     }
     return (newFrame.function.id == _frame.function.id &&
-            newFrame.location.script.id ==
-            frame.location.script.id);
+        newFrame.location.script.id == frame.location.script.id);
   }
 
   void updateFrame(S.Frame newFrame) {
@@ -2792,7 +2776,7 @@ class DebuggerMessageElement extends HtmlElement implements Renderable {
   S.Isolate _isolate;
   S.ServiceMessage _message;
   S.ServiceObject _preview;
-  M.InstanceRepository _instances;
+  M.ObjectRepository _objects;
   M.ScriptRepository _scripts;
   M.EventRepository _events;
 
@@ -2807,20 +2791,19 @@ class DebuggerMessageElement extends HtmlElement implements Renderable {
   factory DebuggerMessageElement(
       S.Isolate isolate,
       S.ServiceMessage message,
-      M.InstanceRepository instances,
+      M.ObjectRepository objects,
       M.ScriptRepository scripts,
       M.EventRepository events,
       {RenderingQueue queue}) {
     assert(isolate != null);
     assert(message != null);
-    assert(instances != null);
-    assert(instances != null);
+    assert(objects != null);
     assert(events != null);
     final DebuggerMessageElement e = document.createElement(tag.name);
     e._r = new RenderingScheduler(e, queue: queue);
     e._isolate = isolate;
     e._message = message;
-    e._instances = instances;
+    e._objects = objects;
     e._scripts = scripts;
     e._events = events;
     return e;
@@ -2871,7 +2854,7 @@ class DebuggerMessageElement extends HtmlElement implements Renderable {
                               _isolate,
                               _message.handler.location,
                               _scripts,
-                              _instances,
+                              _objects,
                               _events,
                               inDebuggerContext: true,
                               queue: _r.queue)
@@ -2891,13 +2874,12 @@ class DebuggerMessageElement extends HtmlElement implements Renderable {
                               ..onClick.listen((_) {
                                 previewButton.disabled = true;
                               })
-                          ]
-                            ..addAll(_preview == null
-                                ? const []
-                                : [
-                                    anyRef(_isolate, _preview, _instances,
-                                        queue: _r.queue)
-                                  ]))
+                          ]..addAll(_preview == null
+                              ? const []
+                              : [
+                                  anyRef(_isolate, _preview, _objects,
+                                      queue: _r.queue)
+                                ]))
                       ]
                   ]
               ],
@@ -3090,10 +3072,9 @@ class DebuggerConsoleElement extends HtmlElement implements Renderable {
     }
   }
 
-  void printRef(
-      S.Isolate isolate, S.Instance ref, M.InstanceRepository instances,
+  void printRef(S.Isolate isolate, S.Instance ref, M.ObjectRepository objects,
       {bool newline: true}) {
-    _append(new InstanceRefElement(isolate, ref, instances, queue: app.queue));
+    _append(new InstanceRefElement(isolate, ref, objects, queue: app.queue));
     if (newline) {
       this.newline();
     }

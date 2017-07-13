@@ -30,7 +30,7 @@ import 'ast.dart';
 ///         "@fields"
 ///         Qualified name
 ///
-///      Procedure that is not an accessor:
+///      Procedure that is not an accessor or factory:
 ///         Canonical name of enclosing class or library
 ///         "@methods"
 ///         Qualified name
@@ -43,6 +43,11 @@ import 'ast.dart';
 ///      Procedure that is a setter:
 ///         Canonical name of enclosing class or library
 ///         "@setters"
+///         Qualified name
+///
+///      Procedure that is a factory:
+///         Canonical name of enclosing class
+///         "@factories"
 ///         Qualified name
 ///
 ///      Qualified name:
@@ -99,6 +104,14 @@ class CanonicalName {
         .getChildFromQualifiedName(member.name);
   }
 
+  CanonicalName getChildFromTypedef(Typedef typedef_) {
+    return getChild('@typedefs').getChild(typedef_.name);
+  }
+
+  void removeChild(String name) {
+    _children?.remove(name);
+  }
+
   void bindTo(Reference target) {
     if (reference == target) return;
     if (reference != null) {
@@ -136,6 +149,7 @@ class CanonicalName {
     if (member is Procedure) {
       if (member.isGetter) return '@getters';
       if (member.isSetter) return '@setters';
+      if (member.isFactory) return '@factories';
       return '@methods';
     }
     if (member is Field) {

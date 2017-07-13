@@ -2,18 +2,16 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library services.completion.contributor.dart.inherited_ref;
-
 import 'dart:async';
 
 import 'package:analysis_server/src/provisional/completion/dart/completion_dart.dart';
-import 'package:analysis_server/src/provisional/completion/dart/completion_target.dart';
-import 'package:analysis_server/src/services/completion/dart/optype.dart';
 import 'package:analysis_server/src/services/completion/dart/suggestion_builder.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/standard_resolution_map.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
+import 'package:analyzer_plugin/src/utilities/completion/completion_target.dart';
+import 'package:analyzer_plugin/src/utilities/completion/optype.dart';
 
 import '../../../protocol_server.dart'
     show CompletionSuggestion, CompletionSuggestionKind;
@@ -67,29 +65,8 @@ class InheritedReferenceContributor extends DartCompletionContributor
       return EMPTY_LIST;
     }
     containingLibrary = request.libraryElement;
-    return _computeSuggestionsForClass2(resolutionMap
-        .elementDeclaredByClassDeclaration(classDecl), request);
-  }
-
-  List<CompletionSuggestion> _computeSuggestionsForClass2(
-      ClassElement classElement, DartCompletionRequest request,
-      {bool skipChildClass: true}) {
-    bool isFunctionalArgument = request.target.isFunctionalArgument();
-    kind = isFunctionalArgument
-        ? CompletionSuggestionKind.IDENTIFIER
-        : CompletionSuggestionKind.INVOCATION;
-    OpType optype = request.opType;
-
-    if (!skipChildClass) {
-      _addSuggestionsForType(classElement.type, optype,
-          isFunctionalArgument: isFunctionalArgument);
-    }
-
-    for (InterfaceType type in classElement.allSupertypes) {
-      _addSuggestionsForType(type, optype,
-          isFunctionalArgument: isFunctionalArgument);
-    }
-    return suggestions;
+    return _computeSuggestionsForClass2(
+        resolutionMap.elementDeclaredByClassDeclaration(classDecl), request);
   }
 
   List<CompletionSuggestion> computeSuggestionsForClass(
@@ -132,5 +109,26 @@ class InheritedReferenceContributor extends DartCompletionContributor
         }
       }
     }
+  }
+
+  List<CompletionSuggestion> _computeSuggestionsForClass2(
+      ClassElement classElement, DartCompletionRequest request,
+      {bool skipChildClass: true}) {
+    bool isFunctionalArgument = request.target.isFunctionalArgument();
+    kind = isFunctionalArgument
+        ? CompletionSuggestionKind.IDENTIFIER
+        : CompletionSuggestionKind.INVOCATION;
+    OpType optype = request.opType;
+
+    if (!skipChildClass) {
+      _addSuggestionsForType(classElement.type, optype,
+          isFunctionalArgument: isFunctionalArgument);
+    }
+
+    for (InterfaceType type in classElement.allSupertypes) {
+      _addSuggestionsForType(type, optype,
+          isFunctionalArgument: isFunctionalArgument);
+    }
+    return suggestions;
   }
 }

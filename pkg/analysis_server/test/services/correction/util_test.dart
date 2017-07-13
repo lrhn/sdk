@@ -2,12 +2,10 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.services.correction.util;
-
-import 'package:analysis_server/plugin/protocol/protocol.dart';
-import 'package:analysis_server/src/services/correction/strings.dart';
 import 'package:analysis_server/src/services/correction/util.dart';
 import 'package:analyzer/src/generated/source.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
+import 'package:analyzer_plugin/src/utilities/string_utilities.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -194,6 +192,7 @@ class A {}
   }
 
   test_addLibraryImports_package_hasDart_hasPackages_insertAfter() async {
+    addPackageSource('aaa', 'aaa.dart', '');
     await resolveTestUnit('''
 import 'dart:async';
 
@@ -211,6 +210,7 @@ import 'package:bbb/bbb.dart';
   }
 
   test_addLibraryImports_package_hasDart_hasPackages_insertBefore() async {
+    addPackageSource('bbb', 'bbb.dart', '');
     await resolveTestUnit('''
 import 'dart:async';
 
@@ -228,6 +228,8 @@ import 'package:bbb/bbb.dart';
   }
 
   test_addLibraryImports_package_hasImports_between() async {
+    addPackageSource('aaa', 'aaa.dart', '');
+    addPackageSource('ddd', 'ddd.dart', '');
     await resolveTestUnit('''
 import 'package:aaa/aaa.dart';
 import 'package:ddd/ddd.dart';

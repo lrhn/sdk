@@ -2,15 +2,10 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library services.src.correction.util;
-
 import 'dart:math';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart'
-    show SourceChange, SourceEdit;
 import 'package:analysis_server/src/protocol_server.dart'
     show doSourceChange_addElementEdit;
-import 'package:analysis_server/src/services/correction/source_range.dart';
 import 'package:analysis_server/src/services/correction/strings.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/token.dart';
@@ -23,6 +18,10 @@ import 'package:analyzer/src/dart/scanner/scanner.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/resolver.dart';
 import 'package:analyzer/src/generated/source.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart'
+    show SourceChange, SourceEdit;
+import 'package:analyzer_plugin/src/utilities/string_utilities.dart';
+import 'package:analyzer_plugin/utilities/range_factory.dart';
 import 'package:path/path.dart';
 
 /**
@@ -178,7 +177,7 @@ List<SourceRange> getCommentRanges(CompilationUnit unit) {
   while (token != null && token.type != TokenType.EOF) {
     Token commentToken = token.precedingComments;
     while (commentToken != null) {
-      ranges.add(rangeToken(commentToken));
+      ranges.add(range.token(commentToken));
       commentToken = commentToken.next;
     }
     token = token.next;
@@ -216,6 +215,15 @@ String getDefaultValueCode(DartType type) {
   }
   // no better guess
   return "null";
+}
+
+/**
+ * Return all [LocalElement]s defined in the given [node].
+ */
+List<LocalElement> getDefinedLocalElements(AstNode node) {
+  var collector = new _LocalElementsCollector();
+  node.accept(collector);
+  return collector.elements;
 }
 
 /**
@@ -318,9 +326,17 @@ int getExpressionParentPrecedence(AstNode node) {
   AstNode parent = node.parent;
   if (parent is ParenthesizedExpression) {
     return 0;
-  }
-  if (parent is IndexExpression && parent.index == node) {
+  } else if (parent is IndexExpression && parent.index == node) {
     return 0;
+  } else if (parent is AssignmentExpression &&
+      node == parent.rightHandSide &&
+      parent.parent is CascadeExpression) {
+    // This is a hack to allow nesting of cascade expressions within other
+    // cascade expressions. The problem is that if the precedence of two
+    // expressions are equal it sometimes means that we don't need parentheses
+    // (such as replacing the `b` in `a + b` with `c + d`) and sometimes do
+    // (such as replacing the `v` in `..f = v` with `a..b`).
+    return 3;
   }
   return getExpressionPrecedence(parent);
 }
@@ -711,17 +727,6 @@ class CorrectionUtils {
   }
 
   /**
-   * Returns an [Edit] that changes indentation of the source of the given
-   * [SourceRange] from [oldIndent] to [newIndent], keeping indentation of lines
-   * relative to each other.
-   */
-  SourceEdit createIndentEdit(
-      SourceRange range, String oldIndent, String newIndent) {
-    String newSource = replaceSourceRangeIndent(range, oldIndent, newIndent);
-    return new SourceEdit(range.offset, range.length, newSource);
-  }
-
-  /**
    * Returns the [AstNode] that encloses the given offset.
    */
   AstNode findNode(int offset) => new NodeLocator(offset).searchWithin(unit);
@@ -744,80 +749,9 @@ class CorrectionUtils {
   }
 
   /**
-   * Returns the actual type source of the given [Expression], may be `null`
-   * if can not be resolved, should be treated as the `dynamic` type.
-   */
-  String getExpressionTypeSource(
-      Expression expression, Set<Source> librariesToImport) {
-    if (expression == null) {
-      return null;
-    }
-    DartType type = expression.bestType;
-    if (type.isDynamic) {
-      return null;
-    }
-    return getTypeSource(type, librariesToImport);
-  }
-
-  /**
    * Returns the indentation with the given level.
    */
   String getIndent(int level) => repeat('  ', level);
-
-  /**
-   * Returns a [InsertDesc] describing where to insert a new library-related
-   * directive.
-   */
-  CorrectionUtils_InsertDesc getInsertDescImport() {
-    // analyze directives
-    Directive prevDirective = null;
-    for (Directive directive in unit.directives) {
-      if (directive is LibraryDirective ||
-          directive is ImportDirective ||
-          directive is ExportDirective) {
-        prevDirective = directive;
-      }
-    }
-    // insert after last library-related directive
-    if (prevDirective != null) {
-      CorrectionUtils_InsertDesc result = new CorrectionUtils_InsertDesc();
-      result.offset = prevDirective.end;
-      String eol = endOfLine;
-      if (prevDirective is LibraryDirective) {
-        result.prefix = "$eol$eol";
-      } else {
-        result.prefix = eol;
-      }
-      return result;
-    }
-    // no directives, use "top" location
-    return getInsertDescTop();
-  }
-
-  /**
-   * Returns a [InsertDesc] describing where to insert a new 'part' directive.
-   */
-  CorrectionUtils_InsertDesc getInsertDescPart() {
-    // analyze directives
-    Directive prevDirective = null;
-    for (Directive directive in unit.directives) {
-      prevDirective = directive;
-    }
-    // insert after last directive
-    if (prevDirective != null) {
-      CorrectionUtils_InsertDesc result = new CorrectionUtils_InsertDesc();
-      result.offset = prevDirective.end;
-      String eol = endOfLine;
-      if (prevDirective is PartDirective) {
-        result.prefix = eol;
-      } else {
-        result.prefix = "$eol$eol";
-      }
-      return result;
-    }
-    // no directives, use "top" location
-    return getInsertDescTop();
-  }
 
   /**
    * Returns a [InsertDesc] describing where to insert a new directive or a
@@ -972,30 +906,29 @@ class CorrectionUtils {
   }
 
   /**
-   * Returns a [SourceRange] that covers [range] and extends (if possible) to
-   * cover whole lines.
+   * Returns a [SourceRange] that covers [sourceRange] and extends (if possible)
+   * to cover whole lines.
    */
-  SourceRange getLinesRange(SourceRange range,
+  SourceRange getLinesRange(SourceRange sourceRange,
       {bool skipLeadingEmptyLines: false}) {
     // start
-    int startOffset = range.offset;
+    int startOffset = sourceRange.offset;
     int startLineOffset = getLineContentStart(startOffset);
     if (skipLeadingEmptyLines) {
       startLineOffset = skipEmptyLinesLeft(startLineOffset);
     }
     // end
-    int endOffset = range.end;
+    int endOffset = sourceRange.end;
     int afterEndLineOffset = getLineContentEnd(endOffset);
     // range
-    return rangeStartEnd(startLineOffset, afterEndLineOffset);
+    return range.startOffsetEndOffset(startLineOffset, afterEndLineOffset);
   }
 
   /**
    * Returns a [SourceRange] that covers all the given [Statement]s.
    */
   SourceRange getLinesRangeStatements(List<Statement> statements) {
-    SourceRange range = rangeNodes(statements);
-    return getLinesRange(range);
+    return getLinesRange(range.nodes(statements));
   }
 
   /**
@@ -1031,48 +964,6 @@ class CorrectionUtils {
    */
   String getNodeText(AstNode node) {
     return getText(node.offset, node.length);
-  }
-
-  /**
-   * @return the source for the parameter with the given type and name.
-   */
-  String getParameterSource(
-      DartType type, String name, Set<Source> librariesToImport) {
-    // no type
-    if (type == null || type.isDynamic) {
-      return name;
-    }
-    // function type
-    if (type is FunctionType && type.element.isSynthetic) {
-      FunctionType functionType = type;
-      StringBuffer sb = new StringBuffer();
-      // return type
-      DartType returnType = functionType.returnType;
-      if (returnType != null && !returnType.isDynamic) {
-        String returnTypeSource = getTypeSource(returnType, librariesToImport);
-        sb.write(returnTypeSource);
-        sb.write(' ');
-      }
-      // parameter name
-      sb.write(name);
-      // parameters
-      sb.write('(');
-      List<ParameterElement> fParameters = functionType.parameters;
-      for (int i = 0; i < fParameters.length; i++) {
-        ParameterElement fParameter = fParameters[i];
-        if (i != 0) {
-          sb.write(", ");
-        }
-        sb.write(getParameterSource(
-            fParameter.type, fParameter.name, librariesToImport));
-      }
-      sb.write(')');
-      // done
-      return sb.toString();
-    }
-    // simple type
-    String typeSource = getTypeSource(type, librariesToImport);
-    return '$typeSource $name';
   }
 
   /**
@@ -1322,7 +1213,7 @@ class CorrectionUtils {
       List<Token> tokens = TokenUtils.getTokens(source);
       for (Token token in tokens) {
         if (token.type == TokenType.STRING) {
-          lineRanges.add(rangeToken(token));
+          lineRanges.add(range.token(token));
         }
         token = token.next;
       }
@@ -1378,7 +1269,7 @@ class CorrectionUtils {
   bool selectionIncludesNonWhitespaceOutsideNode(
       SourceRange selection, AstNode node) {
     return _selectionIncludesNonWhitespaceOutsideRange(
-        selection, rangeNode(node));
+        selection, range.node(node));
   }
 
   /**
@@ -1501,17 +1392,19 @@ class CorrectionUtils {
    *         between "selection" and "range" start/end.
    */
   bool _selectionIncludesNonWhitespaceOutsideRange(
-      SourceRange selection, SourceRange range) {
+      SourceRange selection, SourceRange sourceRange) {
     // selection should cover range
-    if (!selection.covers(range)) {
+    if (!selection.covers(sourceRange)) {
       return false;
     }
     // non-whitespace between selection start and range start
-    if (!isJustWhitespaceOrComment(rangeStartStart(selection, range))) {
+    if (!isJustWhitespaceOrComment(
+        range.startOffsetEndOffset(selection.offset, sourceRange.offset))) {
       return true;
     }
     // non-whitespace after range
-    if (!isJustWhitespaceOrComment(rangeEndEnd(range, selection))) {
+    if (!isJustWhitespaceOrComment(
+        range.startOffsetEndOffset(sourceRange.end, selection.end))) {
       return true;
     }
     // only whitespace in selection around range
@@ -1652,4 +1545,21 @@ class _InvertedCondition {
 
   static _InvertedCondition _simple(String source) =>
       new _InvertedCondition(2147483647, source);
+}
+
+/**
+ * Visitor that collects defined [LocalElement]s.
+ */
+class _LocalElementsCollector extends RecursiveAstVisitor {
+  final elements = <LocalElement>[];
+
+  @override
+  visitSimpleIdentifier(SimpleIdentifier node) {
+    if (node.inDeclarationContext()) {
+      Element element = node.staticElement;
+      if (element is LocalElement) {
+        elements.add(element);
+      }
+    }
+  }
 }

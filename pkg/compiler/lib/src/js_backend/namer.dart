@@ -12,15 +12,24 @@ import '../closure.dart';
 import '../common.dart';
 import '../common/names.dart' show Identifiers, Selectors;
 import '../constants/values.dart';
-import '../core_types.dart' show CommonElements;
+import '../common_elements.dart' show CommonElements;
 import '../diagnostics/invariant.dart' show DEBUG_MODE;
-import '../elements/elements.dart';
+import '../elements/elements.dart'
+    show
+        ClassElement,
+        Element,
+        Elements,
+        FieldElement,
+        MemberElement,
+        MixinApplicationElement,
+        TypedefElement;
 import '../elements/entities.dart';
+import '../elements/entity_utils.dart' as utils;
+import '../elements/jumps.dart';
+import '../elements/names.dart';
 import '../elements/resolution_types.dart';
 import '../elements/types.dart';
 import '../js/js.dart' as jsAst;
-import '../js/js.dart' show js;
-import '../tree/tree.dart';
 import '../universe/call_structure.dart' show CallStructure;
 import '../universe/selector.dart' show Selector, SelectorKind;
 import '../universe/world_builder.dart' show CodegenWorldBuilder;
@@ -28,8 +37,9 @@ import 'package:front_end/src/fasta/scanner/characters.dart';
 import '../util/util.dart';
 import '../world.dart' show ClosedWorld;
 import 'backend.dart';
-import 'backend_helpers.dart';
 import 'constant_system_javascript.dart';
+import 'native_data.dart';
+import 'runtime_types.dart';
 
 part 'field_naming_mixin.dart';
 part 'frequency_namer.dart';
@@ -54,7 +64,7 @@ part 'namer_names.dart';
  * uniqueness within some namespace (e.g. as fields on the same JS object).
  * In [MinifyNamer], disambiguated names are also minified.
  *
- * Annotated names are names generated from a disambiguated name. Annnotated
+ * Annotated names are names generated from a disambiguated name. Annotated
  * names must be computable at runtime by prefixing/suffixing constant strings
  * onto the disambiguated name.
  *
@@ -443,20 +453,22 @@ class Namer {
   final String superPrefix = r'super$';
   final String metadataField = '@';
   final String callPrefix = 'call';
-  final String callCatchAllName = r'call*';
+  // Note: We can't shorten 'call*' in the minified namers because the catch-all
+  // formula `name + "*"` is used by mirrors.
+  String get callCatchAllName => r'call*';
   final String callNameField = r'$callName';
   final String stubNameField = r'$stubName';
   final String reflectableField = r'$reflectable';
   final String reflectionInfoField = r'$reflectionInfo';
   final String reflectionNameField = r'$reflectionName';
   final String metadataIndexField = r'$metadataIndex';
-  final String defaultValuesField = r'$defaultValues';
+  String get requiredParameterField => r'$requiredArgCount';
+  String get defaultValuesField => r'$defaultValues';
   final String methodsWithOptionalArgumentsField =
       r'$methodsWithOptionalArguments';
   final String deferredAction = r'$deferredAction';
 
   final String classDescriptorProperty = r'^';
-  final String requiredParameterField = r'$requiredArgCount';
 
   /// The non-minifying namer's [callPrefix] with a dollar after it.
   static const String _callPrefixDollar = r'call$';
@@ -488,9 +500,23 @@ class Namer {
   static final RegExp IDENTIFIER = new RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$');
   static final RegExp NON_IDENTIFIER_CHAR = new RegExp(r'[^A-Za-z_0-9$]');
 
-  final JavaScriptBackend backend;
-  final ClosedWorld closedWorld;
-  final CodegenWorldBuilder codegenWorldBuilder;
+  final ClosedWorld _closedWorld;
+  final CodegenWorldBuilder _codegenWorldBuilder;
+
+  RuntimeTypesEncoder _rtiEncoder;
+  RuntimeTypesEncoder get rtiEncoder {
+    assert(_rtiEncoder != null,
+        failedAt(NO_LOCATION_SPANNABLE, "Namer.rtiEncoder has not been set."));
+    return _rtiEncoder;
+  }
+
+  void set rtiEncoder(RuntimeTypesEncoder value) {
+    assert(
+        _rtiEncoder == null,
+        failedAt(
+            NO_LOCATION_SPANNABLE, "Namer.rtiEncoder has already been set."));
+    _rtiEncoder = value;
+  }
 
   /// Used disambiguated names in the global namespace, issued by
   /// [_disambiguateGlobal], and [_disambiguateInternalGlobal].
@@ -499,8 +525,7 @@ class Namer {
   /// (see [globalObjectFor]), we currently use a single namespace for all these
   /// names.
   final NamingScope globalScope = new NamingScope();
-  final Map<Element, jsAst.Name> userGlobals =
-      new HashMap<Element, jsAst.Name>();
+  final Map<Entity, jsAst.Name> userGlobals = new HashMap<Entity, jsAst.Name>();
   final Map<String, jsAst.Name> internalGlobals =
       new HashMap<String, jsAst.Name>();
 
@@ -510,8 +535,8 @@ class Namer {
   final NamingScope instanceScope = new NamingScope();
   final Map<String, jsAst.Name> userInstanceMembers =
       new HashMap<String, jsAst.Name>();
-  final Map<Element, jsAst.Name> internalInstanceMembers =
-      new HashMap<Element, jsAst.Name>();
+  final Map<MemberEntity, jsAst.Name> internalInstanceMembers =
+      new HashMap<MemberEntity, jsAst.Name>();
   final Map<String, jsAst.Name> userInstanceOperators =
       new HashMap<String, jsAst.Name>();
 
@@ -524,19 +549,19 @@ class Namer {
 
   final Map<String, int> popularNameCounters = <String, int>{};
 
-  final Map<LibraryElement, String> libraryLongNames =
-      new HashMap<LibraryElement, String>();
+  final Map<LibraryEntity, String> libraryLongNames =
+      new HashMap<LibraryEntity, String>();
 
   final Map<ConstantValue, jsAst.Name> constantNames =
       new HashMap<ConstantValue, jsAst.Name>();
   final Map<ConstantValue, String> constantLongNames =
       <ConstantValue, String>{};
-  ConstantCanonicalHasher constantHasher;
+  ConstantCanonicalHasher _constantHasher;
 
   /// Maps private names to a library that may use that name without prefixing
   /// itself. Used for building proposed names.
-  final Map<String, LibraryElement> shortPrivateNameOwners =
-      <String, LibraryElement>{};
+  final Map<String, LibraryEntity> shortPrivateNameOwners =
+      <String, LibraryEntity>{};
 
   final Map<String, String> suggestedGlobalNames = <String, String>{};
   final Map<String, String> suggestedInstanceNames = <String, String>{};
@@ -544,27 +569,19 @@ class Namer {
   /// Used to store unique keys for library names. Keys are not used as names,
   /// nor are they visible in the output. The only serve as an internal
   /// key into maps.
-  final Map<LibraryElement, String> _libraryKeys =
-      new HashMap<LibraryElement, String>();
+  final Map<LibraryEntity, String> _libraryKeys =
+      new HashMap<LibraryEntity, String>();
 
-  Namer(JavaScriptBackend backend, this.closedWorld,
-      CodegenWorldBuilder codegenWorldBuilder)
-      : this.backend = backend,
-        this.codegenWorldBuilder = codegenWorldBuilder,
-        constantHasher = new ConstantCanonicalHasher(
-            backend.rtiEncoder, backend.reporter, codegenWorldBuilder),
-        functionTypeNamer = new FunctionTypeNamer(backend.rtiEncoder) {
+  Namer(this._closedWorld, this._codegenWorldBuilder) {
     _literalAsyncPrefix = new StringBackedName(asyncPrefix);
     _literalGetterPrefix = new StringBackedName(getterPrefix);
     _literalSetterPrefix = new StringBackedName(setterPrefix);
     _literalLazyGetterPrefix = new StringBackedName(lazyGetterPrefix);
   }
 
-  BackendHelpers get helpers => backend.helpers;
+  CommonElements get _commonElements => _closedWorld.commonElements;
 
-  DiagnosticReporter get reporter => backend.reporter;
-
-  CommonElements get commonElements => closedWorld.commonElements;
+  NativeData get _nativeData => _closedWorld.nativeData;
 
   String get deferredTypesName => 'deferredTypes';
   String get isolateName => 'Isolate';
@@ -586,7 +603,7 @@ class Namer {
 
   /// Returns the string that is to be used as the result of a call to
   /// [JS_GET_NAME] at [node] with argument [name].
-  jsAst.Name getNameForJsGetName(Node node, JsGetName name) {
+  jsAst.Name getNameForJsGetName(Spannable spannable, JsGetName name) {
     switch (name) {
       case JsGetName.GETTER_PREFIX:
         return asName(getterPrefix);
@@ -641,20 +658,16 @@ class Namer {
       case JsGetName.FUNCTION_TYPE_NAMED_PARAMETERS_TAG:
         return asName(functionTypeNamedParametersTag);
       case JsGetName.IS_INDEXABLE_FIELD_NAME:
-        return operatorIs(helpers.jsIndexingBehaviorInterface);
+        return operatorIs(_commonElements.jsIndexingBehaviorInterface);
       case JsGetName.NULL_CLASS_TYPE_NAME:
-        ClassElement nullClass = commonElements.nullClass;
-        return runtimeTypeName(nullClass);
+        return runtimeTypeName(_commonElements.nullClass);
       case JsGetName.OBJECT_CLASS_TYPE_NAME:
-        ClassElement objectClass = commonElements.objectClass;
-        return runtimeTypeName(objectClass);
+        return runtimeTypeName(_commonElements.objectClass);
       case JsGetName.FUNCTION_CLASS_TYPE_NAME:
-        ClassElement functionClass = commonElements.functionClass;
-        return runtimeTypeName(functionClass);
+        return runtimeTypeName(_commonElements.functionClass);
       default:
-        reporter.reportErrorMessage(node, MessageKind.GENERIC,
-            {'text': 'Error: Namer has no name for "$name".'});
-        return asName('BROKEN');
+        throw new SpannableAssertionFailure(
+            spannable, 'Error: Namer has no name for "$name".');
     }
   }
 
@@ -687,8 +700,10 @@ class Namer {
   String constantLongName(ConstantValue constant) {
     String longName = constantLongNames[constant];
     if (longName == null) {
+      _constantHasher ??=
+          new ConstantCanonicalHasher(rtiEncoder, _codegenWorldBuilder);
       longName = new ConstantNamingVisitor(
-              backend.rtiEncoder, reporter, codegenWorldBuilder, constantHasher)
+              rtiEncoder, _codegenWorldBuilder, _constantHasher)
           .getName(constant);
       constantLongNames[constant] = longName;
     }
@@ -730,10 +745,10 @@ class Namer {
     // Public names are easy.
     if (!originalName.isPrivate) return text;
 
-    LibraryElement library = originalName.library;
+    LibraryEntity library = originalName.library;
 
     // The first library asking for a short private name wins.
-    LibraryElement owner =
+    LibraryEntity owner =
         shortPrivateNameOwners.putIfAbsent(text, () => library);
 
     if (owner == library) {
@@ -744,64 +759,34 @@ class Namer {
       // The name is still not guaranteed to be unique, since both the library
       // name and originalName could contain $ symbols and as the library
       // name itself might clash.
-      String libraryName = _proposeNameForGlobal(library);
+      String libraryName = _proposeNameForLibrary(library);
       return "_$libraryName\$$text";
     }
   }
 
-  String _proposeNameForConstructorBody(ConstructorBodyElement method) {
+  String _proposeNameForConstructorBody(ConstructorBodyEntity method) {
     String name = Elements.reconstructConstructorNameSourceString(method);
     // We include the method suffix on constructor bodies. It has no purpose,
     // but this way it produces the same names as previous versions of the
     // Namer class did.
-    List<String> suffix = callSuffixForSignature(method.functionSignature);
+    List<String> suffix = callSuffixForSignature(method.parameterStructure);
     return '$name\$${suffix.join(r'$')}';
   }
 
   /// Name for a constructor body.
-  jsAst.Name constructorBodyName(FunctionElement ctor) {
+  jsAst.Name constructorBodyName(ConstructorBodyEntity ctor) {
     return _disambiguateInternalMember(
         ctor, () => _proposeNameForConstructorBody(ctor));
   }
 
   /// Annotated name for [method] encoding arity and named parameters.
-  jsAst.Name instanceMethodName(MethodElement method) {
-    if (method.isGenerativeConstructorBody) {
+  jsAst.Name instanceMethodName(FunctionEntity method) {
+    // TODO(johnniwinther): Avoid the use of [ConstructorBodyEntity]. The
+    // codegen model should be explicit about its constructor body elements.
+    if (method is ConstructorBodyEntity) {
       return constructorBodyName(method);
     }
     return invocationName(new Selector.fromElement(method));
-  }
-
-  String _jsNameHelper(Element e) {
-    String jsInteropName = backend.nativeData.getJsInteropName(e);
-    if (jsInteropName != null && jsInteropName.isNotEmpty) return jsInteropName;
-    return e.isLibrary
-        ? 'self'
-        : backend.nativeData.getUnescapedJSInteropName(e.name);
-  }
-
-  /// Returns a JavaScript path specifying the context in which
-  /// [element.fixedBackendName] should be evaluated. Only applicable for
-  /// elements using typed JavaScript interop.
-  /// For example: fixedBackendPath for the static method createMap in the
-  /// Map class of the goog.map JavaScript library would have path
-  /// "goog.maps.Map".
-  String fixedBackendMethodPath(MethodElement element) {
-    return _fixedBackendPath(element);
-  }
-
-  String _fixedBackendPath(Element element) {
-    if (!backend.isJsInterop(element)) return null;
-    if (element.isInstanceMember) return 'this';
-    if (element.isConstructor) return _fixedBackendPath(element.enclosingClass);
-    if (element.isLibrary) return 'self';
-    var sb = new StringBuffer();
-    sb..write(_jsNameHelper(element.library));
-
-    if (element.enclosingClass != null && element.enclosingClass != element) {
-      sb..write('.')..write(_jsNameHelper(element.enclosingClass));
-    }
-    return sb.toString();
   }
 
   /// Returns the annotated name for a variant of `call`.
@@ -834,13 +819,9 @@ class Namer {
   ///
   /// This is used for the annotated names of `call`, and for the proposed name
   /// for other instance methods.
-  List<String> callSuffixForSignature(FunctionSignature sig) {
-    List<String> suffixes = ['${sig.parameterCount}'];
-    if (sig.optionalParametersAreNamed) {
-      for (FormalElement param in sig.orderedOptionalParameters) {
-        suffixes.add(param.name);
-      }
-    }
+  List<String> callSuffixForSignature(ParameterStructure parameterStructure) {
+    List<String> suffixes = ['${parameterStructure.totalParameters}'];
+    suffixes.addAll(parameterStructure.namedParameters);
     return suffixes;
   }
 
@@ -873,9 +854,8 @@ class Namer {
         return disambiguatedName; // Methods other than call are not annotated.
 
       default:
-        reporter.internalError(CURRENT_ELEMENT_SPANNABLE,
+        throw new SpannableAssertionFailure(CURRENT_ELEMENT_SPANNABLE,
             'Unexpected selector kind: ${selector.kind}');
-        return null;
     }
   }
 
@@ -889,50 +869,54 @@ class Namer {
    * Returns the disambiguated name for the given field, used for constructing
    * the getter and setter names.
    */
-  jsAst.Name fieldAccessorName(FieldElement element) {
+  jsAst.Name fieldAccessorName(FieldEntity element) {
     return element.isInstanceMember
         ? _disambiguateMember(element.memberName)
-        : _disambiguateGlobal(element);
+        : _disambiguateGlobalMember(element);
   }
 
   /**
    * Returns name of the JavaScript property used to store a static or instance
    * field.
    */
-  jsAst.Name fieldPropertyName(FieldElement element) {
+  jsAst.Name fieldPropertyName(FieldEntity element) {
     return element.isInstanceMember
         ? instanceFieldPropertyName(element)
-        : _disambiguateGlobal(element);
+        : _disambiguateGlobalMember(element);
   }
 
-  /**
-   * Returns name of the JavaScript property used to store the
-   * `readTypeVariable` function for the given type variable.
-   */
-  jsAst.Name nameForReadTypeVariable(TypeVariableElement element) {
-    return _disambiguateInternalMember(element, () => element.name);
-  }
+  /// Returns a JavaScript property name used to store the member [element] on
+  /// one of the global objects.
+  ///
+  /// Should be used together with [globalObjectForMember], which denotes the
+  /// object on which the returned property name should be used.
+  jsAst.Name globalPropertyNameForMember(MemberEntity element) =>
+      _disambiguateGlobalMember(element);
 
-  /**
-   * Returns a JavaScript property name used to store [element] on one
-   * of the global objects.
-   *
-   * Should be used together with [globalObjectFor], which denotes the object
-   * on which the returned property name should be used.
-   */
-  jsAst.Name globalPropertyName(Element element) {
-    return _disambiguateGlobal(element);
-  }
+  /// Returns a JavaScript property name used to store the class [element] on
+  /// one of the global objects.
+  ///
+  /// Should be used together with [globalObjectForClass], which denotes the
+  /// object on which the returned property name should be used.
+  jsAst.Name globalPropertyNameForClass(ClassEntity element) =>
+      _disambiguateGlobalType(element);
+
+  /// Returns a JavaScript property name used to store the type (typedef)
+  /// [element] on one of the global objects.
+  ///
+  /// Should be used together with [globalObjectForType], which denotes the
+  /// object on which the returned property name should be used.
+  jsAst.Name globalPropertyNameForType(Entity element) =>
+      _disambiguateGlobalType(element);
 
   /**
    * Returns the JavaScript property name used to store an instance field.
    */
-  jsAst.Name instanceFieldPropertyName(FieldElement element) {
-    ClassElement enclosingClass = element.enclosingClass;
+  jsAst.Name instanceFieldPropertyName(FieldEntity element) {
+    ClassEntity enclosingClass = element.enclosingClass;
 
-    if (backend.nativeData.hasFixedBackendName(element)) {
-      return new StringBackedName(
-          backend.nativeData.getFixedBackendName(element));
+    if (_nativeData.hasFixedBackendName(element)) {
+      return new StringBackedName(_nativeData.getFixedBackendName(element));
     }
 
     // Some elements, like e.g. instances of BoxFieldElement are special.
@@ -942,10 +926,12 @@ class Namer {
     // However, as boxes are not really instances of classes, the usual naming
     // scheme that tries to avoid name clashes with super classes does not
     // apply. So we can directly grab a name.
-    Entity asEntity = element;
-    if (asEntity is JSEntity) {
+    if (element is JSEntity) {
+      var jsEntity = element;
       return _disambiguateInternalMember(
-          element, () => asEntity.declaredEntity.name);
+          jsEntity,
+          // ignore: UNDEFINED_GETTER
+          () => jsEntity.declaredEntity.name);
     }
 
     // If the name of the field might clash with another field,
@@ -955,7 +941,7 @@ class Namer {
     // mangle the field names of classes extending native classes.
     // Methods on such classes are stored on the interceptor, not the instance,
     // so only fields have the potential to clash with a native property name.
-    if (closedWorld.isUsedAsMixin(enclosingClass) ||
+    if (_closedWorld.isUsedAsMixin(enclosingClass) ||
         _isShadowingSuperField(element) ||
         _isUserClassExtendingNative(enclosingClass)) {
       String proposeName() => '${enclosingClass.name}_${element.name}';
@@ -965,21 +951,26 @@ class Namer {
     // No superclass uses the disambiguated name as a property name, so we can
     // use it for this field. This generates nicer field names since otherwise
     // the field name would have to be mangled.
-    return _disambiguateMember(element.memberName);
+    return _disambiguateMember(new Name(element.name, element.library));
   }
 
-  bool _isShadowingSuperField(Element element) {
-    return element.enclosingClass.hasFieldShadowedBy(element);
+  bool _isShadowingSuperField(FieldEntity element) {
+    ClassEntity cls = element.enclosingClass;
+    if (cls is ClassElement) {
+      return cls.hasFieldShadowedBy(element);
+    }
+    // TODO(redemption): Support class entities.
+    return false;
   }
 
   /// True if [class_] is a non-native class that inherits from a native class.
-  bool _isUserClassExtendingNative(ClassElement class_) {
-    return !backend.isNative(class_) &&
-        backend.nativeData.isNativeOrExtendsNative(class_.superclass);
+  bool _isUserClassExtendingNative(ClassEntity class_) {
+    return !_nativeData.isNativeClass(class_) &&
+        _nativeData.isNativeOrExtendsNative(class_);
   }
 
   /// Annotated name for the setter of [element].
-  jsAst.Name setterForElement(MemberElement element) {
+  jsAst.Name setterForMember(MemberEntity element) {
     // We dynamically create setters from the field-name. The setter name must
     // therefore be derived from the instance field-name.
     jsAst.Name name = _disambiguateMember(element.memberName);
@@ -1001,7 +992,7 @@ class Namer {
   }
 
   /// Annotated name for the getter of [element].
-  jsAst.Name getterForElement(MemberElement element) {
+  jsAst.Name getterForElement(MemberEntity element) {
     // We dynamically create getters from the field-name. The getter name must
     // therefore be derived from the instance field-name.
     jsAst.Name name = _disambiguateMember(element.memberName);
@@ -1045,7 +1036,7 @@ class Namer {
   /// Generates a unique key for [library].
   ///
   /// Keys are meant to be used in maps and should not be visible in the output.
-  String _generateLibraryKey(LibraryElement library) {
+  String _generateLibraryKey(LibraryEntity library) {
     return _libraryKeys.putIfAbsent(library, () {
       String keyBase = library.name;
       int counter = 0;
@@ -1057,16 +1048,30 @@ class Namer {
     });
   }
 
+  jsAst.Name _disambiguateGlobalMember(MemberEntity element) {
+    return _disambiguateGlobal(element, _proposeNameForMember);
+  }
+
+  jsAst.Name _disambiguateGlobalType(Entity element) {
+    return _disambiguateGlobal(element, _proposeNameForType);
+  }
+
   /// Returns the disambiguated name for a top-level or static element.
   ///
   /// The resulting name is unique within the global-member namespace.
-  jsAst.Name _disambiguateGlobal(Element element) {
+  jsAst.Name _disambiguateGlobal(
+      Entity element, String proposeName(Entity element)) {
     // TODO(asgerf): We can reuse more short names if we disambiguate with
     // a separate namespace for each of the global holder objects.
-    element = element.declaration;
+    if (element is Element) {
+      // Ensures we only work on declarations. Non-[Element] entities do not
+      // have the declaration/implementation separation.
+      Element e = element;
+      element = e.declaration;
+    }
     jsAst.Name newName = userGlobals[element];
     if (newName == null) {
-      String proposedName = _proposeNameForGlobal(element);
+      String proposedName = proposeName(element);
       newName = getFreshName(globalScope, proposedName);
       userGlobals[element] = newName;
     }
@@ -1081,7 +1086,7 @@ class Namer {
   /// This is the name used for deriving property names of accessors (getters
   /// and setters) and as property name for storing methods and method stubs.
   ///
-  /// [suffixes] denote an extension of [originalName] to distiguish it from
+  /// [suffixes] denote an extension of [originalName] to distinguish it from
   /// other members with that name. These are used to encode the arity and
   /// named parameters to a method. Disambiguating the same [originalName] with
   /// different [suffixes] will yield different disambiguated names.
@@ -1161,14 +1166,13 @@ class Namer {
   ///
   /// The resulting name is unique within the instance-member namespace.
   jsAst.Name _disambiguateInternalMember(
-      Element element, String proposeName()) {
+      MemberEntity element, String proposeName()) {
     jsAst.Name newName = internalInstanceMembers[element];
     if (newName == null) {
       String name = proposeName();
 
-      Entity asEntity = element;
-      if (asEntity is PrivatelyNamedJSEntity) {
-        NamingScope scope = _getPrivateScopeFor(asEntity);
+      if (element is PrivatelyNamedJSEntity) {
+        NamingScope scope = _getPrivateScopeFor(element);
         newName = getFreshName(scope, name,
             sanitizeForAnnotations: true, sanitizeForNatives: false);
         internalInstanceMembers[element] = newName;
@@ -1281,32 +1285,34 @@ class Namer {
     return name;
   }
 
-  /**
-   * Returns a proposed name for the given top-level or static element.
-   * The returned id is guaranteed to be a valid JavaScript identifier.
-   */
-  String _proposeNameForGlobal(Element element) {
-    assert(!element.isInstanceMember);
-    if (element.isGenerativeConstructor) {
-      return '${element.enclosingClass.name}\$${element.name}';
+  /// Returns a proposed name for the given typedef or class [element].
+  /// The returned id is guaranteed to be a valid JavaScript identifier.
+  String _proposeNameForType(Entity element) {
+    return element.name.replaceAll('+', '_');
+  }
+
+  /// Returns a proposed name for the given top-level or static member
+  /// [element]. The returned id is guaranteed to be a valid JavaScript
+  /// identifier.
+  String _proposeNameForMember(MemberEntity element) {
+    if (element.isConstructor) {
+      return _proposeNameForConstructor(element);
+    } else if (element.enclosingClass != null) {
+      ClassEntity enclosingClass = element.enclosingClass;
+      return '${enclosingClass.name}_${element.name}';
     }
-    if (element.isFactoryConstructor) {
+    return element.name.replaceAll('+', '_');
+  }
+
+  String _proposeNameForConstructor(ConstructorEntity element) {
+    String className = element.enclosingClass.name;
+    if (element.isGenerativeConstructor) {
+      return '${className}\$${element.name}';
+    } else {
       // TODO(johnniwinther): Change factory name encoding as to not include
       // the class-name twice.
-      String className = element.enclosingClass.name;
-      return '${className}_${Elements.reconstructConstructorName(element)}';
+      return '${className}_${utils.reconstructConstructorName(element)}';
     }
-    if (Elements.isStaticOrTopLevel(element)) {
-      if (element.isClassMember) {
-        ClassElement enclosingClass = element.enclosingClass;
-        return '${enclosingClass.name}_${element.name}';
-      }
-      return element.name.replaceAll('+', '_');
-    }
-    if (element.isLibrary) {
-      return _proposeNameForLibrary(element);
-    }
-    return element.name;
   }
 
   /**
@@ -1315,7 +1321,7 @@ class Namer {
    */
   // TODO(sra): Pre-process libraries to assign [libraryLongNames] in a way that
   // is independent of the order of calls to namer.
-  String _proposeNameForLibrary(LibraryElement library) {
+  String _proposeNameForLibrary(LibraryEntity library) {
     String name = libraryLongNames[library];
     if (name != null) return name;
     // Use the 'file' name, e.g. "package:expect/expect.dart" -> "expect"
@@ -1352,25 +1358,25 @@ class Namer {
   }
 
   String suffixForGetInterceptor(Iterable<ClassEntity> classes) {
-    String abbreviate(ClassElement cls) {
-      if (cls == commonElements.objectClass) return "o";
-      if (cls == helpers.jsStringClass) return "s";
-      if (cls == helpers.jsArrayClass) return "a";
-      if (cls == helpers.jsDoubleClass) return "d";
-      if (cls == helpers.jsIntClass) return "i";
-      if (cls == helpers.jsNumberClass) return "n";
-      if (cls == helpers.jsNullClass) return "u";
-      if (cls == helpers.jsBoolClass) return "b";
-      if (cls == helpers.jsInterceptorClass) return "I";
+    String abbreviate(ClassEntity cls) {
+      if (cls == _commonElements.objectClass) return "o";
+      if (cls == _commonElements.jsStringClass) return "s";
+      if (cls == _commonElements.jsArrayClass) return "a";
+      if (cls == _commonElements.jsDoubleClass) return "d";
+      if (cls == _commonElements.jsIntClass) return "i";
+      if (cls == _commonElements.jsNumberClass) return "n";
+      if (cls == _commonElements.jsNullClass) return "u";
+      if (cls == _commonElements.jsBoolClass) return "b";
+      if (cls == _commonElements.jsInterceptorClass) return "I";
       return cls.name;
     }
 
     List<String> names = classes
-        .where((cls) => !backend.nativeData.isNativeOrExtendsNative(cls))
+        .where((cls) => !_nativeData.isNativeOrExtendsNative(cls))
         .map(abbreviate)
         .toList();
     // There is one dispatch mechanism for all native classes.
-    if (classes.any((cls) => backend.nativeData.isNativeOrExtendsNative(cls))) {
+    if (classes.any((cls) => _nativeData.isNativeOrExtendsNative(cls))) {
       names.add("x");
     }
     // Sort the names of the classes after abbreviating them to ensure
@@ -1381,15 +1387,15 @@ class Namer {
 
   /// Property name used for `getInterceptor` or one of its specializations.
   jsAst.Name nameForGetInterceptor(Iterable<ClassEntity> classes) {
-    MethodElement getInterceptor = helpers.getInterceptorMethod;
-    if (classes.contains(helpers.jsInterceptorClass)) {
+    FunctionEntity getInterceptor = _commonElements.getInterceptorMethod;
+    if (classes.contains(_commonElements.jsInterceptorClass)) {
       // If the base Interceptor class is in the set of intercepted classes, we
       // need to go through the generic getInterceptorMethod, since any subclass
       // of the base Interceptor could match.
       // The unspecialized getInterceptor method can also be accessed through
       // its element, so we treat this as a user-space global instead of an
       // internal global.
-      return _disambiguateGlobal(getInterceptor);
+      return _disambiguateGlobalMember(getInterceptor);
     }
     String suffix = suffixForGetInterceptor(classes);
     return _disambiguateInternalGlobal("${getInterceptor.name}\$$suffix");
@@ -1398,13 +1404,13 @@ class Namer {
   /// Property name used for the one-shot interceptor method for the given
   /// [selector] and return-type specialization.
   jsAst.Name nameForGetOneShotInterceptor(
-      Selector selector, Iterable<ClassElement> classes) {
+      Selector selector, Iterable<ClassEntity> classes) {
     // The one-shot name is a global name derived from the invocation name.  To
     // avoid instability we would like the names to be unique and not clash with
     // other global names.
     jsAst.Name root = invocationName(selector);
 
-    if (classes.contains(helpers.jsInterceptorClass)) {
+    if (classes.contains(_commonElements.jsInterceptorClass)) {
       // If the base Interceptor class is in the set of intercepted classes,
       // this is the most general specialization which uses the generic
       // getInterceptor method.
@@ -1427,7 +1433,7 @@ class Namer {
   /// [operatorIsPrefix] or [operatorAsPrefix]. If this is a function type,
   /// then by convention, an underscore must also separate [operatorIsPrefix]
   /// from the type name.
-  jsAst.Name runtimeTypeName(TypeDeclarationElement element) {
+  jsAst.Name runtimeTypeName(Entity element) {
     if (element == null) return _literalDynamic;
     // The returned name affects both the global and instance member namespaces:
     //
@@ -1440,14 +1446,14 @@ class Namer {
     // To prevent clashes in both namespaces at once, we disambiguate the name
     // as a global here, and in [_sanitizeForAnnotations] we ensure that
     // ordinary instance members cannot start with `$is` or `$as`.
-    return _disambiguateGlobal(element);
+    return _disambiguateGlobalType(element);
   }
 
   /// Returns the disambiguated name of [class_].
   ///
   /// This is both the *runtime type* of the class (see [runtimeTypeName])
   /// and a global property name in which to store its JS constructor.
-  jsAst.Name className(ClassElement class_) => _disambiguateGlobal(class_);
+  jsAst.Name className(ClassEntity class_) => _disambiguateGlobalType(class_);
 
   /// Property name on which [member] can be accessed directly,
   /// without clashing with another JS property name.
@@ -1469,7 +1475,7 @@ class Namer {
   ///         this.super$A$foo(); // super.foo()
   ///     }
   ///
-  jsAst.Name aliasedSuperMemberPropertyName(MemberElement member) {
+  jsAst.Name aliasedSuperMemberPropertyName(MemberEntity member) {
     assert(!member.isField); // Fields do not need super aliases.
     return _disambiguateInternalMember(member, () {
       String invocationName = operatorNameToIdentifier(member.name);
@@ -1483,10 +1489,10 @@ class Namer {
   ///
   /// The name is not necessarily unique to [method], since a static method
   /// may share its name with an instance method.
-  jsAst.Name methodPropertyName(Element method) {
+  jsAst.Name methodPropertyName(FunctionEntity method) {
     return method.isInstanceMember
         ? instanceMethodName(method)
-        : globalPropertyName(method);
+        : globalPropertyNameForMember(method);
   }
 
   /// Returns true if [element] is stored in the static state holder
@@ -1494,40 +1500,51 @@ class Namer {
   /// there, whereas constants are stored in 'C'. Functions, accessors,
   /// classes, etc. are stored in one of the other objects in
   /// [reservedGlobalObjectNames].
-  bool _isPropertyOfStaticStateHolder(Element element) {
+  bool _isPropertyOfStaticStateHolder(MemberEntity element) {
     // TODO(ahe): Make sure this method's documentation is always true and
     // remove the word "intend".
-    return
-        // TODO(ahe): Re-write these tests to be positive (so it only returns
-        // true for static/top-level mutable fields). Right now, a number of
-        // other elements, such as bound closures also live in
-        // [staticStateHolder].
-        !element.isAccessor &&
-            !element.isClass &&
-            !element.isTypedef &&
-            !element.isConstructor &&
-            !element.isFunction &&
-            !element.isLibrary;
+    if (element is MemberElement) {
+      // TODO(johnniwinther): Clean up this method to have a single semantics on
+      // entities.
+      return
+          // TODO(ahe): Re-write these tests to be positive (so it only returns
+          // true for static/top-level mutable fields). Right now, a number of
+          // other elements, such as bound closures also live in
+          // [staticStateHolder].
+          !element.isAccessor &&
+              !element.isClass &&
+              !element.isTypedef &&
+              !element.isConstructor &&
+              !element.isFunction &&
+              !element.isLibrary;
+    }
+    return element.isField;
   }
 
   /// Returns [staticStateHolder] or one of [reservedGlobalObjectNames].
-  // TODO(johnniwinther): Verify that the implementation can be changed to
-  // `globalObjectForLibrary(element.library)`.
-  String globalObjectForMethod(MethodElement element) =>
-      globalObjectFor(element);
-
-  /// Returns [staticStateHolder] or one of [reservedGlobalObjectNames].
-  String globalObjectFor(Element element) {
+  String globalObjectForMember(MemberEntity element) {
     if (_isPropertyOfStaticStateHolder(element)) return staticStateHolder;
     return globalObjectForLibrary(element.library);
   }
 
+  String globalObjectForClass(ClassEntity element) {
+    return globalObjectForLibrary(element.library);
+  }
+
+  String globalObjectForType(Entity element) {
+    if (element is TypedefElement) {
+      return globalObjectForLibrary(element.library);
+    }
+    return globalObjectForClass(element);
+  }
+
   /// Returns the [reservedGlobalObjectNames] for [library].
-  String globalObjectForLibrary(LibraryElement library) {
-    if (library == helpers.interceptorsLibrary) return 'J';
-    if (library.isInternalLibrary) return 'H';
-    if (library.isPlatformLibrary) {
-      if ('${library.canonicalUri}' == 'dart:html') return 'W';
+  String globalObjectForLibrary(LibraryEntity library) {
+    if (library == _commonElements.interceptorsLibrary) return 'J';
+    Uri uri = library.canonicalUri;
+    if (uri.scheme == 'dart') {
+      if (uri.path == 'html') return 'W';
+      if (uri.path.startsWith('_')) return 'H';
       return 'P';
     }
     return userGlobalObjects[library.name.hashCode % userGlobalObjects.length];
@@ -1538,28 +1555,29 @@ class Namer {
     return new CompoundName([_literalLazyGetterPrefix, name]);
   }
 
-  jsAst.Name lazyInitializerName(Element element) {
-    assert(Elements.isStaticOrTopLevelField(element));
-    jsAst.Name name = _disambiguateGlobal(element);
+  jsAst.Name lazyInitializerName(FieldEntity element) {
+    assert(element.isTopLevel || element.isStatic);
+    jsAst.Name name = _disambiguateGlobalMember(element);
     // These are not real dart getters, so do not use GetterName;
     return deriveLazyInitializerName(name);
   }
 
-  jsAst.Name staticClosureName(Element element) {
-    assert(Elements.isStaticOrTopLevelFunction(element));
+  jsAst.Name staticClosureName(FunctionEntity element) {
+    assert(element.isTopLevel || element.isStatic);
     String enclosing =
         element.enclosingClass == null ? "" : element.enclosingClass.name;
-    String library = _proposeNameForGlobal(element.library);
+    String library = _proposeNameForLibrary(element.library);
     return _disambiguateInternalGlobal(
         "${library}_${enclosing}_${element.name}\$closure");
   }
 
   // This name is used as part of the name of a TypeConstant
-  String uniqueNameForTypeConstantElement(Element element) {
+  String uniqueNameForTypeConstantElement(
+      LibraryEntity library, Entity element) {
     // TODO(sra): If we replace the period with an identifier character,
     // TypeConstants will have better names in unminified code.
-    String library = _proposeNameForGlobal(element.library);
-    return "${library}.${element.name}";
+    String libraryName = _proposeNameForLibrary(library);
+    return "${libraryName}.${element.name}";
   }
 
   String globalObjectForConstant(ConstantValue constant) => 'C';
@@ -1586,11 +1604,13 @@ class Namer {
 
   Map<ResolutionFunctionType, jsAst.Name> functionTypeNameMap =
       new HashMap<ResolutionFunctionType, jsAst.Name>();
-  final FunctionTypeNamer functionTypeNamer;
+
+  FunctionTypeNamer _functionTypeNamer;
 
   jsAst.Name getFunctionTypeName(ResolutionFunctionType functionType) {
     return functionTypeNameMap.putIfAbsent(functionType, () {
-      String proposedName = functionTypeNamer.computeName(functionType);
+      _functionTypeNamer ??= new FunctionTypeNamer(rtiEncoder);
+      String proposedName = _functionTypeNamer.computeName(functionType);
       return getFreshName(instanceScope, proposedName);
     });
   }
@@ -1608,7 +1628,7 @@ class Namer {
     return operatorIs(interfaceType.element);
   }
 
-  jsAst.Name operatorIs(ClassElement element) {
+  jsAst.Name operatorIs(ClassEntity element) {
     // TODO(erikcorry): Reduce from $isx to ix when we are minifying.
     return new CompoundName(
         [new StringBackedName(operatorIsPrefix), runtimeTypeName(element)]);
@@ -1623,7 +1643,7 @@ class Namer {
     return name;
   }
 
-  jsAst.Name substitutionName(ClassElement element) {
+  jsAst.Name substitutionName(ClassEntity element) {
     return new CompoundName(
         [new StringBackedName(operatorAsPrefix), runtimeTypeName(element)]);
   }
@@ -1742,7 +1762,6 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
   static const DEFAULT_TAG_LENGTH = 3;
 
   final RuntimeTypesEncoder rtiEncoder;
-  final DiagnosticReporter reporter;
   final CodegenWorldBuilder codegenWorldBuilder;
   final ConstantCanonicalHasher hasher;
 
@@ -1751,8 +1770,7 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
   List<String> fragments = <String>[];
   int length = 0;
 
-  ConstantNamingVisitor(
-      this.rtiEncoder, this.reporter, this.codegenWorldBuilder, this.hasher);
+  ConstantNamingVisitor(this.rtiEncoder, this.codegenWorldBuilder, this.hasher);
 
   String getName(ConstantValue constant) {
     _visit(constant);
@@ -1845,7 +1863,7 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
   @override
   void visitString(StringConstantValue constant, [_]) {
     // No `addRoot` since string constants are always inlined.
-    addIdentifier(constant.primitiveValue.slowToString());
+    addIdentifier(constant.primitiveValue);
   }
 
   @override
@@ -1866,7 +1884,7 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
   }
 
   @override
-  void visitMap(JavaScriptMapConstant constant, [_]) {
+  void visitMap(covariant JavaScriptMapConstant constant, [_]) {
     // TODO(9476): Incorporate type parameters into name.
     addRoot('Map');
     if (constant.length == 0) {
@@ -1881,9 +1899,32 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
   @override
   void visitConstructed(ConstructedConstantValue constant, [_]) {
     addRoot(constant.type.element.name);
+
+    // Recognize enum constants and only include the index.
+    final Map<FieldEntity, ConstantValue> fieldMap = constant.fields;
+    int size = fieldMap.length;
+    if (size == 1 || size == 2) {
+      FieldEntity indexField;
+      for (FieldEntity field in fieldMap.keys) {
+        String name = field.name;
+        if (name == 'index') {
+          indexField = field;
+        } else if (name == '_name') {
+          // Ignore _name field.
+        } else {
+          indexField = null;
+          break;
+        }
+      }
+      if (indexField != null) {
+        _visit(constant.fields[indexField]);
+        return;
+      }
+    }
+
     // TODO(johnniwinther): This should be accessed from a codegen closed world.
     codegenWorldBuilder.forEachInstanceField(constant.type.element,
-        (_, FieldElement field) {
+        (_, FieldEntity field) {
       if (failed) return;
       _visit(constant.fields[field]);
     });
@@ -1906,7 +1947,8 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
 
   @override
   void visitInterceptor(InterceptorConstantValue constant, [_]) {
-    addRoot(constant.cls.name);
+    // The class name for mixin applications contain '+' signs (issue 28196).
+    addRoot(constant.cls.name.replaceAll('+', '_'));
     add('methods');
   }
 
@@ -1923,7 +1965,7 @@ class ConstantNamingVisitor implements ConstantValueVisitor {
         add('name');
         break;
       default:
-        reporter.internalError(
+        throw new SpannableAssertionFailure(
             CURRENT_ELEMENT_SPANNABLE, "Unexpected SyntheticConstantValue");
     }
   }
@@ -1946,13 +1988,11 @@ class ConstantCanonicalHasher implements ConstantValueVisitor<int, Null> {
   static const _MASK = 0x1fffffff;
   static const _UINT32_LIMIT = 4 * 1024 * 1024 * 1024;
 
-  final DiagnosticReporter reporter;
   final RuntimeTypesEncoder rtiEncoder;
   final CodegenWorldBuilder codegenWorldBuilder;
   final Map<ConstantValue, int> hashes = new Map<ConstantValue, int>();
 
-  ConstantCanonicalHasher(
-      this.rtiEncoder, this.reporter, this.codegenWorldBuilder);
+  ConstantCanonicalHasher(this.rtiEncoder, this.codegenWorldBuilder);
 
   int getHash(ConstantValue constant) => _visit(constant);
 
@@ -1993,7 +2033,7 @@ class ConstantCanonicalHasher implements ConstantValueVisitor<int, Null> {
 
   @override
   int visitString(StringConstantValue constant, [_]) {
-    return _hashString(2, constant.primitiveValue.slowToString());
+    return _hashString(2, constant.primitiveValue);
   }
 
   @override
@@ -2011,7 +2051,7 @@ class ConstantCanonicalHasher implements ConstantValueVisitor<int, Null> {
   int visitConstructed(ConstructedConstantValue constant, [_]) {
     int hash = _hashString(3, constant.type.element.name);
     codegenWorldBuilder.forEachInstanceField(constant.type.element,
-        (_, FieldElement field) {
+        (_, FieldEntity field) {
       hash = _combine(hash, _visit(constant.fields[field]));
     });
     return hash;
@@ -2040,11 +2080,10 @@ class ConstantCanonicalHasher implements ConstantValueVisitor<int, Null> {
         // resolve to integer indexes, they're always part of a larger constant.
         return 0;
       default:
-        reporter.internalError(
+        throw new SpannableAssertionFailure(
             NO_LOCATION_SPANNABLE,
             'SyntheticConstantValue should never be named and '
             'never be subconstant');
-        return 0;
     }
   }
 
@@ -2127,7 +2166,7 @@ class ConstantCanonicalHasher implements ConstantValueVisitor<int, Null> {
   }
 }
 
-class FunctionTypeNamer extends BaseDartTypeVisitor {
+class FunctionTypeNamer extends BaseResolutionDartTypeVisitor {
   final RuntimeTypesEncoder rtiEncoder;
   StringBuffer sb;
 
@@ -2139,15 +2178,15 @@ class FunctionTypeNamer extends BaseDartTypeVisitor {
     return sb.toString();
   }
 
-  visit(ResolutionDartType type, [_]) {
+  visit(covariant ResolutionDartType type, [_]) {
     type.accept(this, null);
   }
 
-  visitType(ResolutionDartType type, _) {
+  visitType(covariant ResolutionDartType type, _) {
     sb.write(type.name);
   }
 
-  visitFunctionType(ResolutionFunctionType type, _) {
+  visitFunctionType(covariant ResolutionFunctionType type, _) {
     if (rtiEncoder.isSimpleFunctionType(type)) {
       sb.write('args${type.parameterTypes.length}');
       return;

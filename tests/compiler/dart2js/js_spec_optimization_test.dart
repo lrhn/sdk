@@ -4,7 +4,6 @@
 
 import 'dart:async';
 import 'package:async_helper/async_helper.dart';
-import 'package:expect/expect.dart';
 import 'compiler_helper.dart';
 
 const String TEST_1 = r"""
@@ -23,7 +22,7 @@ const String TEST_1 = r"""
     print(JS('returns:bool;effects:none;depends:all;throws:never', 'Wasp')
           is bool);
 
-    JS('', 'Array');   // absent: "Array"
+    JS('', 'Array'); //   absent: "Array"
   }
 """;
 

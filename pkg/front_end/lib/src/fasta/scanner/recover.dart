@@ -4,19 +4,27 @@
 
 library fasta.scanner.recover;
 
-import 'token.dart' show
-    StringToken,
-    Token;
+import '../../scanner/token.dart' show TokenType;
 
-import 'error_token.dart' show
-    NonAsciiIdentifierToken,
-    ErrorKind,
-    ErrorToken;
+import '../fasta_codes.dart'
+    show
+        Code,
+        codeAsciiControlCharacter,
+        codeEncoding,
+        codeExpectedHexDigit,
+        codeMissingExponent,
+        codeNonAsciiIdentifier,
+        codeNonAsciiWhitespace,
+        codeUnexpectedDollarInString,
+        codeUnmatchedToken,
+        codeUnterminatedComment,
+        codeUnterminatedString;
 
-import 'precedence.dart' as Precedence;
+import '../../scanner/token.dart' show Token;
 
-import 'precedence.dart' show
-    PrecedenceInfo;
+import 'token.dart' show StringToken;
+
+import 'error_token.dart' show NonAsciiIdentifierToken, ErrorToken;
 
 /// Recover from errors in [tokens]. The original sources are provided as
 /// [bytes]. [lineStarts] are the beginning character offsets of lines, and
@@ -24,7 +32,7 @@ import 'precedence.dart' show
 /// code.
 Token defaultRecoveryStrategy(
     List<int> bytes, Token tokens, List<int> lineStarts) {
-  // See [Parser.reportErrorToken](package:front_end/src/fasta/parser/src/parser.dart) for how
+  // See [Parser.reportErrorToken](../parser/src/parser.dart) for how
   // it currently handles lexical errors. In addition, notice how the parser
   // calls [handleInvalidExpression], [handleInvalidFunctionBody], and
   // [handleInvalidTypeReference] to allow the listener to recover its internal
@@ -39,11 +47,13 @@ Token defaultRecoveryStrategy(
 
   /// Tokens with errors.
   ErrorToken error;
+
   /// Used for appending to [error].
   ErrorToken errorTail;
 
   /// Tokens without errors.
   Token good;
+
   /// Used for appending to [good].
   Token goodTail;
 
@@ -76,18 +86,18 @@ Token defaultRecoveryStrategy(
     // [errorTail] ends. This is the case for "b" above.
     bool append = false;
     if (goodTail != null) {
-      if (goodTail.info == Precedence.IDENTIFIER_INFO &&
+      if (goodTail.type == TokenType.IDENTIFIER &&
           goodTail.charEnd == first.charOffset) {
         prepend = true;
       }
     }
     Token next = errorTail.next;
-    if (next.info == Precedence.IDENTIFIER_INFO &&
+    if (next.type == TokenType.IDENTIFIER &&
         errorTail.charOffset + 1 == next.charOffset) {
       append = true;
     }
     if (prepend) {
-      codeUnits.addAll(goodTail.value.codeUnits);
+      codeUnits.addAll(goodTail.lexeme.codeUnits);
     }
     NonAsciiIdentifierToken current = first;
     while (current != errorTail) {
@@ -109,32 +119,30 @@ Token defaultRecoveryStrategy(
       }
     }
     if (append) {
-      codeUnits.addAll(next.value.codeUnits);
+      codeUnits.addAll(next.lexeme.codeUnits);
       next = next.next;
     }
     String value = new String.fromCharCodes(codeUnits);
-    return synthesizeToken(charOffset, value, Precedence.IDENTIFIER_INFO)
-        ..next = next;
+    return synthesizeToken(charOffset, value, TokenType.IDENTIFIER)
+      ..next = next;
   }
 
   recoverExponent() {
-    return synthesizeToken(errorTail.charOffset, "NaN", Precedence.DOUBLE_INFO)
-        ..next = errorTail.next;
+    return synthesizeToken(errorTail.charOffset, "NaN", TokenType.DOUBLE)
+      ..next = errorTail.next;
   }
 
   recoverString() {
-    // TODO(ahe): Improve this.
-    return skipToEof(errorTail);
+    return errorTail.next;
   }
 
   recoverHexDigit() {
-    return synthesizeToken(errorTail.charOffset, "-1", Precedence.INT_INFO)
-        ..next = errorTail.next;
+    return synthesizeToken(errorTail.charOffset, "0", TokenType.INT)
+      ..next = errorTail.next;
   }
 
   recoverStringInterpolation() {
-    // TODO(ahe): Improve this.
-    return skipToEof(errorTail);
+    return errorTail.next;
   }
 
   recoverComment() {
@@ -144,90 +152,81 @@ Token defaultRecoveryStrategy(
 
   recoverUnmatched() {
     // TODO(ahe): Try to use top-level keywords (such as `class`, `typedef`,
-    // and `enum`) and identation to recover.
+    // and `enum`) and indentation to recover.
     return errorTail.next;
   }
 
   for (Token current = tokens; !current.isEof; current = current.next) {
-    if (current is ErrorToken) {
+    while (current is ErrorToken) {
       ErrorToken first = current;
       Token next = current;
-      bool treatAsWhitespace = false;
       do {
         current = next;
         if (errorTail == null) {
           error = next;
         } else {
           errorTail.next = next;
+          next.previous = errorTail;
         }
         errorTail = next;
         next = next.next;
       } while (next is ErrorToken && first.errorCode == next.errorCode);
 
-      switch (first.errorCode) {
-        case ErrorKind.Encoding:
-        case ErrorKind.NonAsciiWhitespace:
-        case ErrorKind.AsciiControlCharacter:
-          treatAsWhitespace = true;
-          break;
-
-        case ErrorKind.NonAsciiIdentifier:
-          current = recoverIdentifier(first);
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.MissingExponent:
-          current = recoverExponent();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.UnterminatedString:
-          current = recoverString();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.ExpectedHexDigit:
-          current = recoverHexDigit();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.UnexpectedDollarInString:
-          current = recoverStringInterpolation();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.UnterminatedComment:
-          current = recoverComment();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.UnmatchedToken:
-          current = recoverUnmatched();
-          assert(current.next != null);
-          break;
-
-        case ErrorKind.UnterminatedToken: // TODO(ahe): Can this happen?
-        default:
-          treatAsWhitespace = true;
-          break;
+      Code code = first.errorCode;
+      if (code == codeEncoding ||
+          code == codeNonAsciiWhitespace ||
+          code == codeAsciiControlCharacter) {
+        current = errorTail.next;
+      } else if (code == codeNonAsciiIdentifier) {
+        current = recoverIdentifier(first);
+        assert(current.next != null);
+      } else if (code == codeMissingExponent) {
+        current = recoverExponent();
+        assert(current.next != null);
+      } else if (code == codeUnterminatedString) {
+        current = recoverString();
+        assert(current.next != null);
+      } else if (code == codeExpectedHexDigit) {
+        current = recoverHexDigit();
+        assert(current.next != null);
+      } else if (code == codeUnexpectedDollarInString) {
+        current = recoverStringInterpolation();
+        assert(current.next != null);
+      } else if (code == codeUnterminatedComment) {
+        current = recoverComment();
+        assert(current.next != null);
+      } else if (code == codeUnmatchedToken) {
+        current = recoverUnmatched();
+        assert(current.next != null);
+      } else {
+        current = errorTail.next;
       }
-      if (treatAsWhitespace) continue;
     }
     if (goodTail == null) {
       good = current;
     } else {
       goodTail.next = current;
+      current.previous = goodTail;
     }
     beforeGoodTail = goodTail;
     goodTail = current;
   }
 
-  errorTail.next = good;
+  error.previous = new Token.eof(-1)..next = error;
+  Token tail;
+  if (good != null) {
+    errorTail.next = good;
+    good.previous = errorTail;
+    tail = goodTail;
+  } else {
+    tail = errorTail;
+  }
+  if (!tail.isEof) tail.next = new Token.eof(tail.end)..previous = tail;
   return error;
 }
 
-Token synthesizeToken(int charOffset, String value, PrecedenceInfo info) {
-  return new StringToken.fromString(info, value, charOffset);
+Token synthesizeToken(int charOffset, String value, TokenType type) {
+  return new StringToken.fromString(type, value, charOffset);
 }
 
 Token skipToEof(Token token) {

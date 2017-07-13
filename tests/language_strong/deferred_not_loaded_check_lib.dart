@@ -14,9 +14,9 @@ var a;
 int get getter => 42;
 
 void set setter(int arg) {
- a = 10;
+  a = 10;
 }
 
-var list = new List();
+var list = new List<int>();
 
 var closure = (int arg) => 3;

@@ -10,251 +10,123 @@
 /// This is either invoked as the root script of the Kernel isolate when used
 /// as a part of
 ///
-///           dart --dfe=utils/kernel-service/kernel-service.dart ...
+///         dart --dfe=utils/kernel-service/kernel-service.dart ...
 ///
-/// invocation or it is invoked as a standalone script to perform batch mode
-/// compilation requested via an HTTP interface
+/// invocation or it is invoked as a standalone script to perform training for
+/// the app-jit snapshot
 ///
-///           dart utils/kernel-service/kernel-service.dart --batch
+///         dart utils/kernel-service/kernel-service.dart --train <source-file>
 ///
-/// The port for the batch mode worker is controlled by DFE_WORKER_PORT
-/// environment declarations (set by -DDFE_WORKER_PORT=... command line flag).
-/// When not set (or set to 0) an ephemeral port returned by the OS is used
-/// instead.
-///
-/// When this script is used as a Kernel isolate root script and DFE_WORKER_PORT
-/// is set to non-zero value then Kernel isolate will forward all compilation
-/// requests it receives to the batch worker on the given port.
-///
-/// Set DFE_USE_FASTA environment declaration to true to use fasta front-end
-/// instead of dartk. Note: we expect patched_sdk folder to contain
-/// platform.dill file that contains patched SDK in the Kernel binary form.
-/// This file can be created using the following command line:
-///
-///   export DART_AOT_SDK=<path-to-patched_sdk>
-///   dart pkg/front_end/lib/src/fasta/bin/compile_platform.dart \
-///        ${DART_AOT_SDK}/platform.dill
 ///
 library runtime.tools.kernel_service;
 
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
+import 'dart:async' show Future;
+import 'dart:io' show File, Platform hide FileSystemEntity;
 import 'dart:isolate';
-import 'dart:typed_data';
+import 'dart:typed_data' show Uint8List;
 
-import 'package:kernel/analyzer/loader.dart';
-import 'package:kernel/binary/ast_to_binary.dart';
-import 'package:kernel/kernel.dart';
-import 'package:kernel/target/targets.dart';
-
-import 'package:front_end/src/fasta/dill/dill_target.dart' show DillTarget;
-import 'package:front_end/src/fasta/translate_uri.dart' show TranslateUri;
-import 'package:front_end/src/fasta/ticker.dart' show Ticker;
-import 'package:front_end/src/fasta/kernel/kernel_target.dart'
-    show KernelTarget;
-import 'package:front_end/src/fasta/ast_kind.dart' show AstKind;
-import 'package:front_end/src/fasta/errors.dart' show InputError;
+import 'package:front_end/file_system.dart';
+import 'package:front_end/front_end.dart';
+import 'package:front_end/memory_file_system.dart';
+import 'package:front_end/physical_file_system.dart';
+import 'package:front_end/src/fasta/kernel/utils.dart';
+import 'package:front_end/src/testing/hybrid_file_system.dart';
+import 'package:kernel/kernel.dart' show Program;
+import 'package:kernel/target/targets.dart' show TargetFlags;
+import 'package:kernel/target/vm_fasta.dart' show VmFastaTarget;
 
 const bool verbose = const bool.fromEnvironment('DFE_VERBOSE');
-const int workerPort = const int.fromEnvironment('DFE_WORKER_PORT') ?? 0;
-const bool useFasta = const bool.fromEnvironment('DFE_USE_FASTA');
 
-class DataSink implements Sink<List<int>> {
-  final BytesBuilder builder = new BytesBuilder();
+const bool strongMode = const bool.fromEnvironment('DFE_STRONG_MODE');
 
-  void add(List<int> data) {
-    builder.add(data);
-  }
-
-  void close() {
-    // Nothing to do.
-  }
-}
-
-// Note: these values must match Dart_KernelCompilationStatus in dart_api.h.
-const int STATUS_OK = 0; // Compilation was successful.
-const int STATUS_ERROR = 1; // Compilation failed with a compile time error.
-const int STATUS_CRASH = 2; // Compiler crashed.
-
-abstract class CompilationResult {
-  List toResponse();
-}
-
-class CompilationOk extends CompilationResult {
-  final Uint8List binary;
-
-  CompilationOk(this.binary);
-
-  List toResponse() => [STATUS_OK, binary];
-
-  String toString() => "CompilationOk(${binary.length} bytes)";
-}
-
-abstract class CompilationFail extends CompilationResult {
-  String get errorString;
-
-  Map<String, dynamic> toJson();
-
-  static CompilationFail fromJson(Map m) {
-    switch (m['status']) {
-      case STATUS_ERROR:
-        return new CompilationError(m['errors']);
-      case STATUS_CRASH:
-        return new CompilationCrash(m['exception'], m['stack']);
-      default:
-        throw "Can't deserialize CompilationFail from ${m}.";
-    }
-  }
-}
-
-class CompilationError extends CompilationFail {
-  final List<String> errors;
-
-  CompilationError(this.errors);
-
-  List toResponse() => [STATUS_ERROR, errorString];
-
-  Map<String, dynamic> toJson() => {
-        "status": STATUS_ERROR,
-        "errors": errors,
-      };
-
-  String get errorString => errors.take(10).join('\n');
-
-  String toString() => "CompilationError(${errorString})";
-}
-
-class CompilationCrash extends CompilationFail {
-  final String exception;
-  final String stack;
-
-  CompilationCrash(this.exception, this.stack);
-
-  List toResponse() => [STATUS_CRASH, errorString];
-
-  Map<String, dynamic> toJson() => {
-        "status": STATUS_CRASH,
-        "exception": exception,
-        "stack": stack,
-      };
-
-  String get errorString => "${exception}\n${stack}";
-
-  String toString() => "CompilationCrash(${errorString})";
-}
-
-Future<CompilationResult> parseScriptImpl(DartLoaderBatch batch_loader,
-    Uri fileName, String packageConfig, String sdkPath) async {
-  if (!FileSystemEntity.isFileSync(fileName.path)) {
-    throw "Input file '${fileName.path}' does not exist.";
-  }
-
-  if (!FileSystemEntity.isDirectorySync(sdkPath)) {
-    throw "Patched sdk directory not found at $sdkPath";
-  }
-
-  Target target = getTarget("vm", new TargetFlags(strongMode: false));
-
-  Program program;
-  if (useFasta) {
-    final uriTranslator = await TranslateUri.parse(new Uri.file(packageConfig));
-    final Ticker ticker = new Ticker(isVerbose: verbose);
-    final DillTarget dillTarget = new DillTarget(ticker, uriTranslator);
-    dillTarget.read(new Uri.directory(sdkPath).resolve('platform.dill'));
-    final KernelTarget kernelTarget =
-        new KernelTarget(dillTarget, uriTranslator);
-    try {
-      kernelTarget.read(fileName);
-      await dillTarget.writeOutline(null);
-      program = await kernelTarget.writeOutline(null);
-      program = await kernelTarget.writeProgram(null, AstKind.Kernel);
-      if (kernelTarget.errors.isNotEmpty) {
-        return new CompilationError(kernelTarget.errors
-            .map((err) => err.toString())
-            .toList(growable: false));
-      }
-    } on InputError catch (e) {
-      return new CompilationError(<String>[e.format()]);
-    }
-  } else {
-    DartOptions dartOptions = new DartOptions(
-        strongMode: false,
-        strongModeSdk: false,
-        sdk: sdkPath,
-        packagePath: packageConfig,
-        customUriMappings: const {},
-        declaredVariables: const {});
-    program = new Program();
-    DartLoader loader =
-        await batch_loader.getLoader(program, dartOptions);
-    loader.loadProgram(fileName, target: target);
-
-    if (loader.errors.isNotEmpty) {
-      return new CompilationError(loader.errors.toList(growable: false));
-    }
-  }
-
-  // Perform target-specific transformations.
-  target.performModularTransformations(program);
-  target.performGlobalTransformations(program);
-
-  // Write the program to a list of bytes and return it.
-  var sink = new DataSink();
-  new BinaryPrinter(sink).writeProgramFile(program);
-  return new CompilationOk(sink.builder.takeBytes());
-}
-
-Future<CompilationResult> parseScript(DartLoaderBatch loader, Uri fileName,
-    String packageConfig, String sdkPath) async {
-  try {
-    return await parseScriptImpl(loader, fileName, packageConfig, sdkPath);
-  } catch (err, stack) {
-    return new CompilationCrash(err.toString(), stack.toString());
-  }
-}
-
-Future _processLoadRequestImpl(String inputFileUrl) async {
-  Uri scriptUri = Uri.parse(inputFileUrl);
-
-  // Because we serve both Loader and bootstrapping requests we need to
-  // duplicate the logic from _resolveScriptUri(...) here and attempt to
-  // resolve schemaless uris using current working directory.
-  if (scriptUri.scheme == '') {
-    // Script does not have a scheme, assume that it is a path,
-    // resolve it against the working directory.
-    scriptUri = Directory.current.uri.resolveUri(scriptUri);
-  }
-
-  if (scriptUri.scheme != 'file') {
-    // TODO: reuse loader code to support other schemes.
-    throw "Expected 'file' scheme for a script uri: got ${scriptUri.scheme}";
-  }
-
+Future<CompilationResult> _parseScriptInFileSystem(
+    Uri script, FileSystem fileSystem,
+    {bool verbose: false, bool strongMode: false}) async {
   final Uri packagesUri = (Platform.packageConfig != null)
       ? Uri.parse(Platform.packageConfig)
-      : await _findPackagesFile(scriptUri);
+      : await _findPackagesFile(fileSystem, script);
   if (packagesUri == null) {
     throw "Could not find .packages";
   }
 
-  final Uri patchedSdk =
-      Uri.parse(Platform.resolvedExecutable).resolve("patched_sdk");
+  final Uri patchedSdk = Uri.base
+      .resolveUri(new Uri.file(Platform.resolvedExecutable))
+      .resolveUri(new Uri.directory("patched_sdk"));
 
   if (verbose) {
     print("""DFE: Requesting compilation {
-  scriptUri: ${scriptUri}
+  scriptUri: ${script}
   packagesUri: ${packagesUri}
   patchedSdk: ${patchedSdk}
 }""");
   }
 
-  if (workerPort != 0) {
-    return await requestParse(scriptUri, packagesUri, patchedSdk);
-  } else {
-    return await parseScript(
-        new DartLoaderBatch(), scriptUri, packagesUri.path, patchedSdk.path);
+  try {
+    var errors = <String>[];
+    var options = new CompilerOptions()
+      ..strongMode = strongMode
+      ..fileSystem = fileSystem
+      ..target = new VmFastaTarget(new TargetFlags(strongMode: strongMode))
+      ..packagesFileUri = packagesUri
+      // TODO(sigmund): use outline.dill when the mixin transformer is modular.
+      ..sdkSummary = patchedSdk.resolve('platform.dill')
+      ..verbose = verbose
+      ..onError = (CompilationError e) => errors.add(e.message);
+
+    Program program = await kernelForProgram(script, options);
+    if (errors.isNotEmpty) return new CompilationResult.errors(errors);
+
+    // We serialize the program excluding platform.dill because the VM has these
+    // sources built-in. Everything loaded as a summary in [kernelForProgram] is
+    // marked `external`, so we can use that bit to decide what to excluce.
+    // TODO(sigmund): remove the following line (Issue #30111)
+    program.libraries.forEach((e) => e.isExternal = false);
+    return new CompilationResult.ok(
+        serializeProgram(program, filter: (lib) => !lib.isExternal));
+  } catch (err, stack) {
+    return new CompilationResult.crash(err, stack);
   }
+}
+
+/// This duplicates functionality from the Loader which we can't easily
+/// access from here.
+// TODO(sigmund): delete, this should be supported by the default options in
+// package:front_end.
+Future<Uri> _findPackagesFile(FileSystem fileSystem, Uri base) async {
+  var dir = new File.fromUri(base).parent;
+  while (true) {
+    final packagesFile = dir.uri.resolve(".packages");
+    if (await fileSystem.entityForUri(packagesFile).exists()) {
+      return packagesFile;
+    }
+    if (dir.parent.path == dir.path) {
+      break;
+    }
+    dir = dir.parent;
+  }
+  return null;
+}
+
+Future<CompilationResult> _processLoadRequestImpl(
+    String inputFilePathOrUri, FileSystem fileSystem) {
+  Uri scriptUri = Uri.parse(inputFilePathOrUri);
+
+  // Because we serve both Loader and bootstrapping requests we need to
+  // duplicate the logic from _resolveScriptUri(...) here and attempt to
+  // resolve schemaless uris using current working directory.
+  if (!scriptUri.hasScheme) {
+    // Script does not have a scheme, assume that it is a path,
+    // resolve it against the working directory.
+    scriptUri = Uri.base.resolveUri(new Uri.file(inputFilePathOrUri));
+  }
+
+  if (!scriptUri.isScheme('file')) {
+    // TODO(vegorov): Reuse loader code to support other schemes.
+    return new Future<CompilationResult>.value(new CompilationResult.errors(
+        ["Expected 'file' scheme for a script uri: got ${scriptUri.scheme}"]));
+  }
+  return _parseScriptInFileSystem(scriptUri, fileSystem,
+      verbose: verbose, strongMode: strongMode);
 }
 
 // Process a request from the runtime. See KernelIsolate::CompileToKernel in
@@ -266,15 +138,18 @@ Future _processLoadRequest(request) async {
     print("DFE: Platform.resolvedExecutable: ${Platform.resolvedExecutable}");
   }
 
-  final int tag = request[0];
+  int tag = request[0];
   final SendPort port = request[1];
   final String inputFileUrl = request[2];
+  FileSystem fileSystem = request.length > 3
+      ? _buildFileSystem(request[3])
+      : PhysicalFileSystem.instance;
 
-  var result;
+  CompilationResult result;
   try {
-    result = await _processLoadRequestImpl(inputFileUrl);
+    result = await _processLoadRequestImpl(inputFileUrl, fileSystem);
   } catch (error, stack) {
-    result = new CompilationCrash(error.toString(), stack.toString());
+    result = new CompilationResult.crash(error, stack);
   }
 
   if (verbose) {
@@ -288,72 +163,28 @@ Future _processLoadRequest(request) async {
     port.send(result.toResponse());
   } else {
     // See loader.cc for the code that handles these replies.
-    if (result is CompilationOk) {
-      port.send([tag, inputFileUrl, inputFileUrl, null, result]);
-    } else {
-      port.send([-tag, inputFileUrl, inputFileUrl, null, result.errorString]);
+    if (result.status != Status.ok) {
+      tag = -tag;
     }
+    port.send([tag, inputFileUrl, inputFileUrl, null, result.payload]);
   }
 }
 
-Future<CompilationResult> requestParse(
-    Uri scriptUri, Uri packagesUri, Uri patchedSdk) async {
-  if (verbose) {
-    print(
-        "DFE: forwarding request to worker at http://localhost:${workerPort}/");
+/// Creates a file system containing the files specified in [namedSources] and
+/// that delegates to the underlying file system for any other file request.
+/// The [namedSources] list interleaves file name string and
+/// raw file content Uint8List.
+///
+/// The result can be used instead of PhysicalFileSystem.instance by the
+/// frontend.
+FileSystem _buildFileSystem(List namedSources) {
+  MemoryFileSystem fileSystem = new MemoryFileSystem(Uri.parse('file:///'));
+  for (int i = 0; i < namedSources.length ~/ 2; i++) {
+    fileSystem
+        .entityForUri(Uri.parse(namedSources[i * 2]))
+        .writeAsBytesSync(namedSources[i * 2 + 1]);
   }
-
-  HttpClient client = new HttpClient();
-  final rq = await client
-      .postUrl(new Uri(host: 'localhost', port: workerPort, scheme: 'http'));
-  rq.headers.contentType = ContentType.JSON;
-  rq.write(JSON.encode({
-    "inputFileUrl": scriptUri.toString(),
-    "packagesUri": packagesUri.toString(),
-    "patchedSdk": patchedSdk.toString(),
-  }));
-  final rs = await rq.close();
-  try {
-    if (rs.statusCode == HttpStatus.OK) {
-      final BytesBuilder bb = new BytesBuilder();
-      await rs.forEach(bb.add);
-      return new CompilationOk(bb.takeBytes());
-    } else {
-      return CompilationFail.fromJson(JSON.decode(await UTF8.decodeStream(rs)));
-    }
-  } finally {
-    await client.close();
-  }
-}
-
-void startBatchServer() {
-  final loader = new DartLoaderBatch();
-  HttpServer.bind('localhost', workerPort).then((server) {
-    print('READY ${server.port}');
-    server.listen((HttpRequest request) async {
-      final rq = JSON.decode(await UTF8.decodeStream(request));
-
-      final Uri scriptUri = Uri.parse(rq['inputFileUrl']);
-      final Uri packagesUri = Uri.parse(rq['packagesUri']);
-      final Uri patchedSdk = Uri.parse(rq['patchedSdk']);
-
-      final CompilationResult result = await parseScript(
-          loader, scriptUri, packagesUri.path, patchedSdk.path);
-
-      if (result is CompilationOk) {
-        request.response.statusCode = HttpStatus.OK;
-        request.response.headers.contentType = ContentType.BINARY;
-        request.response.add(result.binary);
-        request.response.close();
-      } else {
-        request.response.statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
-        request.response.headers.contentType = ContentType.TEXT;
-        request.response.write(JSON.encode(result));
-        request.response.close();
-      }
-    });
-    ProcessSignal.SIGTERM.watch().first.then((_) => server.close());
-  });
+  return new HybridFileSystem(fileSystem);
 }
 
 train(String scriptUri) {
@@ -378,9 +209,7 @@ train(String scriptUri) {
 }
 
 main([args]) {
-  if (args?.length == 1 && args[0] == '--batch') {
-    startBatchServer();
-  } else if (args?.length == 2 && args[0] == '--train') {
+  if (args?.length == 2 && args[0] == '--train') {
     // This entry point is used when creating an app snapshot. The argument
     // provides a script to compile to warm-up generated code.
     train(args[1]);
@@ -390,19 +219,87 @@ main([args]) {
   }
 }
 
-// This duplicates functionality from the Loader which we can't easily
-// access from here.
-Future<Uri> _findPackagesFile(Uri base) async {
-  var dir = new File.fromUri(base).parent;
-  while (true) {
-    final packagesFile = dir.uri.resolve(".packages");
-    if (await new File.fromUri(packagesFile).exists()) {
-      return packagesFile;
-    }
-    if (dir.parent.path == dir.path) {
-      break;
-    }
-    dir = dir.parent;
-  }
-  return null;
+/// Compilation status codes.
+///
+/// Note: The [index] property of these constants must match
+/// `Dart_KernelCompilationStatus` in
+/// [dart_api.h](../../../../runtime/include/dart_api.h).
+enum Status {
+  /// Compilation was successful.
+  ok,
+
+  /// Compilation failed with a compile time error.
+  error,
+
+  /// Compiler crashed.
+  crash,
+}
+
+abstract class CompilationResult {
+  CompilationResult._();
+
+  factory CompilationResult.ok(Uint8List bytes) = _CompilationOk;
+
+  factory CompilationResult.errors(List<String> errors) = _CompilationError;
+
+  factory CompilationResult.crash(Object exception, StackTrace stack) =
+      _CompilationCrash;
+
+  Status get status;
+
+  get payload;
+
+  List toResponse() => [status.index, payload];
+}
+
+class _CompilationOk extends CompilationResult {
+  final Uint8List bytes;
+
+  _CompilationOk(this.bytes) : super._();
+
+  @override
+  Status get status => Status.ok;
+
+  @override
+  get payload => bytes;
+
+  String toString() => "_CompilationOk(${bytes.length} bytes)";
+}
+
+abstract class _CompilationFail extends CompilationResult {
+  _CompilationFail() : super._();
+
+  String get errorString;
+
+  @override
+  get payload => errorString;
+}
+
+class _CompilationError extends _CompilationFail {
+  final List<String> errors;
+
+  _CompilationError(this.errors);
+
+  @override
+  Status get status => Status.error;
+
+  @override
+  String get errorString => errors.take(10).join('\n');
+
+  String toString() => "_CompilationError(${errorString})";
+}
+
+class _CompilationCrash extends _CompilationFail {
+  final Object exception;
+  final StackTrace stack;
+
+  _CompilationCrash(this.exception, this.stack);
+
+  @override
+  Status get status => Status.crash;
+
+  @override
+  String get errorString => "${exception}\n${stack}";
+
+  String toString() => "_CompilationCrash(${errorString})";
 }

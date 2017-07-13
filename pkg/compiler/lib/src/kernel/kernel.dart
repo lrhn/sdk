@@ -2,7 +2,6 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE.md file.
 
-import 'dart:async';
 import 'dart:collection' show Queue;
 
 import 'package:kernel/ast.dart' as ir;
@@ -36,6 +35,7 @@ import '../elements/elements.dart'
         MetadataAnnotation,
         MixinApplicationElement,
         TypeVariableElement;
+import '../elements/entities.dart' show LibraryEntity;
 import '../elements/modelx.dart' show ErroneousFieldElementX;
 import '../tree/tree.dart' show FunctionExpression, Node;
 import 'constant_visitor.dart';
@@ -140,10 +140,6 @@ class Kernel {
       irLibrary = libraryToIr(element.library);
     }
     return new ir.Name(name, irLibrary);
-  }
-
-  Future<ir.Library> loadLibrary(Uri uri) async {
-    return libraryToIr(await compiler.libraryLoader.loadLibrary(uri));
   }
 
   ir.Library libraryToIr(LibraryElement library) {
@@ -258,7 +254,7 @@ class Kernel {
         });
       });
       addWork(cls.declaration, () {
-        for (MetadataAnnotation metadata in cls.declaration.metadata) {
+        for (MetadataAnnotation metadata in cls.implementation.metadata) {
           classNode.addAnnotation(
               const ConstantVisitor().visit(metadata.constant, this));
         }
@@ -356,6 +352,7 @@ class Kernel {
     return result;
   }
 
+  // ignore: MISSING_RETURN
   ir.DartType typeToIr(ResolutionDartType type) {
     switch (type.kind) {
       case ResolutionTypeKind.FUNCTION:
@@ -479,7 +476,7 @@ class Kernel {
         });
       });
       addWork(function.declaration, () {
-        for (MetadataAnnotation metadata in function.declaration.metadata) {
+        for (MetadataAnnotation metadata in function.implementation.metadata) {
           member.addAnnotation(
               const ConstantVisitor().visit(metadata.constant, this));
         }
@@ -555,7 +552,7 @@ class Kernel {
         }
       });
       addWork(field.declaration, () {
-        for (MetadataAnnotation metadata in field.declaration.metadata) {
+        for (MetadataAnnotation metadata in field.implementation.metadata) {
           fieldNode.addAnnotation(
               const ConstantVisitor().visit(metadata.constant, this));
         }
@@ -613,7 +610,7 @@ class Kernel {
     throw message;
   }
 
-  forEachLibraryElement(f(LibraryElement library)) {
+  forEachLibraryElement(f(LibraryEntity library)) {
     return compiler.libraryLoader.libraries.forEach(f);
   }
 
@@ -710,12 +707,15 @@ class Kernel {
         compiler.libraryLoader.lookupLibrary(Uris.dart_core);
     ClassElement cls = library.implementation.localLookup(className);
     cls.ensureResolved(compiler.resolution);
-    assert(invariant(CURRENT_ELEMENT_SPANNABLE, cls != null,
-        message: 'dart:core class $className not found.'));
+    assert(
+        cls != null,
+        failedAt(CURRENT_ELEMENT_SPANNABLE,
+            'dart:core class $className not found.'));
     ConstructorElement constructor = cls.lookupConstructor(constructorName);
-    assert(invariant(CURRENT_ELEMENT_SPANNABLE, constructor != null,
-        message: "Constructor '$constructorName' not found "
-            "in class '$className'."));
+    assert(
+        constructor != null,
+        failedAt(CURRENT_ELEMENT_SPANNABLE,
+            "Constructor '$constructorName' not found in class '$className'."));
     compiler.resolution.ensureResolved(constructor);
     return functionToIr(constructor);
   }
@@ -724,8 +724,10 @@ class Kernel {
     LibraryElement library =
         compiler.libraryLoader.lookupLibrary(Uris.dart_core);
     Element function = library.implementation.localLookup(name);
-    assert(invariant(CURRENT_ELEMENT_SPANNABLE, function != null,
-        message: "dart:core method '$name' not found."));
+    assert(
+        function != null,
+        failedAt(
+            CURRENT_ELEMENT_SPANNABLE, "dart:core method '$name' not found."));
     compiler.resolution.ensureResolved(function);
     return functionToIr(function);
   }

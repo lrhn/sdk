@@ -25,6 +25,9 @@ class TypeEnvironment extends SubtypeTester {
 
   TypeEnvironment(this.coreTypes, this.hierarchy);
 
+  @override
+  bool get strongMode => false;
+
   InterfaceType get objectType => coreTypes.objectClass.rawType;
   InterfaceType get nullType => coreTypes.nullClass.rawType;
   InterfaceType get boolType => coreTypes.boolClass.rawType;
@@ -38,6 +41,7 @@ class TypeEnvironment extends SubtypeTester {
 
   Class get intClass => coreTypes.intClass;
   Class get numClass => coreTypes.numClass;
+  Class get futureOrClass => coreTypes.futureOrClass;
 
   InterfaceType literalListType(DartType elementType) {
     return new InterfaceType(coreTypes.listClass, <DartType>[elementType]);
@@ -142,16 +146,57 @@ abstract class SubtypeTester {
   InterfaceType get objectType;
   InterfaceType get rawFunctionType;
   ClassHierarchy get hierarchy;
+  Class get futureOrClass;
+  InterfaceType futureType(DartType type);
+  bool get strongMode;
+
+  /// Determines if the given type is at the bottom of the type hierarchy.  May
+  /// be overridden in subclasses.
+  bool isBottom(DartType type) => type is BottomType;
+
+  /// Determines if the given type is at the top of the type hierarchy.  May be
+  /// overridden in subclasses.
+  bool isTop(DartType type) =>
+      type is DynamicType || type is VoidType || type == objectType;
 
   /// Returns true if [subtype] is a subtype of [supertype].
   bool isSubtypeOf(DartType subtype, DartType supertype) {
+    subtype = subtype.unalias;
+    supertype = supertype.unalias;
     if (identical(subtype, supertype)) return true;
-    if (subtype is BottomType) return true;
-    if (supertype is DynamicType ||
-        supertype is VoidType ||
-        supertype == objectType) {
-      return true;
+    if (isBottom(subtype)) return true;
+    if (isTop(supertype)) return true;
+
+    // Handle FutureOr<T> union type.
+    if (strongMode &&
+        subtype is InterfaceType &&
+        identical(subtype.classNode, futureOrClass)) {
+      var subtypeArg = subtype.typeArguments[0];
+      if (supertype is InterfaceType &&
+          identical(supertype.classNode, futureOrClass)) {
+        var supertypeArg = supertype.typeArguments[0];
+        // FutureOr<A> <: FutureOr<B> iff A <: B
+        return isSubtypeOf(subtypeArg, supertypeArg);
+      }
+
+      // given t1 is Future<A> | A, then:
+      // (Future<A> | A) <: t2 iff Future<A> <: t2 and A <: t2.
+      var subtypeFuture = futureType(subtypeArg);
+      return isSubtypeOf(subtypeFuture, supertype) &&
+          isSubtypeOf(subtypeArg, supertype);
     }
+
+    if (strongMode &&
+        supertype is InterfaceType &&
+        identical(supertype.classNode, futureOrClass)) {
+      // given t2 is Future<A> | A, then:
+      // t1 <: (Future<A> | A) iff t1 <: Future<A> or t1 <: A
+      var supertypeArg = supertype.typeArguments[0];
+      var supertypeFuture = futureType(supertypeArg);
+      return isSubtypeOf(subtype, supertypeFuture) ||
+          isSubtypeOf(subtype, supertypeArg);
+    }
+
     if (subtype is InterfaceType && supertype is InterfaceType) {
       var upcastType =
           hierarchy.getTypeAsInstanceOf(subtype, supertype.classNode);

@@ -9,9 +9,8 @@ import 'dart:io';
 import 'package:compiler/compiler_new.dart';
 import 'package:compiler/src/apiimpl.dart' as api;
 import 'package:compiler/src/commandline_options.dart';
-import 'package:compiler/src/null_compiler_output.dart' show NullSink;
 import 'package:compiler/src/elements/elements.dart';
-import 'package:compiler/src/helpers/helpers.dart';
+import 'package:compiler/src/elements/entities.dart';
 import 'package:compiler/src/filenames.dart';
 import 'package:compiler/src/io/code_output.dart';
 import 'package:compiler/src/io/source_file.dart';
@@ -199,8 +198,8 @@ class RecordingSourceInformationStrategy
   RecordingSourceInformationStrategy(this.strategy);
 
   @override
-  SourceInformationBuilder createBuilderForContext(ResolvedAst resolvedAst) {
-    return strategy.createBuilderForContext(resolvedAst);
+  SourceInformationBuilder createBuilderForContext(MemberEntity member) {
+    return strategy.createBuilderForContext(member);
   }
 
   @override
@@ -323,7 +322,7 @@ class SourceMapProcessor {
           ..addAll(options));
 
     JavaScriptBackend backend = compiler.backend;
-    var handler = compiler.handler;
+    dynamic handler = compiler.handler;
     SourceFileProvider sourceFileProvider = handler.provider;
     sourceFileManager =
         new ProviderSourceFileManager(sourceFileProvider, outputProvider);
@@ -337,7 +336,8 @@ class SourceMapProcessor {
     Map<Element, SourceMapInfo> elementSourceMapInfos =
         <Element, SourceMapInfo>{};
     if (perElement) {
-      backend.generatedCode.forEach((Element element, js.Expression node) {
+      backend.generatedCode.forEach((_element, js.Expression node) {
+        MemberElement element = _element;
         RecordedSourceInformationProcess subProcess =
             strategy.subProcessForNode(node);
         if (subProcess == null) {
@@ -500,9 +500,9 @@ class CodePointComputer extends TraceListener {
       if (sourceFile == null) {
         return sourceLocation.shortText;
       }
-      return sourceFile
-          .getLineText(sourceLocation.line)
-          .substring(sourceLocation.column)
+      return sourceFile.kernelSource
+          .getTextLine(sourceLocation.line)
+          .substring(sourceLocation.column - 1)
           .trim();
     }
 

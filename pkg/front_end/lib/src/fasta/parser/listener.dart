@@ -4,12 +4,13 @@
 
 library fasta.parser.listener;
 
-import '../scanner/token.dart' show BeginGroupToken, Token;
+import '../fasta_codes.dart' show Message;
+
+import '../../scanner/token.dart' show BeginToken, Token, TokenType;
 
 import '../util/link.dart' show Link;
 
-import 'error_kind.dart' show ErrorKind;
-import 'parser.dart' show FormalParameterType;
+import 'parser.dart' show Assert, FormalParameterType, MemberKind;
 
 import 'identifier_context.dart' show IdentifierContext;
 
@@ -26,6 +27,8 @@ import 'identifier_context.dart' show IdentifierContext;
 /// event.
 class Listener {
   final List<ParserError> recoverableErrors = <ParserError>[];
+
+  Uri get uri => null;
 
   void logEvent(String name) {}
 
@@ -60,6 +63,12 @@ class Listener {
     logEvent("Cascade");
   }
 
+  void beginCaseExpression(Token caseKeyword) {}
+
+  void endCaseExpression(Token colon) {
+    logEvent("CaseExpression");
+  }
+
   void beginClassBody(Token token) {}
 
   /// Handle the end of the body of a class declaration.  The only substructures
@@ -67,6 +76,9 @@ class Listener {
   void endClassBody(int memberCount, Token beginToken, Token endToken) {
     logEvent("ClassBody");
   }
+
+  /// Called before parsing a class or named mixin application.
+  void beginClassOrNamedMixinApplication(Token token) {}
 
   void beginClassDeclaration(Token beginToken, Token name) {}
 
@@ -98,6 +110,12 @@ class Listener {
 
   void endCompilationUnit(int count, Token token) {
     logEvent("CompilationUnit");
+  }
+
+  void beginConstLiteral(Token token) {}
+
+  void endConstLiteral(Token token) {
+    logEvent("ConstLiteral");
   }
 
   void beginConstructorReference(Token start) {}
@@ -152,32 +170,55 @@ class Listener {
 
   void beginExpressionStatement(Token token) {}
 
+  /// Called by [ClassMemberParser] after skipping an expression as error
+  /// recovery. For a stack-based listener, the suggested action is to push
+  /// `null` or a synthetic erroneous expression.
+  void handleRecoverExpression(Token token, Message message) {
+    logEvent("RecoverExpression");
+  }
+
+  /// Called by [Parser] after parsing an extraneous expression as error
+  /// recovery. For a stack-based listener, the suggested action is to discard
+  /// an expression from the stack.
+  void handleExtraneousExpression(Token token, Message message) {
+    logEvent("ExtraneousExpression");
+  }
+
   void endExpressionStatement(Token token) {
     logEvent("ExpressionStatement");
   }
 
   void beginFactoryMethod(Token token) {}
 
-  void endFactoryMethod(Token beginToken, Token endToken) {
+  void endFactoryMethod(
+      Token beginToken, Token factoryKeyword, Token endToken) {
     logEvent("FactoryMethod");
   }
 
-  void beginFormalParameter(Token token) {}
+  void beginFormalParameter(Token token, MemberKind kind) {}
 
-  void endFormalParameter(Token thisKeyword, FormalParameterType kind) {
+  void endFormalParameter(Token thisKeyword, Token nameToken,
+      FormalParameterType kind, MemberKind memberKind) {
     logEvent("FormalParameter");
   }
 
-  void handleNoFormalParameters(Token token) {
+  void handleNoFormalParameters(Token token, MemberKind kind) {
     logEvent("NoFormalParameters");
   }
 
-  void beginFormalParameters(Token token) {}
+  void beginFormalParameters(Token token, MemberKind kind) {}
 
-  void endFormalParameters(int count, Token beginToken, Token endToken) {
+  void endFormalParameters(
+      int count, Token beginToken, Token endToken, MemberKind kind) {
     logEvent("FormalParameters");
   }
 
+  /// Handle the end of a field declaration.  Substructures:
+  /// - Metadata
+  /// - Modifiers
+  /// - Type
+  /// - Variable declarations (count times)
+  ///
   /// Doesn't have a corresponding begin event, use [beginMember] instead.
   void endFields(int count, Token beginToken, Token endToken) {
     logEvent("Fields");
@@ -185,8 +226,8 @@ class Listener {
 
   void beginForStatement(Token token) {}
 
-  void endForStatement(
-      int updateExpressionCount, Token beginToken, Token endToken) {
+  void endForStatement(Token forKeyword, Token leftSeparator,
+      int updateExpressionCount, Token endToken) {
     logEvent("ForStatement");
   }
 
@@ -196,8 +237,8 @@ class Listener {
     logEvent("ForStatementBody");
   }
 
-  void endForIn(
-      Token awaitToken, Token forToken, Token inKeyword, Token endToken) {
+  void endForIn(Token awaitToken, Token forToken, Token leftParenthesis,
+      Token inKeyword, Token rightParenthesis, Token endToken) {
     logEvent("ForIn");
   }
 
@@ -213,33 +254,72 @@ class Listener {
     logEvent("ForInBody");
   }
 
-  void beginFunction(Token token) {}
+  void beginNamedFunctionExpression(Token token) {}
 
-  void endFunction(Token getOrSet, Token endToken) {
-    logEvent("Function");
+  /// A named function expression which isn't legal syntax in Dart.
+  /// Useful for recovering from Javascript code being pasted into a Dart
+  /// proram, as it will interpret `function foo() {}` as a named function
+  /// expression with return type `function` and name `foo`.
+  ///
+  /// Substructures:
+  /// - Modifiers
+  /// - Return type
+  /// - Name
+  /// - Type variables
+  /// - Formals
+  /// - Initializers
+  /// - Async modifier
+  /// - Function body (block or arrow expression).
+  void endNamedFunctionExpression(Token endToken) {
+    logEvent("NamedFunctionExpression");
   }
 
   void beginFunctionDeclaration(Token token) {}
 
-  void endFunctionDeclaration(Token token) {
+  /// A function declaration.
+  ///
+  /// Substructures:
+  /// - Modifiers
+  /// - Return type
+  /// - Name
+  /// - Type variables
+  /// - Formals
+  /// - Initializers
+  /// - Async modifier
+  /// - Function body (block or arrow expression).
+  void endFunctionDeclaration(Token endToken) {
     logEvent("FunctionDeclaration");
   }
 
-  void beginFunctionBody(Token token) {}
+  /// This method is invoked when the parser sees that a function has a
+  /// block function body.  This method is not invoked for empty or expression
+  /// function bodies, see the corresponding methods [handleEmptyFunctionBody]
+  /// and [handleExpressionFunctionBody].
+  void beginBlockFunctionBody(Token token) {}
 
-  void endFunctionBody(int count, Token beginToken, Token endToken) {
-    logEvent("FunctionBody");
+  /// This method is invoked by the parser after it finished parsing a block
+  /// function body.  This method is not invoked for empty or expression
+  /// function bodies, see the corresponding methods [handleEmptyFunctionBody]
+  /// and [handleExpressionFunctionBody].  The [beginToken] is the '{' token,
+  /// and the [endToken] is the '}' token of the block.  The number of
+  /// statements is given as the [count] parameter.
+  void endBlockFunctionBody(int count, Token beginToken, Token endToken) {
+    logEvent("BlockFunctionBody");
   }
 
   void handleNoFunctionBody(Token token) {
     logEvent("NoFunctionBody");
   }
 
-  void handleFunctionBodySkipped(Token token) {}
+  /// Handle the end of a function body that was skipped by the parser.
+  ///
+  /// The boolean [isExpressionBody] indicates whether the function body that
+  /// was skipped used "=>" syntax.
+  void handleFunctionBodySkipped(Token token, bool isExpressionBody) {}
 
   void beginFunctionName(Token token) {}
 
-  void endFunctionName(Token token) {
+  void endFunctionName(Token beginToken, Token token) {
     logEvent("FunctionName");
   }
 
@@ -270,7 +350,7 @@ class Listener {
   /// Substructures:
   /// - supertype
   /// - mixin types (TypeList)
-  void endMixinApplication() {
+  void endMixinApplication(Token withKeyword) {
     logEvent("MixinApplication");
   }
 
@@ -368,7 +448,7 @@ class Listener {
 
   void beginInitializedIdentifier(Token token) {}
 
-  void endInitializedIdentifier() {
+  void endInitializedIdentifier(Token nameToken) {
     logEvent("InitializedIdentifier");
   }
 
@@ -376,7 +456,7 @@ class Listener {
 
   /// Handle the end of a field initializer.  Substructures:
   /// - Initializer expression
-  void endFieldInitializer(Token assignment) {
+  void endFieldInitializer(Token assignment, Token token) {
     logEvent("FieldInitializer");
   }
 
@@ -448,6 +528,7 @@ class Listener {
   void beginLibraryName(Token token) {}
 
   /// Handle the end of a library directive.  Substructures:
+  /// - Metadata
   /// - Library name (a qualified identifier)
   void endLibraryName(Token libraryKeyword, Token semicolon) {
     logEvent("LibraryName");
@@ -461,7 +542,7 @@ class Listener {
 
   void beginLiteralString(Token token) {}
 
-  void endLiteralString(int interpolationCount) {
+  void endLiteralString(int interpolationCount, Token endToken) {
     logEvent("LiteralString");
   }
 
@@ -479,7 +560,7 @@ class Listener {
 
   /// This event can be used to support non-compliant (with respect to Dart
   /// Language Specification) Dart VM native clauses. See
-  /// [dart_vm_native.dart].
+  /// [native_support.dart].
   Link<Token> handleMemberName(Link<Token> identifiers) => identifiers;
 
   void beginMethod(Token token, Token name) {}
@@ -506,6 +587,11 @@ class Listener {
 
   void beginMetadata(Token token) {}
 
+  /// Handle the end of a metadata annotation.  Substructures:
+  /// - Identifier
+  /// - Type arguments
+  /// - Constructor name (only if [periodBeforeName] is not `null`)
+  /// - Arguments
   void endMetadata(Token beginToken, Token periodBeforeName, Token endToken) {
     logEvent("Metadata");
   }
@@ -531,7 +617,10 @@ class Listener {
   /// Handle the end of a "part of" directive.  Substructures:
   /// - Metadata
   /// - Library name (a qualified identifier)
-  void endPartOf(Token partKeyword, Token semicolon) {
+  ///
+  /// If [hasName] is true, this part refers to its library by name, otherwise,
+  /// by URI.
+  void endPartOf(Token partKeyword, Token semicolon, bool hasName) {
     logEvent("PartOf");
   }
 
@@ -543,6 +632,17 @@ class Listener {
 
   void beginReturnStatement(Token token) {}
 
+  /// This method is invoked when a function has the empty body.
+  void handleEmptyFunctionBody(Token semicolon) {
+    logEvent("EmptyFunctionBody");
+  }
+
+  /// This method is invoked when parser finishes parsing the corresponding
+  /// expression of the expression function body.
+  void handleExpressionFunctionBody(Token arrowToken, Token endToken) {
+    logEvent("ExpressionFunctionBody");
+  }
+
   void endReturnStatement(
       bool hasExpression, Token beginToken, Token endToken) {
     logEvent("ReturnStatement");
@@ -550,7 +650,7 @@ class Listener {
 
   void beginSend(Token token) {}
 
-  void endSend(Token token) {
+  void endSend(Token beginToken, Token endToken) {
     logEvent("Send");
   }
 
@@ -588,7 +688,7 @@ class Listener {
 
   void beginRethrowStatement(Token token) {}
 
-  void endRethrowStatement(Token throwToken, Token endToken) {
+  void endRethrowStatement(Token rethrowToken, Token endToken) {
     logEvent("RethrowStatement");
   }
 
@@ -662,7 +762,15 @@ class Listener {
     logEvent("NoName");
   }
 
-  void handleFunctionType(Token functionToken, Token endToken) {
+  void beginFunctionType(Token beginToken) {}
+
+  /// Handle the end of a generic function type declaration.
+  ///
+  /// Substructures:
+  /// - Type variables
+  /// - Return type
+  /// - Formal parameters
+  void endFunctionType(Token functionToken, Token endToken) {
     logEvent("FunctionType");
   }
 
@@ -680,6 +788,7 @@ class Listener {
 
   /// Handle the end of a type formal parameter (e.g. "X extends Y").
   /// Substructures:
+  /// - Metadata
   /// - Name (identifier)
   /// - Type bound
   void endTypeVariable(Token token, Token extendsOrSuper) {
@@ -692,7 +801,7 @@ class Listener {
     logEvent("TypeVariables");
   }
 
-  void beginUnnamedFunction(Token token) {}
+  void beginFunctionExpression(Token token) {}
 
   /// Handle the end of a function expression (e.g. "() { ... }").
   /// Substructures:
@@ -700,8 +809,8 @@ class Listener {
   /// - Formal parameters
   /// - Async marker
   /// - Body
-  void endUnnamedFunction(Token token) {
-    logEvent("UnnamedFunction");
+  void endFunctionExpression(Token beginToken, Token token) {
+    logEvent("FunctionExpression");
   }
 
   void beginVariablesDeclaration(Token token) {}
@@ -732,13 +841,21 @@ class Listener {
     logEvent("ConditionalExpression");
   }
 
-  void handleConstExpression(Token token) {
+  void beginConstExpression(Token constKeyword) {}
+
+  void endConstExpression(Token token) {
     logEvent("ConstExpression");
   }
 
+  /// Handle the start of a function typed formal parameter.  Substructures:
+  /// - type variables
   void beginFunctionTypedFormalParameter(Token token) {}
 
-  void endFunctionTypedFormalParameter(Token token) {
+  /// Handle the end of a function typed formal parameter.  Substructures:
+  /// - type variables
+  /// - return type
+  /// - formal parameters
+  void endFunctionTypedFormalParameter() {
     logEvent("FunctionTypedFormalParameter");
   }
 
@@ -750,7 +867,7 @@ class Listener {
   }
 
   void handleIndexedExpression(
-      Token openCurlyBracket, Token closeCurlyBracket) {
+      Token openSquareBracket, Token closeSquareBracket) {
     logEvent("IndexedExpression");
   }
 
@@ -776,9 +893,11 @@ class Listener {
     logEvent("EmptyStatement");
   }
 
-  void handleAssertStatement(
-      Token assertKeyword, Token commaToken, Token semicolonToken) {
-    logEvent("AssertStatement");
+  void beginAssert(Token assertKeyword, Assert kind) {}
+
+  void endAssert(Token assertKeyword, Assert kind, Token leftParenthesis,
+      Token commaToken, Token rightParenthesis, Token semicolonToken) {
+    logEvent("Assert");
   }
 
   /** Called with either the token containing a double literal, or
@@ -821,7 +940,9 @@ class Listener {
     logEvent("NamedArgument");
   }
 
-  void handleNewExpression(Token token) {
+  void beginNewExpression(Token token) {}
+
+  void endNewExpression(Token token) {
     logEvent("NewExpression");
   }
 
@@ -831,6 +952,10 @@ class Listener {
 
   void handleNoExpression(Token token) {
     logEvent("NoExpression");
+  }
+
+  void handleNoConstructorReferenceContinuationAfterTypeArguments(Token token) {
+    logEvent("NoConstructorReferenceContinuationAfterTypeArguments");
   }
 
   void handleNoType(Token token) {
@@ -845,11 +970,16 @@ class Listener {
     logEvent("Operator");
   }
 
+  void handleSymbolVoid(Token token) {
+    logEvent("SymbolVoid");
+  }
+
+  /// Handle the end of a construct of the form "operator <token>".
   void handleOperatorName(Token operatorKeyword, Token token) {
     logEvent("OperatorName");
   }
 
-  void handleParenthesizedExpression(BeginGroupToken token) {
+  void handleParenthesizedExpression(BeginToken token) {
     logEvent("ParenthesizedExpression");
   }
 
@@ -866,7 +996,7 @@ class Listener {
     logEvent("StringPart");
   }
 
-  void handleSuperExpression(Token token) {
+  void handleSuperExpression(Token token, IdentifierContext context) {
     logEvent("SuperExpression");
   }
 
@@ -882,7 +1012,7 @@ class Listener {
     logEvent("SwitchCase");
   }
 
-  void handleThisExpression(Token token) {
+  void handleThisExpression(Token token, IdentifierContext context) {
     logEvent("ThisExpression");
   }
 
@@ -918,7 +1048,8 @@ class Listener {
 
   /// An unrecoverable error is an error that the parser can't recover from
   /// itself, and recovery is left to the listener. If the listener can
-  /// recover, it should return a non-null continuation token. Error recovery
+  /// recover, it should return a non-null continuation token whose `next`
+  /// pointer is the token the parser should continue from. Error recovery
   /// is tightly coupled to the parser implementation, so to recover from an
   /// error, one must carefully examine the code in the parser that generates
   /// the error.
@@ -927,14 +1058,52 @@ class Listener {
   /// `null`. In the latter case, the parser simply skips to EOF which will
   /// often result in additional parser errors as the parser returns from its
   /// recursive state.
-  Token handleUnrecoverableError(Token token, ErrorKind kind, Map arguments) {
-    throw new ParserError.fromTokens(token, token, kind, arguments);
+  Token handleUnrecoverableError(Token token, Message message) {
+    throw new ParserError.fromTokens(token, token, message);
   }
 
   /// The parser noticed a syntax error, but was able to recover from it.
-  void handleRecoverableError(Token token, ErrorKind kind, Map arguments) {
-    recoverableErrors
-        .add(new ParserError.fromTokens(token, token, kind, arguments));
+  void handleRecoverableError(Token token, Message message) {
+    recoverableErrors.add(new ParserError.fromTokens(token, token, message));
+  }
+
+  void handleScript(Token token) {
+    logEvent("Script");
+  }
+
+  /// Matches a generic comment type substitution and injects it into the token
+  /// stream before the given [token].
+  Token injectGenericCommentTypeAssign(Token token) {
+    return token;
+  }
+
+  /// Matches a generic comment type variables or type arguments and injects
+  /// them into the token stream before the given [token].
+  Token injectGenericCommentTypeList(Token token) {
+    return token;
+  }
+
+  /// If the [tokenWithComment] has a type substitution comment /*=T*/, then
+  /// the comment should be scanned into new tokens, and these tokens inserted
+  /// instead of tokens from the [tokenToStartReplacing] to the
+  /// [tokenWithComment]. Returns the first newly inserted token, or the
+  /// original [tokenWithComment].
+  Token replaceTokenWithGenericCommentTypeAssign(
+      Token tokenToStartReplacing, Token tokenWithComment) {
+    return tokenToStartReplacing;
+  }
+
+  /// A type has been just parsed, and the parser noticed that the next token
+  /// has a type substitution comment /*=T*. So, the type that has been just
+  /// parsed should be discarded, and a new type should be parsed instead.
+  void discardTypeReplacedWithCommentTypeAssign() {}
+
+  /// Creates a new synthetic token whose `next` pointer points to [next].
+  ///
+  /// If [next] is `null`, `null` is returned.
+  Token newSyntheticToken(Token next) {
+    if (next == null) return null;
+    return new Token(TokenType.RECOVERY, next.charOffset)..next = next;
   }
 }
 
@@ -945,14 +1114,12 @@ class ParserError {
   /// Character offset from the beginning of file where this error ends.
   final int endOffset;
 
-  final ErrorKind kind;
+  final Message message;
 
-  final Map arguments;
+  ParserError(this.beginOffset, this.endOffset, this.message);
 
-  ParserError(this.beginOffset, this.endOffset, this.kind, this.arguments);
+  ParserError.fromTokens(Token begin, Token end, Message message)
+      : this(begin.charOffset, end.charOffset + end.charCount, message);
 
-  ParserError.fromTokens(Token begin, Token end, ErrorKind kind, Map arguments)
-      : this(begin.charOffset, end.charOffset + end.charCount, kind, arguments);
-
-  String toString() => "@${beginOffset}: $kind $arguments";
+  String toString() => "@${beginOffset}: ${message.message}\n${message.tip}";
 }

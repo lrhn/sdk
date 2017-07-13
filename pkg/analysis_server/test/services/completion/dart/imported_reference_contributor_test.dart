@@ -2,14 +2,9 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.services.completion.contributor.dart.imported_ref;
-
-import 'package:analysis_server/plugin/protocol/protocol.dart'
-    hide Element, ElementKind;
 import 'package:analysis_server/src/protocol_server.dart';
 import 'package:analysis_server/src/provisional/completion/dart/completion_dart.dart';
 import 'package:analysis_server/src/services/completion/dart/imported_reference_contributor.dart';
-import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/source.dart';
 import 'package:test/test.dart';
@@ -20,7 +15,6 @@ import 'completion_contributor_util.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(ImportedReferenceContributorTest);
-    defineReflectiveTests(ImportedReferenceContributorTest_Driver);
   });
 }
 
@@ -32,6 +26,29 @@ class ImportedReferenceContributorTest extends DartCompletionContributorTest {
   @override
   DartCompletionContributor createContributor() {
     return new ImportedReferenceContributor();
+  }
+
+  /// Sanity check.  Permutations tested in local_ref_contributor.
+  test_ArgDefaults_function_with_required_named() async {
+    addMetaPackageSource();
+
+    resolveSource(
+        '/testB.dart',
+        '''
+lib B;
+import 'package:meta/meta.dart';
+
+bool foo(int bar, {bool boo, @required int baz}) => false;
+''');
+
+    addTestSource('''
+import "/testB.dart";
+
+void main() {f^}''');
+    await computeSuggestions();
+
+    assertSuggestFunction('foo', 'bool',
+        defaultArgListString: 'bar, baz: null');
   }
 
   test_ArgumentList() async {
@@ -1957,7 +1974,6 @@ int myFunc() {}
     assertNotSuggested('two');
   }
 
-  @failingTest
   test_enum_deprecated() async {
     addSource('/libA.dart', 'library A; @deprecated enum E { one, two }');
     addTestSource('import "/libA.dart"; main() {^}');
@@ -2038,7 +2054,7 @@ int myFunc() {}
   }
 
   test_FieldFormalParameter_in_non_constructor() async {
-    // SimpleIdentifer  FieldFormalParameter  FormalParameterList
+    // SimpleIdentifier  FieldFormalParameter  FormalParameterList
     addTestSource('class A {B(this.^foo) {}}');
     await computeSuggestions();
     expect(replacementOffset, completionOffset);
@@ -3511,12 +3527,6 @@ class C extends B with M1, M2 {
     // Resolve the source in the 2nd context and update the index
     var result = context2.performAnalysisTask();
     while (result.hasMoreWork) {
-      result.changeNotices.forEach((ChangeNotice notice) {
-        CompilationUnit unit = notice.resolvedDartUnit;
-        if (unit != null) {
-          index.indexUnit(unit);
-        }
-      });
       result = context2.performAnalysisTask();
     }
 
@@ -4508,17 +4518,5 @@ class B extends A {
     assertNotSuggested('f');
     assertNotSuggested('x');
     assertNotSuggested('e');
-  }
-}
-
-@reflectiveTest
-class ImportedReferenceContributorTest_Driver
-    extends ImportedReferenceContributorTest {
-  @override
-  bool get enableNewAnalysisDriver => true;
-
-  @override
-  test_enum_deprecated() {
-    // TODO(scheglov) remove it?
   }
 }

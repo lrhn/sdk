@@ -2,15 +2,14 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library analysis_server.src.domain_diagnostic;
-
 import 'dart:async';
 import 'dart:collection';
 import 'dart:core';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_constants.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
 import 'package:analysis_server/src/analysis_server.dart';
-import 'package:analysis_server/src/constants.dart';
 import 'package:analyzer/src/context/cache.dart';
 import 'package:analyzer/src/context/context.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart' as nd;
@@ -38,14 +37,8 @@ class DiagnosticDomainHandler implements RequestHandler {
 
   /// Answer the `diagnostic.getDiagnostics` request.
   Response computeDiagnostics(Request request) {
-    List<ContextData> contexts = <ContextData>[];
-    if (server.options.enableNewAnalysisDriver) {
-      contexts = server.driverMap.values.map(extractDataFromDriver).toList();
-    } else {
-      for (AnalysisContext context in server.analysisContexts) {
-        contexts.add(extractDataFromContext(context));
-      }
-    }
+    List<ContextData> contexts =
+        server.driverMap.values.map(extractDataFromDriver).toList();
     return new DiagnosticGetDiagnosticsResult(contexts).toResponse(request.id);
   }
 
@@ -96,22 +89,6 @@ class DiagnosticDomainHandler implements RequestHandler {
         knownFileCount - explicitFileCount, driver.numberOfFilesToAnalyze, []);
   }
 
-  @override
-  Response handleRequest(Request request) {
-    try {
-      String requestName = request.method;
-      if (requestName == DIAGNOSTIC_GET_DIAGNOSTICS) {
-        return computeDiagnostics(request);
-      } else if (requestName == DIAGNOSTIC_GET_SERVER_PORT) {
-        handleGetServerPort(request);
-        return Response.DELAYED_RESPONSE;
-      }
-    } on RequestFailure catch (exception) {
-      return exception.response;
-    }
-    return null;
-  }
-
   /// Answer the `diagnostic.getServerPort` request.
   Future handleGetServerPort(Request request) async {
     try {
@@ -124,4 +101,28 @@ class DiagnosticDomainHandler implements RequestHandler {
           .sendResponse(new Response.debugPortCouldNotBeOpened(request, error));
     }
   }
+
+  @override
+  Response handleRequest(Request request) {
+    try {
+      String requestName = request.method;
+      if (requestName == DIAGNOSTIC_REQUEST_GET_DIAGNOSTICS) {
+        return computeDiagnostics(request);
+      } else if (requestName == DIAGNOSTIC_REQUEST_GET_SERVER_PORT) {
+        handleGetServerPort(request);
+        return Response.DELAYED_RESPONSE;
+      }
+    } on RequestFailure catch (exception) {
+      return exception.response;
+    }
+    return null;
+  }
+}
+
+class MemoryCpuSample {
+  final DateTime time;
+  final double cpuPercentage;
+  final int memoryKB;
+
+  MemoryCpuSample(this.time, this.cpuPercentage, this.memoryKB);
 }

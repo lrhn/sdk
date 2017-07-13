@@ -212,28 +212,27 @@ void doTest(String allocation, [String keyElement, String valueElement]) {
   var compiler = compilerFor(generateTest(allocation), uri,
       expectedErrors: 0, expectedWarnings: 1);
   asyncTest(() => compiler.run(uri).then((_) {
-        compiler.closeResolution();
         var keyType, valueType;
         var typesInferrer = compiler.globalInference.typesInferrerInternal;
         var closedWorld = typesInferrer.closedWorld;
         var commonMasks = closedWorld.commonMasks;
         var emptyType = new TypeMask.nonNullEmpty();
         var aKeyType =
-            typesInferrer.getTypeOfElement(findElement(compiler, 'aKey'));
+            typesInferrer.getTypeOfMember(findElement(compiler, 'aKey'));
         if (keyElement != null) {
           keyType =
-              typesInferrer.getTypeOfElement(findElement(compiler, keyElement));
+              typesInferrer.getTypeOfMember(findElement(compiler, keyElement));
         }
         if (valueElement != null) {
           valueType = typesInferrer
-              .getTypeOfElement(findElement(compiler, valueElement));
+              .getTypeOfMember(findElement(compiler, valueElement));
         }
         if (keyType == null) keyType = emptyType;
         if (valueType == null) valueType = emptyType;
 
         checkType(String name, keyType, valueType) {
           var element = findElement(compiler, name);
-          MapTypeMask mask = typesInferrer.getTypeOfElement(element);
+          MapTypeMask mask = typesInferrer.getTypeOfMember(element);
           Expect.equals(keyType, simplify(mask.keyType, closedWorld), name);
           Expect.equals(valueType, simplify(mask.valueType, closedWorld), name);
         }

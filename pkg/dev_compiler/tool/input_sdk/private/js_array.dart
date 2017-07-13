@@ -12,7 +12,6 @@ part of dart._interceptors;
  */
 @JsPeerInterface(name: 'Array')
 class JSArray<E> implements List<E>, JSIndexable<E> {
-
   const JSArray();
 
   /**
@@ -74,7 +73,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
 
   E removeAt(int index) {
     checkGrowable('removeAt');
-    if (index is !int) throw argumentErrorValue(index);
+    if (index is! int) throw argumentErrorValue(index);
     if (index < 0 || index >= length) {
       throw new RangeError.value(index);
     }
@@ -83,7 +82,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
 
   void insert(int index, E value) {
     checkGrowable('insert');
-    if (index is !int) throw argumentErrorValue(index);
+    if (index is! int) throw argumentErrorValue(index);
     if (index < 0 || index > length) {
       throw new RangeError.value(index);
     }
@@ -93,7 +92,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
   void insertAll(int index, Iterable<E> iterable) {
     checkGrowable('insertAll');
     RangeError.checkValueInInterval(index, 0, this.length, "index");
-    if (iterable is! EfficientLength) {
+    if (iterable is! EfficientLengthIterable) {
       iterable = iterable.toList();
     }
     int insertionLength = iterable.length;
@@ -146,7 +145,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
     // to the [test] function. First the elements to retain are found, and then
     // the original list is updated to contain those elements.
 
-    // TODO(sra): Replace this algorthim with one that retains a list of ranges
+    // TODO(sra): Replace this algorithm with one that retains a list of ranges
     // to be removed.  Most real uses remove 0, 1 or a few clustered elements.
 
     List retained = [];
@@ -173,7 +172,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
   }
 
   Iterable/*<T>*/ expand/*<T>*/(Iterable/*<T>*/ f(E element)) {
-    return new ExpandIterable<E, dynamic/*=T*/>(this, f);
+    return new ExpandIterable<E, dynamic/*=T*/ >(this, f);
   }
 
   void addAll(Iterable<E> collection) {
@@ -243,7 +242,9 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
     return value;
   }
 
-  /*=T*/ fold/*<T>*/(/*=T*/ initialValue, /*=T*/ combine(/*=T*/ previousValue, E element)) {
+  /*=T*/ fold/*<T>*/(
+      /*=T*/ initialValue,
+      /*=T*/ combine(/*=T*/ previousValue, E element)) {
     var/*=T*/ value = initialValue;
     int length = this.length;
     for (int i = 0; i < length; i++) {
@@ -269,7 +270,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
     throw IterableElementError.noElement();
   }
 
-  E lastWhere(bool test(E element), { E orElse() }) {
+  E lastWhere(bool test(E element), {E orElse()}) {
     int length = this.length;
     for (int i = length - 1; i >= 0; i--) {
       // TODO(22407): Improve bounds check elimination to allow this JS code to
@@ -313,23 +314,21 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
 
   List<E> sublist(int start, [int end]) {
     checkNull(start); // TODO(ahe): This is not specified but co19 tests it.
-    if (start is !int) throw argumentErrorValue(start);
+    if (start is! int) throw argumentErrorValue(start);
     if (start < 0 || start > length) {
       throw new RangeError.range(start, 0, length, "start");
     }
     if (end == null) {
       end = length;
     } else {
-      if (end is !int) throw argumentErrorValue(end);
+      if (end is! int) throw argumentErrorValue(end);
       if (end < start || end > length) {
         throw new RangeError.range(end, start, length, "end");
       }
     }
     if (start == end) return <E>[];
-    return new JSArray<E>.typed(
-        JS('', r'#.slice(#, #)', this, start, end));
+    return new JSArray<E>.typed(JS('', r'#.slice(#, #)', this, start, end));
   }
-
 
   Iterable<E> getRange(int start, int end) {
     RangeError.checkValidRange(start, end, this.length);
@@ -411,7 +410,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
   void replaceRange(int start, int end, Iterable<E> replacement) {
     checkGrowable('replace range');
     RangeError.checkValidRange(start, end, this.length);
-    if (replacement is! EfficientLength) {
+    if (replacement is! EfficientLengthIterable) {
       replacement = replacement.toList();
     }
     int removeLength = end - start;
@@ -428,7 +427,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
     } else {
       int delta = insertLength - removeLength;
       int newLength = this.length + delta;
-      int insertEnd = start + insertLength;  // aka. end + delta.
+      int insertEnd = start + insertLength; // aka. end + delta.
       this.length = newLength;
       this.setRange(insertEnd, newLength, this, end);
       this.setRange(start, insertEnd, replacement);
@@ -530,7 +529,7 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
 
   String toString() => ListBase.listToString(this);
 
-  List<E> toList({ bool growable: true }) {
+  List<E> toList({bool growable: true}) {
     var list = JS('', '#.slice()', this);
     if (!growable) markFixedList(list);
     return new JSArray<E>.typed(list);
@@ -542,11 +541,13 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
 
   int get hashCode => Primitives.objectHashCode(this);
 
+  bool operator ==(other) => identical(this, other);
+
   int get length => JS('int', r'#.length', this);
 
   void set length(int newLength) {
     checkGrowable('set length');
-    if (newLength is !int) {
+    if (newLength is! int) {
       throw new ArgumentError.value(newLength, 'newLength');
     }
     // TODO(sra): Remove this test and let JavaScript throw an error.
@@ -559,21 +560,30 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
   }
 
   E operator [](int index) {
-    if (index is !int) throw diagnoseIndexError(this, index);
-    if (index >= length || index < 0) throw diagnoseIndexError(this, index);
+    // Suppress redundant null checks via JS.
+    if (index == null ||
+        JS('int', '#', index) >= JS('int', '#.length', this) ||
+        JS('int', '#', index) < 0) {
+      throw diagnoseIndexError(this, index);
+    }
     return JS('var', '#[#]', this, index);
   }
 
   void operator []=(int index, E value) {
     checkMutable('indexed set');
-    if (index is !int) throw diagnoseIndexError(this, index);
-    if (index >= length || index < 0) throw diagnoseIndexError(this, index);
+    if (index == null ||
+        JS('int', '#', index) >= JS('int', '#.length', this) ||
+        JS('int', '#', index) < 0) {
+      throw diagnoseIndexError(this, index);
+    }
     JS('void', r'#[#] = #', this, index, value);
   }
 
   Map<int, E> asMap() {
     return new ListMapView<E>(this);
   }
+
+  Type get runtimeType => wrapType(JS('', '#(#)', getGenericClass(List), E));
 }
 
 /**
@@ -585,13 +595,15 @@ class JSArray<E> implements List<E>, JSIndexable<E> {
  * getInterceptor always returns JSArray.  We should consider pushing the
  * 'isGrowable' and 'isMutable' checks into the getInterceptor implementation so
  * these classes can have specialized implementations. Doing so will challenge
- * many assuptions in the JS backend.
+ * many assumptions in the JS backend.
  */
 class JSMutableArray<E> extends JSArray<E> {}
-class JSFixedArray<E> extends JSMutableArray<E> {}
-class JSExtendableArray<E> extends JSMutableArray<E> {}
-class JSUnmodifiableArray<E> extends JSArray<E> {} // Already is JSIndexable.
 
+class JSFixedArray<E> extends JSMutableArray<E> {}
+
+class JSExtendableArray<E> extends JSMutableArray<E> {}
+
+class JSUnmodifiableArray<E> extends JSArray<E> {} // Already is JSIndexable.
 
 /// An [Iterator] that iterates a JSArray.
 ///
@@ -602,7 +614,9 @@ class ArrayIterator<E> implements Iterator<E> {
   E _current;
 
   ArrayIterator(JSArray<E> iterable)
-      : _iterable = iterable, _length = iterable.length, _index = 0;
+      : _iterable = iterable,
+        _length = iterable.length,
+        _index = 0;
 
   E get current => _current;
 

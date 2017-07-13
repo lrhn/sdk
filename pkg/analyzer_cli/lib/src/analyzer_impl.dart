@@ -64,28 +64,15 @@ class AnalyzerImpl {
   AnalyzerImpl(this.analysisOptions, this.context, this.analysisDriver,
       this.librarySource, this.options, this.stats, this.startTime);
 
-  /// Returns the maximal [ErrorSeverity] of the recorded errors.
-  ErrorSeverity get maxErrorSeverity {
-    var status = ErrorSeverity.NONE;
-    for (AnalysisErrorInfo errorInfo in errorInfos) {
-      for (AnalysisError error in errorInfo.errors) {
-        if (_processError(error) == null) {
-          continue;
-        }
-        var severity = computeSeverity(error, options);
-        status = status.max(severity);
-      }
-    }
-    return status;
-  }
-
   void addCompilationUnitSource(
       CompilationUnitElement unit, Set<CompilationUnitElement> units) {
-    if (unit == null || units.contains(unit)) {
+    if (unit == null || !units.add(unit)) {
       return;
     }
-    units.add(unit);
-    sources.add(unit.source);
+    Source source = unit.source;
+    if (source != null) {
+      sources.add(source);
+    }
   }
 
   void addLibrarySources(LibraryElement library, Set<LibraryElement> libraries,
@@ -116,9 +103,24 @@ class AnalyzerImpl {
   /// information is printed. If [printMode] is `1`, then errors will be printed.
   /// If [printMode] is `2`, then performance information will be printed, and
   /// it will be marked as being for a cold VM.
-  Future<ErrorSeverity> analyze({int printMode: 1}) async {
+  Future<ErrorSeverity> analyze(ErrorFormatter formatter,
+      {int printMode: 1}) async {
     setupForAnalysis();
-    return await _analyze(printMode);
+    return await _analyze(printMode, formatter);
+  }
+
+  /// Returns the maximal [ErrorSeverity] of the recorded errors.
+  ErrorSeverity computeMaxErrorSeverity() {
+    ErrorSeverity status = ErrorSeverity.NONE;
+    for (AnalysisErrorInfo errorInfo in errorInfos) {
+      for (AnalysisError error in errorInfo.errors) {
+        if (_defaultSeverityProcessor(error) == null) {
+          continue;
+        }
+        status = status.max(computeSeverity(error, options, analysisOptions));
+      }
+    }
+    return status;
   }
 
   /// Fills [errorInfos] using [sources].
@@ -158,7 +160,8 @@ class AnalyzerImpl {
     }
   }
 
-  Future<ErrorSeverity> _analyze(int printMode) async {
+  Future<ErrorSeverity> _analyze(
+      int printMode, ErrorFormatter formatter) async {
     // Don't try to analyze parts.
     String path = librarySource.fullName;
     SourceKind librarySourceKind = analysisDriver != null
@@ -166,7 +169,7 @@ class AnalyzerImpl {
         : context.computeKindOf(librarySource);
     if (librarySourceKind == SourceKind.PART) {
       stderr.writeln("Only libraries can be analyzed.");
-      stderr.writeln("${path} is a part and can not be analyzed.");
+      stderr.writeln("$path is a part and can not be analyzed.");
       return ErrorSeverity.ERROR;
     }
 
@@ -176,18 +179,17 @@ class AnalyzerImpl {
 
     // Print errors and performance numbers.
     if (printMode == 1) {
-      _printErrors();
+      formatter.formatErrors(errorInfos);
     } else if (printMode == 2) {
       _printColdPerf();
     }
 
-    // Compute max severity and set exitCode.
-    ErrorSeverity status = maxErrorSeverity;
-    if (status == ErrorSeverity.WARNING && options.warningsAreFatal) {
-      status = ErrorSeverity.ERROR;
-    }
-    return status;
+    // Compute and return max severity.
+    return computeMaxErrorSeverity();
   }
+
+  ErrorSeverity _defaultSeverityProcessor(AnalysisError error) =>
+      determineProcessedSeverity(error, options, analysisOptions);
 
   /// Returns true if we want to report diagnostics for this library.
   bool _isAnalyzedLibrary(LibraryElement library) {
@@ -205,6 +207,7 @@ class AnalyzerImpl {
     }
   }
 
+  // TODO(devoncarew): This is never called.
   /// Determine whether the given URI refers to a package being analyzed.
   bool _isAnalyzedPackage(Uri uri) {
     if (uri.scheme != 'package' || uri.pathSegments.isEmpty) {
@@ -222,13 +225,12 @@ class AnalyzerImpl {
     }
   }
 
-  // TODO(devoncarew): This is never called.
   void _printColdPerf() {
     // Print cold VM performance numbers.
     int totalTime = currentTimeMillis - startTime;
     int otherTime = totalTime;
     for (PerformanceTag tag in PerformanceTag.all) {
-      if (tag != PerformanceTag.UNKNOWN) {
+      if (tag != PerformanceTag.unknown) {
         int tagTime = tag.elapsedMs;
         outSink.writeln('${tag.label}-cold:$tagTime');
         otherTime -= tagTime;
@@ -237,24 +239,6 @@ class AnalyzerImpl {
     outSink.writeln('other-cold:$otherTime');
     outSink.writeln("total-cold:$totalTime");
   }
-
-  void _printErrors() {
-    // The following is a hack. We currently print out to stderr to ensure that
-    // when in batch mode we print to stderr, this is because the prints from
-    // batch are made to stderr. The reason that options.shouldBatch isn't used
-    // is because when the argument flags are constructed in BatchRunner and
-    // passed in from batch mode which removes the batch flag to prevent the
-    // "cannot have the batch flag and source file" error message.
-    StringSink sink = options.machineFormat ? errorSink : outSink;
-
-    // Print errors.
-    ErrorFormatter formatter =
-        new ErrorFormatter(sink, options, stats, _processError);
-    formatter.formatErrors(errorInfos);
-  }
-
-  ProcessedSeverity _processError(AnalysisError error) =>
-      processError(error, options, analysisOptions);
 
   Future<LibraryElement> _resolveLibrary() async {
     PerformanceTag previous = _resolveLibraryTag.makeCurrent();

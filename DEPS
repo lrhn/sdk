@@ -2,6 +2,10 @@
 # for details. All rights reserved. Use of this source code is governed by a
 # BSD-style license that can be found in the LICENSE file.
 
+# IMPORTANT:
+# Before adding or updating dependencies, please review the documentation here:
+# https://github.com/dart-lang/sdk/wiki/Adding-and-Updating-Dependencies
+
 vars = {
   # The dart_root is the root of our sdk checkout. This is normally
   # simply sdk, but if using special gclient specs it can be different.
@@ -15,71 +19,75 @@ vars = {
   #   https://chromium.googlesource.com/
   # named like:
   #   external/github.com/dart-lang/NAME
-  # It is ok to add a dependency directly on dart-lang (dart-lang only)
-  # github repo until the mirror has been created, but please do file a bug
-  # against infra to make that happen.
   "github_mirror":
       "https://chromium.googlesource.com/external/github.com/dart-lang/%s.git",
 
   # Chromium git
   "chromium_git": "https://chromium.googlesource.com",
+  "fuchsia_git": "https://fuchsia.googlesource.com",
 
-  # Only use this temporarily while waiting for a mirror for a new package.
-  "github_dartlang": "https://github.com/dart-lang/%s.git",
+  # IMPORTANT:
+  # This should only be used for local testing. Before adding a new package,
+  # request a mirror of the package you need. To request a mirror, file an issue
+  # on github and add the label 'area-infrastructure'.
+  # "github_dartlang": "https://github.com/dart-lang/%s.git",
 
   "gyp_rev": "@6ee91ad8659871916f9aa840d42e1513befdf638",
-  "co19_rev": "@4af9ef149be554216c5bb16cbac8e50d4c28cdf1",
+  "co19_rev": "@dec2b67aaab3bb7339b9764049707e71e601da3d",
 
-  # Revisions of GN related dependencies.
-  "buildtools_revision": "@39b1db2ab4aa4b2ccaa263c29bdf63e7c1ee28aa",
-  "clang_format_rev": "@0ed791d1387a3c9146ea6c453c646f3c0fc97784",
+  # Revisions of GN related dependencies. This should match the revision
+  # pulled by Flutter.
+  "buildtools_revision": "@057ef89874e3c622248cf99259434fdc683c4e30",
+
+  # Scripts that make 'git cl format' work.
+  "clang_format_scripts_rev": "@c09c8deeac31f05bd801995c475e7c8070f9ecda",
 
   "gperftools_revision": "@02eeed29df112728564a5dde6417fa4622b57a06",
 
   # Revisions of /third_party/* dependencies.
   "args_tag": "@0.13.7",
-  "async_tag": "@1.13.0",
+  "async_tag": "@daf66909019d2aaec1721fc39d94ea648a9fdc1d",
   "barback-0.13.0_rev": "@34853",
   "barback-0.14.0_rev": "@36398",
   "barback-0.14.1_rev": "@38525",
-  "barback_tag" : "@0.15.2+9",
-  "bazel_worker_tag": "@0.1.2",
+  "barback_tag" : "@0.15.2+11",
+  "bazel_worker_tag": "@v0.1.4",
   "boolean_selector_tag" : "@1.0.2",
-  "boringssl_gen_rev": "@1a810313a0290e1caace9da73fa3ab89995ad2c7",
+  "boringssl_gen_rev": "@753224969dbe43dad29343146529727b5066c0f3",
   "boringssl_rev" : "@d519bf6be0b447fb80fbc539d4bff4479b5482a2",
   "charcode_tag": "@v1.1.1",
   "chrome_rev" : "@19997",
-  "cli_util_tag" : "@0.0.1+3",
+  "cli_util_tag" : "@0.1.0",
   "code_transformers_tag": "@v0.5.1",
   "collection_tag": "@1.13.0",
   "convert_tag": "@2.0.1",
   "crypto_tag" : "@2.0.1",
   "csslib_tag" : "@0.13.3+1",
-  "dart2js_info_tag" : "@0.5.3+1",
+  "dart2js_info_tag" : "@0.5.4+2",
   "dart_services_rev" : "@7aea2574e6f3924bf409a80afb8ad52aa2be4f97",
-  "dart_style_tag": "@0.2.16",
-  "dartdoc_tag" : "@v0.9.12",
+  "dart_style_tag": "@1.0.7",
+  "dartdoc_tag" : "@v0.13.0+1",
   "fixnum_tag": "@0.10.5",
-  "func_tag": "@0.1.1",
+  "func_tag": "@1.0.0",
   "glob_tag": "@1.1.3",
   "html_tag" : "@0.13.1",
   "http_multi_server_tag" : "@2.0.3",
   "http_parser_tag" : "@3.1.1",
-  "http_tag" : "@0.11.3+9",
-  "http_throttle_rev" : "@284344cd357e435c6c8ff9a4a21f02b9e384a541",
+  "http_tag" : "@0.11.3+13",
+  "http_throttle_tag" : "@1.0.1",
   "idl_parser_rev": "@7fbe68cab90c38147dee4f48c30ad0d496c17915",
   "initialize_tag": "@v0.6.2+5",
   "intl_tag": "@0.14.0",
   "isolate_tag": "@1.0.0",
   "jinja2_rev": "@2222b31554f03e62600cd7e383376a7c187967a1",
   "json_rpc_2_tag": "@2.0.4",
-  "linter_rev": "@89f93362c5b48ef5192d77e9a28cf9590542669b", # prerelease 1.30
+  "linter_tag": "@0.1.31",
   "logging_tag": "@0.11.3+1",
-  "markdown_tag": "@0.11.2",
+  "markdown_tag": "@0.11.3",
   "matcher_tag": "@0.12.0+2",
   "metatest_tag": "@0.2.2+3",
   "mime_rev": "@75890811d4af5af080351ba8a2853ad4c8df98dd",
-  "mustache4dart_tag" : "@v1.0.10",
+  "mustache4dart_tag" : "@v1.1.0",
   "oauth2_tag": "@1.0.2",
   "observable_tag": "@0.17.0",
   "observatory_pub_packages_rev": "@26aad88f1c1915d39bbcbff3cad589e2402fdcf1",
@@ -90,13 +98,13 @@ vars = {
   "plugin_tag": "@0.2.0",
   "ply_rev": "@604b32590ffad5cbb82e4afef1d305512d06ae93",
   "pool_tag": "@1.3.0",
-  "protobuf_tag": "@0.5.3",
-  "pub_rev": "@53327f4a7ca2ddd20a40f6a94db61ac136371b03",
+  "protobuf_tag": "@0.5.4",
+  "pub_rev": "@0f122625f8e607842afe156b9b23a9709e4ce39a",
   "pub_semver_tag": "@1.3.2",
   "quiver_tag": "@0.22.0",
   "resource_rev":"@a49101ba2deb29c728acba6fb86000a8f730f4b1",
-  "root_certificates_rev": "@0068d8911140e591ebb750af296e81940a9906f5",
-  "scheduled_test_tag": "@0.12.9",
+  "root_certificates_rev": "@a4c7c6f23a664a37bc1b6f15a819e3f2a292791a",
+  "scheduled_test_tag": "@0.12.11",
   "shelf_static_tag": "@0.2.4",
   "shelf_packages_handler_tag": "@1.0.0",
   "shelf_tag": "@0.6.7+2",
@@ -104,23 +112,22 @@ vars = {
   "smoke_tag" : "@v0.3.6+2",
   "source_map_stack_trace_tag": "@1.1.4",
   "source_maps-0.9.4_rev": "@38524",
-  "source_maps_tag": "@0.10.2",
-  "source_span_tag": "@1.3.1",
-  "stack_trace_tag": "@1.7.1",
+  "source_maps_tag": "@0.10.4",
+  "source_span_tag": "@1.4.0",
+  "stack_trace_tag": "@1.7.2",
   "stream_channel_tag": "@1.6.1",
   "string_scanner_tag": "@1.0.1",
   "sunflower_rev": "@879b704933413414679396b129f5dfa96f7a0b1e",
   "test_reflective_loader_tag": "@0.1.0",
   "test_tag": "@0.12.18+1",
+  "tuple_tag": "@v1.0.1",
   "typed_data_tag": "@1.1.3",
-  "usage_tag": "@v3.0.0+1",
+  "usage_tag": "@3.3.0",
   "utf_tag": "@0.9.0+3",
   "watcher_tag": "@0.9.7+3",
   "web_components_rev": "@6349e09f9118dce7ae1b309af5763745e25a9d61",
   "web_socket_channel_tag": "@1.0.4",
-  "WebCore_rev": "@a86fe28efadcfc781f836037a80f27e22a5dad17",
-  "when_tag": "@0.2.0+2",
-  "which_tag": "@0.1.3+1",
+  "WebCore_rev": "@3c45690813c112373757bbef53de1602a62af609",
   "yaml_tag": "@2.1.12",
   "zlib_rev": "@c3d0a6190f2f8c924a05ab6cc97b8f975bddd33f",
 }
@@ -132,11 +139,10 @@ deps = {
 
   # Stuff needed for GN build.
   Var("dart_root") + "/buildtools":
-     Var('chromium_git') + '/chromium/buildtools.git' +
-     Var('buildtools_revision'),
+     Var("fuchsia_git") + "/buildtools" + Var("buildtools_revision"),
   Var("dart_root") + "/buildtools/clang_format/script":
     Var("chromium_git") + "/chromium/llvm-project/cfe/tools/clang-format.git" +
-    Var("clang_format_rev"),
+    Var("clang_format_scripts_rev"),
 
   Var("dart_root") + "/tests/co19/src":
       (Var("github_mirror") % "co19") + Var("co19_rev"),
@@ -146,7 +152,7 @@ deps = {
       Var("zlib_rev"),
 
   Var("dart_root") + "/third_party/boringssl":
-     (Var("github_dartlang") % "boringssl_gen") + Var("boringssl_gen_rev"),
+      (Var("github_mirror") % "boringssl_gen") + Var("boringssl_gen_rev"),
   Var("dart_root") + "/third_party/boringssl/src":
       "https://boringssl.googlesource.com/boringssl.git" +
       Var("boringssl_rev"),
@@ -181,9 +187,9 @@ deps = {
   Var("dart_root") + "/third_party/pkg/barback":
       (Var("github_mirror") % "barback") + Var("barback_tag"),
   Var("dart_root") + "/third_party/pkg/bazel_worker":
-      (Var("github_dartlang") % "bazel_worker") + Var("bazel_worker_tag"),
+      (Var("github_mirror") % "bazel_worker") + Var("bazel_worker_tag"),
   Var("dart_root") + "/third_party/pkg/boolean_selector":
-      (Var("github_dartlang") % "boolean_selector") +
+      (Var("github_mirror") % "boolean_selector") +
       Var("boolean_selector_tag"),
   Var("dart_root") + "/third_party/pkg/charcode":
       (Var("github_mirror") % "charcode") + Var("charcode_tag"),
@@ -198,7 +204,7 @@ deps = {
   Var("dart_root") + "/third_party/pkg/csslib":
       (Var("github_mirror") % "csslib") + Var("csslib_tag"),
   Var("dart_root") + "/third_party/pkg/code_transformers":
-      (Var("github_dartlang") % "code_transformers") +
+      (Var("github_mirror") % "code_transformers") +
       Var("code_transformers_tag"),
   Var("dart_root") + "/third_party/dart-services":
       (Var("github_mirror") % "dart-services") +
@@ -209,10 +215,10 @@ deps = {
       (Var("github_mirror") % "dart2js_info") + Var("dart2js_info_tag"),
   Var("dart_root") + "/third_party/pkg/dartdoc":
       (Var("github_mirror") % "dartdoc") + Var("dartdoc_tag"),
-  Var("dart_root") + "/third_party/pkg/func":
-      (Var("github_dartlang") % "func") + Var("func_tag"),
   Var("dart_root") + "/third_party/pkg/fixnum":
-      "https://github.com/dart-lang/fixnum.git" + Var("fixnum_tag"),
+      (Var("github_mirror") % "fixnum") + Var("fixnum_tag"),
+  Var("dart_root") + "/third_party/pkg/func":
+      (Var("github_mirror") % "func") + Var("func_tag"),
   Var("dart_root") + "/third_party/pkg/glob":
       (Var("github_mirror") % "glob") + Var("glob_tag"),
   Var("dart_root") + "/third_party/pkg/html":
@@ -226,17 +232,17 @@ deps = {
       (Var("github_mirror") % "http_parser") + Var("http_parser_tag"),
   Var("dart_root") + "/third_party/pkg/http_throttle":
       (Var("github_mirror") % "http_throttle") +
-      Var("http_throttle_rev"),
+      Var("http_throttle_tag"),
   Var("dart_root") + "/third_party/pkg/initialize":
-      (Var("github_dartlang") % "initialize") + Var("initialize_tag"),
+      (Var("github_mirror") % "initialize") + Var("initialize_tag"),
   Var("dart_root") + "/third_party/pkg/intl":
       (Var("github_mirror") % "intl") + Var("intl_tag"),
   Var("dart_root") + "/third_party/pkg/isolate":
-      (Var("github_dartlang") % "isolate") + Var("isolate_tag"),
+      (Var("github_mirror") % "isolate") + Var("isolate_tag"),
   Var("dart_root") + "/third_party/pkg/json_rpc_2":
       (Var("github_mirror") % "json_rpc_2") + Var("json_rpc_2_tag"),
   Var("dart_root") + "/third_party/pkg/linter":
-      (Var("github_mirror") % "linter") + Var("linter_rev"),
+      (Var("github_mirror") % "linter") + Var("linter_tag"),
   Var("dart_root") + "/third_party/pkg/logging":
       (Var("github_mirror") % "logging") + Var("logging_tag"),
   Var("dart_root") + "/third_party/pkg/markdown":
@@ -254,18 +260,17 @@ deps = {
   Var("dart_root") + "/third_party/pkg/oauth2":
       (Var("github_mirror") % "oauth2") + Var("oauth2_tag"),
   Var("dart_root") + "/third_party/pkg/observable":
-      (Var("github_dartlang") % "observable") + Var("observable_tag"),
+      (Var("github_mirror") % "observable") + Var("observable_tag"),
   Var("dart_root") + "/third_party/pkg/observe":
       (Var("github_mirror") % "observe") + Var("observe_tag"),
   Var("dart_root") + "/third_party/observatory_pub_packages":
-     (Var("github_mirror") % "observatory_pub_packages")
+      (Var("github_mirror") % "observatory_pub_packages")
       + Var("observatory_pub_packages_rev"),
   Var("dart_root") + "/third_party/pkg_tested/package_config":
       (Var("github_mirror") % "package_config") +
       Var("package_config_tag"),
   Var("dart_root") + "/third_party/pkg_tested/package_resolver":
-      "https://github.com/dart-lang/package_resolver.git" +
-      Var("package_resolver_tag"),
+      (Var("github_mirror") % "package_resolver") + Var("package_resolver_tag"),
   Var("dart_root") + "/third_party/pkg/path":
       (Var("github_mirror") % "path") + Var("path_tag"),
   Var("dart_root") + "/third_party/pkg/plugin":
@@ -273,7 +278,7 @@ deps = {
   Var("dart_root") + "/third_party/pkg/pool":
       (Var("github_mirror") % "pool") + Var("pool_tag"),
   Var("dart_root") + "/third_party/pkg/protobuf":
-      (Var("github_dartlang") % "dart-protobuf") + Var("protobuf_tag"),
+      (Var("github_mirror") % "protobuf") + Var("protobuf_tag"),
   Var("dart_root") + "/third_party/pkg/pub_semver":
       (Var("github_mirror") % "pub_semver") + Var("pub_semver_tag"),
   Var("dart_root") + "/third_party/pkg/pub":
@@ -308,7 +313,7 @@ deps = {
   Var("dart_root") + "/third_party/pkg/stack_trace":
       (Var("github_mirror") % "stack_trace") + Var("stack_trace_tag"),
   Var("dart_root") + "/third_party/pkg/stream_channel":
-      (Var("github_dartlang") % "stream_channel") +
+      (Var("github_mirror") % "stream_channel") +
       Var("stream_channel_tag"),
   Var("dart_root") + "/third_party/pkg/string_scanner":
       (Var("github_mirror") % "string_scanner") +
@@ -321,8 +326,10 @@ deps = {
   Var("dart_root") + "/third_party/pkg/test_reflective_loader":
       (Var("github_mirror") % "test_reflective_loader") +
       Var("test_reflective_loader_tag"),
+  Var("dart_root") + "/third_party/pkg/tuple":
+      (Var("github_mirror") % "tuple") + Var("tuple_tag"),
   Var("dart_root") + "/third_party/pkg/typed_data":
-      (Var("github_dartlang") % "typed_data") + Var("typed_data_tag"),
+      (Var("github_mirror") % "typed_data") + Var("typed_data_tag"),
   Var("dart_root") + "/third_party/pkg/usage":
       (Var("github_mirror") % "usage") + Var("usage_tag"),
   Var("dart_root") + "/third_party/pkg/utf":
@@ -333,22 +340,13 @@ deps = {
       (Var("github_mirror") % "web-components") +
       Var("web_components_rev"),
   Var("dart_root") + "/third_party/pkg/web_socket_channel":
-      (Var("github_dartlang") % "web_socket_channel") +
+      (Var("github_mirror") % "web_socket_channel") +
       Var("web_socket_channel_tag"),
-  Var("dart_root") + "/third_party/pkg/when":
-      (Var("github_mirror") % "when") + Var("when_tag"),
-  Var("dart_root") + "/third_party/pkg/which":
-      (Var("github_mirror") % "which") + Var("which_tag"),
   Var("dart_root") + "/third_party/pkg/yaml":
       (Var("github_mirror") % "yaml") + Var("yaml_tag"),
 }
 
 deps_os = {
-  "android": {
-    Var("dart_root") + "/third_party/android_tools":
-      Var("chromium_git") + "/android_tools.git" +
-      "@aaeda3d69df4b4352e3cac7c16bea7f16bd1ec12",
-  },
   "win": {
     Var("dart_root") + "/third_party/cygwin":
       Var("chromium_git") + "/chromium/deps/cygwin.git" +
@@ -359,98 +357,6 @@ deps_os = {
 # TODO(iposva): Move the necessary tools so that hooks can be run
 # without the runtime being available.
 hooks = [
-  # Pull GN binaries. This needs to be before running GYP below.
-  {
-    'name': 'gn_linux64',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=linux*',
-      '--bucket',
-      'chromium-gn',
-      '-s',
-      Var('dart_root') + '/buildtools/linux64/gn.sha1',
-    ],
-  },
-  {
-    'name': 'gn_mac',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=darwin',
-      '--bucket',
-      'chromium-gn',
-      '-s',
-      Var('dart_root') + '/buildtools/mac/gn.sha1',
-    ],
-  },
-  {
-    'name': 'gn_win',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=win*',
-      '--bucket',
-      'chromium-gn',
-      '-s',
-      Var('dart_root') + '/buildtools/win/gn.exe.sha1',
-    ],
-  },
-  # Pull clang-format binaries using checked-in hashes.
-  {
-    'name': 'clang_format_win',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=win32',
-      '--bucket',
-      'chromium-clang-format',
-      '-s',
-      Var('dart_root') + '/buildtools/win/clang-format.exe.sha1',
-    ],
-  },
-  {
-    'name': 'clang_format_linux',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=linux*',
-      '--bucket',
-      'chromium-clang-format',
-      '-s',
-      Var('dart_root') + '/buildtools/linux64/clang-format.sha1',
-    ],
-  },
-  {
-    'name': 'clang_format_mac',
-    'pattern': '.',
-    'action': [
-      'download_from_google_storage',
-      '--no_auth',
-      '--no_resume',
-      '--quiet',
-      '--platform=darwin',
-      '--bucket',
-      'chromium-clang-format',
-      '-s',
-      Var('dart_root') + '/buildtools/mac/clang-format.sha1',
-    ],
-  },
   {
     'name': 'd8_testing_binaries',
     'pattern': '.',
@@ -557,21 +463,6 @@ hooks = [
     ],
   },
   {
-    "name": "clang",
-    "pattern": ".",
-    "action": [
-      "download_from_google_storage",
-      "--no_auth",
-      "--no_resume",
-      "--bucket",
-      "dart-dependencies",
-      "--platform=linux*",
-      "--extract",
-      "-s",
-      Var('dart_root') + "/third_party/clang.tar.gz.sha1",
-    ],
-  },
-  {
     # Pull Debian wheezy sysroot for i386 Linux
     'name': 'sysroot_i386',
     'pattern': '.',
@@ -586,10 +477,14 @@ hooks = [
                '--running-as-hook', '--arch', 'amd64'],
   },
   {
-    # Pull clang if needed or requested via GYP_DEFINES.
-    'name': 'gn_clang',
+    'name': 'download_android_tools',
     'pattern': '.',
-    'action': ['python', 'sdk/tools/clang/scripts/update.py', '--if-needed'],
+    'action': ['python', 'sdk/tools/android/download_android_tools.py'],
+  },
+  {
+    'name': 'buildtools',
+    'pattern': '.',
+    'action': ['python', 'sdk/tools/buildtools/update.py'],
   },
   {
     # Update the Windows toolchain if necessary.

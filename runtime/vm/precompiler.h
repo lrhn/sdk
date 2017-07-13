@@ -66,97 +66,6 @@ class SymbolKeyValueTrait {
 
 typedef DirectChainedHashMap<SymbolKeyValueTrait> SymbolSet;
 
-class StackMapKeyValueTrait {
- public:
-  // Typedefs needed for the DirectChainedHashMap template.
-  typedef const StackMap* Key;
-  typedef const StackMap* Value;
-  typedef const StackMap* Pair;
-
-  static Key KeyOf(Pair kv) { return kv; }
-
-  static Value ValueOf(Pair kv) { return kv; }
-
-  static inline intptr_t Hashcode(Key key) { return key->PcOffset(); }
-
-  static inline bool IsKeyEqual(Pair pair, Key key) {
-    return pair->Equals(*key);
-  }
-};
-
-typedef DirectChainedHashMap<StackMapKeyValueTrait> StackMapSet;
-
-
-class CodeSourceMapKeyValueTrait {
- public:
-  // Typedefs needed for the DirectChainedHashMap template.
-  typedef const CodeSourceMap* Key;
-  typedef const CodeSourceMap* Value;
-  typedef const CodeSourceMap* Pair;
-
-  static Key KeyOf(Pair kv) { return kv; }
-
-  static Value ValueOf(Pair kv) { return kv; }
-
-  static inline intptr_t Hashcode(Key key) { return key->Length(); }
-
-  static inline bool IsKeyEqual(Pair pair, Key key) {
-    return pair->Equals(*key);
-  }
-};
-
-typedef DirectChainedHashMap<CodeSourceMapKeyValueTrait> CodeSourceMapSet;
-
-
-class ArrayKeyValueTrait {
- public:
-  // Typedefs needed for the DirectChainedHashMap template.
-  typedef const Array* Key;
-  typedef const Array* Value;
-  typedef const Array* Pair;
-
-  static Key KeyOf(Pair kv) { return kv; }
-
-  static Value ValueOf(Pair kv) { return kv; }
-
-  static inline intptr_t Hashcode(Key key) { return key->Length(); }
-
-  static inline bool IsKeyEqual(Pair pair, Key key) {
-    if (pair->Length() != key->Length()) {
-      return false;
-    }
-    for (intptr_t i = 0; i < pair->Length(); i++) {
-      if (pair->At(i) != key->At(i)) {
-        return false;
-      }
-    }
-    return true;
-  }
-};
-
-typedef DirectChainedHashMap<ArrayKeyValueTrait> ArraySet;
-
-
-class InstructionsKeyValueTrait {
- public:
-  // Typedefs needed for the DirectChainedHashMap template.
-  typedef const Instructions* Key;
-  typedef const Instructions* Value;
-  typedef const Instructions* Pair;
-
-  static Key KeyOf(Pair kv) { return kv; }
-
-  static Value ValueOf(Pair kv) { return kv; }
-
-  static inline intptr_t Hashcode(Key key) { return key->Size(); }
-
-  static inline bool IsKeyEqual(Pair pair, Key key) {
-    return pair->Equals(*key);
-  }
-};
-
-typedef DirectChainedHashMap<InstructionsKeyValueTrait> InstructionsSet;
-
 
 class UnlinkedCallKeyValueTrait {
  public:
@@ -181,6 +90,9 @@ class UnlinkedCallKeyValueTrait {
 
 typedef DirectChainedHashMap<UnlinkedCallKeyValueTrait> UnlinkedCallSet;
 
+static inline intptr_t SimplePointerHash(void* ptr) {
+  return reinterpret_cast<intptr_t>(ptr) * 2654435761UL;
+}
 
 class FunctionKeyValueTrait {
  public:
@@ -193,7 +105,15 @@ class FunctionKeyValueTrait {
 
   static Value ValueOf(Pair kv) { return kv; }
 
-  static inline intptr_t Hashcode(Key key) { return key->token_pos().value(); }
+  static inline intptr_t Hashcode(Key key) {
+    // We are using pointer hash for objects originating from Kernel because
+    // Fasta currently does not assign any position information to them.
+    if (key->kernel_offset() > 0) {
+      return key->kernel_offset();
+    } else {
+      return key->token_pos().value();
+    }
+  }
 
   static inline bool IsKeyEqual(Pair pair, Key key) {
     return pair->raw() == key->raw();
@@ -214,7 +134,15 @@ class FieldKeyValueTrait {
 
   static Value ValueOf(Pair kv) { return kv; }
 
-  static inline intptr_t Hashcode(Key key) { return key->token_pos().value(); }
+  static inline intptr_t Hashcode(Key key) {
+    // We are using pointer hash for objects originating from Kernel because
+    // Fasta currently does not assign any position information to them.
+    if (key->kernel_offset() > 0) {
+      return key->kernel_offset();
+    } else {
+      return key->token_pos().value();
+    }
+  }
 
   static inline bool IsKeyEqual(Pair pair, Key key) {
     return pair->raw() == key->raw();
@@ -474,16 +402,12 @@ class Precompiler : public ValueObject {
   void DropTypes();
   void DropTypeArguments();
   void DropScriptData();
+  void DropLibraryEntries();
   void DropClasses();
   void DropLibraries();
 
   void BindStaticCalls();
   void SwitchICCalls();
-  void ShareMegamorphicBuckets();
-  void DedupStackMaps();
-  void DedupCodeSourceMaps();
-  void DedupLists();
-  void DedupInstructions();
   void ResetPrecompilerState();
 
   void CollectDynamicFunctionNames();
@@ -507,6 +431,7 @@ class Precompiler : public ValueObject {
   ParsedJSONObject* jit_feedback_;
 
   bool changed_;
+  bool retain_root_library_caches_;
   intptr_t function_count_;
   intptr_t class_count_;
   intptr_t selector_count_;

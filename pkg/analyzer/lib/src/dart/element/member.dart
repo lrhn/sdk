@@ -10,8 +10,7 @@ import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/src/dart/element/element.dart';
 import 'package:analyzer/src/dart/element/type.dart';
-import 'package:analyzer/src/generated/engine.dart'
-    show AnalysisContext, AnalysisEngine;
+import 'package:analyzer/src/generated/engine.dart' show AnalysisContext;
 import 'package:analyzer/src/generated/java_engine.dart';
 import 'package:analyzer/src/generated/source.dart';
 import 'package:analyzer/src/generated/utilities_dart.dart';
@@ -60,7 +59,7 @@ class ConstructorMember extends ExecutableMember implements ConstructorElement {
       from(baseElement.redirectedConstructor, definingType);
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitConstructorElement(this);
 
   @override
@@ -175,19 +174,6 @@ abstract class ExecutableMember extends Member implements ExecutableElement {
   bool get isSynchronous => baseElement.isSynchronous;
 
   @override
-  List<LabelElement> get labels => baseElement.labels;
-
-  @override
-  List<LocalVariableElement> get localVariables {
-    //
-    // Elements within this element should have type parameters substituted,
-    // just like this element.
-    //
-    throw new UnsupportedError('localVariables');
-//    return getBaseElement().getLocalVariables();
-  }
-
-  @override
   List<ParameterElement> get parameters => type.parameters;
 
   @override
@@ -208,8 +194,6 @@ abstract class ExecutableMember extends Member implements ExecutableElement {
     // below so that we can safely invoke them.
     super.visitChildren(visitor);
     safelyVisitChildren(baseElement.functions, visitor);
-    safelyVisitChildren(labels, visitor);
-    safelyVisitChildren(baseElement.localVariables, visitor);
     safelyVisitChildren(parameters, visitor);
   }
 }
@@ -244,7 +228,7 @@ class FieldFormalParameterMember extends ParameterMember
   bool get isCovariant => baseElement.isCovariant;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitFieldFormalParameterElement(this);
 }
 
@@ -284,8 +268,7 @@ class FieldMember extends VariableMember implements FieldElement {
       PropertyAccessorMember.from(baseElement.setter, definingType);
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitFieldElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitFieldElement(this);
 
   @override
   VariableDeclaration computeNode() => baseElement.computeNode();
@@ -301,46 +284,13 @@ class FieldMember extends VariableMember implements FieldElement {
    * was created.
    */
   static FieldElement from(FieldElement field, ParameterizedType definingType) {
-    if (!_isChangedByTypeSubstitution(field, definingType)) {
+    if (field == null || definingType.typeArguments.isEmpty) {
       return field;
     }
     // TODO(brianwilkerson) Consider caching the substituted type in the
     // instance. It would use more memory but speed up some operations.
     // We need to see how often the type is being re-computed.
     return new FieldMember(field, definingType);
-  }
-
-  /**
-   * Determine whether the given [field]'s type is changed when type parameters
-   * from the [definingType]'s declaration are replaced with the actual type
-   * arguments from the defining type.
-   */
-  static bool _isChangedByTypeSubstitution(
-      FieldElement field, ParameterizedType definingType) {
-    List<DartType> argumentTypes = definingType.typeArguments;
-    if (field != null && argumentTypes.length != 0) {
-      DartType baseType = field.type;
-      List<DartType> parameterTypes =
-          TypeParameterTypeImpl.getTypes(definingType.typeParameters);
-      if (baseType != null) {
-        DartType substitutedType =
-            baseType.substitute2(argumentTypes, parameterTypes);
-        if (baseType != substitutedType) {
-          return true;
-        }
-      }
-      // If the field has a propagated type, then we need to check whether the
-      // propagated type needs substitution.
-      DartType basePropagatedType = field.propagatedType;
-      if (basePropagatedType != null) {
-        DartType substitutedPropagatedType =
-            basePropagatedType.substitute2(argumentTypes, parameterTypes);
-        if (basePropagatedType != substitutedPropagatedType) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 }
 
@@ -376,8 +326,7 @@ class FunctionMember extends ExecutableMember implements FunctionElement {
   SourceRange get visibleRange => baseElement.visibleRange;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitFunctionElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitFunctionElement(this);
 
   @override
   FunctionDeclaration computeNode() => baseElement.computeNode();
@@ -519,8 +468,7 @@ abstract class Member implements Element {
   AstNode computeNode() => _baseElement.computeNode();
 
   @override
-  Element/*=E*/ getAncestor/*<E extends Element >*/(
-          Predicate<Element> predicate) =>
+  E getAncestor<E extends Element>(Predicate<Element> predicate) =>
       baseElement.getAncestor(predicate);
 
   @override
@@ -596,8 +544,7 @@ class MethodMember extends ExecutableMember implements MethodElement {
   ClassElement get enclosingElement => baseElement.enclosingElement;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitMethodElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitMethodElement(this);
 
   @override
   MethodDeclaration computeNode() => baseElement.computeNode();
@@ -615,13 +562,46 @@ class MethodMember extends ExecutableMember implements MethodElement {
     buffer.write(baseElement.enclosingElement.displayName);
     buffer.write(".");
     buffer.write(baseElement.displayName);
+    int typeParameterCount = typeParameters.length;
+    if (typeParameterCount > 0) {
+      buffer.write('<');
+      for (int i = 0; i < typeParameterCount; i++) {
+        if (i > 0) {
+          buffer.write(", ");
+        }
+        (typeParameters[i] as TypeParameterElementImpl).appendTo(buffer);
+      }
+      buffer.write('>');
+    }
     buffer.write("(");
+    String closing = null;
+    ParameterKind kind = ParameterKind.REQUIRED;
     int parameterCount = parameters.length;
     for (int i = 0; i < parameterCount; i++) {
       if (i > 0) {
         buffer.write(", ");
       }
-      buffer.write(parameters[i]);
+      ParameterElement parameter = parameters[i];
+      ParameterKind parameterKind = parameter.parameterKind;
+      if (parameterKind != kind) {
+        if (closing != null) {
+          buffer.write(closing);
+        }
+        if (parameterKind == ParameterKind.POSITIONAL) {
+          buffer.write("[");
+          closing = "]";
+        } else if (parameterKind == ParameterKind.NAMED) {
+          buffer.write("{");
+          closing = "}";
+        } else {
+          closing = null;
+        }
+      }
+      kind = parameterKind;
+      parameter.appendToWithoutDelimiters(buffer);
+    }
+    if (closing != null) {
+      buffer.write(closing);
     }
     buffer.write(")");
     if (type != null) {
@@ -704,28 +684,25 @@ class ParameterMember extends VariableMember
   SourceRange get visibleRange => baseElement.visibleRange;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitParameterElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitParameterElement(this);
 
   @override
   FormalParameter computeNode() => baseElement.computeNode();
 
   @override
-  Element/*=E*/ getAncestor/*<E extends Element>*/(
-      Predicate<Element> predicate) {
+  E getAncestor<E extends Element>(Predicate<Element> predicate) {
     Element element = baseElement.getAncestor(predicate);
     ParameterizedType definingType = this.definingType;
     if (definingType is InterfaceType) {
       if (element is ConstructorElement) {
-        return ConstructorMember.from(element, definingType) as Element/*=E*/;
+        return ConstructorMember.from(element, definingType) as E;
       } else if (element is MethodElement) {
-        return MethodMember.from(element, definingType) as Element/*=E*/;
+        return MethodMember.from(element, definingType) as E;
       } else if (element is PropertyAccessorElement) {
-        return PropertyAccessorMember.from(element, definingType)
-            as Element/*=E*/;
+        return PropertyAccessorMember.from(element, definingType) as E;
       }
     }
-    return element as Element/*=E*/;
+    return element as E;
   }
 
   @override
@@ -801,7 +778,7 @@ class PropertyAccessorMember extends ExecutableMember
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitPropertyAccessorElement(this);
 
   @override
@@ -843,52 +820,13 @@ class PropertyAccessorMember extends ExecutableMember
    */
   static PropertyAccessorElement from(
       PropertyAccessorElement accessor, InterfaceType definingType) {
-    if (!_isChangedByTypeSubstitution(accessor, definingType)) {
+    if (accessor == null || definingType.typeArguments.isEmpty) {
       return accessor;
     }
     // TODO(brianwilkerson) Consider caching the substituted type in the
     // instance. It would use more memory but speed up some operations.
     // We need to see how often the type is being re-computed.
     return new PropertyAccessorMember(accessor, definingType);
-  }
-
-  /**
-   * Determine whether the given property [accessor]'s type is changed when type
-   * parameters from the defining type's declaration are replaced with the
-   * actual type arguments from the [definingType].
-   */
-  static bool _isChangedByTypeSubstitution(
-      PropertyAccessorElement accessor, InterfaceType definingType) {
-    List<DartType> argumentTypes = definingType.typeArguments;
-    if (accessor != null && argumentTypes.length != 0) {
-      FunctionType baseType = accessor.type;
-      if (baseType == null) {
-        AnalysisEngine.instance.logger.logInformation(
-            'Type of $accessor is null in PropertyAccessorMember._isChangedByTypeSubstitution');
-        return false;
-      }
-      List<DartType> parameterTypes = definingType.element.type.typeArguments;
-      FunctionType substitutedType =
-          baseType.substitute2(argumentTypes, parameterTypes);
-      if (baseType != substitutedType) {
-        return true;
-      }
-      // If this property accessor is based on a field, that field might have a
-      // propagated type. In which case we need to check whether the propagated
-      // type of the field needs substitution.
-      PropertyInducingElement field = accessor.variable;
-      if (!field.isSynthetic) {
-        DartType baseFieldType = field.propagatedType;
-        if (baseFieldType != null) {
-          DartType substitutedFieldType =
-              baseFieldType.substitute2(argumentTypes, parameterTypes);
-          if (baseFieldType != substitutedFieldType) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
   }
 }
 
@@ -934,7 +872,11 @@ class TypeParameterMember extends Member implements TypeParameterElement {
   TypeParameterType get type => _type;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  bool operator ==(Object other) =>
+      other is TypeParameterMember && baseElement == other.baseElement;
+
+  @override
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitTypeParameterElement(this);
 
   /**

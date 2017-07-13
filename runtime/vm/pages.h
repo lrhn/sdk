@@ -60,8 +60,12 @@ class HeapPage {
   }
 
   // These return NULL on OOM.
-  static HeapPage* Initialize(VirtualMemory* memory, PageType type);
-  static HeapPage* Allocate(intptr_t size_in_words, PageType type);
+  static HeapPage* Initialize(VirtualMemory* memory,
+                              PageType type,
+                              const char* name);
+  static HeapPage* Allocate(intptr_t size_in_words,
+                            PageType type,
+                            const char* name);
 
   // Deallocate the virtual memory backing this page. The page pointer to this
   // page becomes immediately inaccessible.
@@ -320,14 +324,19 @@ class PageSpace {
 
   void SetupImagePage(void* pointer, uword size, bool is_executable);
 
+  // Return any bump allocation block to the freelist.
+  void AbandonBumpAllocation();
+
  private:
   // Ids for time and data records in Heap::GCStats.
   enum {
     // Time
-    kMarkObjects = 0,
-    kResetFreeLists = 1,
-    kSweepPages = 2,
-    kSweepLargePages = 3,
+    kConcurrentSweep = 0,
+    kSafePoint = 1,
+    kMarkObjects = 2,
+    kResetFreeLists = 3,
+    kSweepPages = 4,
+    kSweepLargePages = 5,
     // Data
     kGarbageRatio = 0,
     kGCTimeFraction = 1,
@@ -351,8 +360,6 @@ class PageSpace {
                                     bool is_locked);
   // Makes bump block walkable; do not call concurrently with mutator.
   void MakeIterable() const;
-  // Return any bump allocation block to the freelist.
-  void AbandonBumpAllocation();
   HeapPage* AllocatePage(HeapPage::PageType type);
   void FreePage(HeapPage* page, HeapPage* previous_page);
   HeapPage* AllocateLargePage(intptr_t size, HeapPage::PageType type);

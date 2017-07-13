@@ -2,14 +2,29 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
+import '../closure.dart' show ClosureDataLookup;
+import '../constants/constant_system.dart';
 import '../common/codegen.dart' show CodegenRegistry;
+import '../common_elements.dart';
 import '../compiler.dart';
+import '../deferred_load.dart';
+import '../diagnostics/diagnostic_listener.dart';
 import '../elements/elements.dart';
-import '../elements/entities.dart' show Entity, Local;
-import '../elements/resolution_types.dart';
-import '../js_backend/js_backend.dart';
+import '../elements/entities.dart' show Entity, Local, MemberEntity;
+import '../elements/jumps.dart';
+import '../elements/types.dart';
+import '../js_backend/backend.dart';
+import '../js_backend/backend_usage.dart';
+import '../js_backend/constant_handler_javascript.dart';
+import '../js_backend/namer.dart';
+import '../js_backend/native_data.dart';
+import '../js_backend/js_interop_analysis.dart';
+import '../js_backend/interceptor_data.dart';
+import '../js_backend/mirrors_data.dart';
+import '../js_backend/runtime_types.dart';
+import '../js_emitter/code_emitter_task.dart';
+import '../options.dart';
 import '../resolution/tree_elements.dart';
-import '../tree/tree.dart' as ast;
 import '../types/types.dart';
 import '../world.dart' show ClosedWorld;
 import 'jump_handler.dart';
@@ -27,7 +42,7 @@ abstract class GraphBuilder {
 
   // TODO(het): remove this
   /// A reference to the compiler.
-  Compiler compiler;
+  Compiler get compiler;
 
   /// True if the builder is processing nodes inside a try statement. This is
   /// important for generating control flow out of a try block like returns or
@@ -46,8 +61,45 @@ abstract class GraphBuilder {
 
   CommonMasks get commonMasks => closedWorld.commonMasks;
 
+  DiagnosticReporter get reporter => backend.reporter;
+
+  CompilerOptions get options => compiler.options;
+
+  CommonElements get commonElements => closedWorld.commonElements;
+
+  CodeEmitterTask get emitter => backend.emitter;
+
   GlobalTypeInferenceResults get globalInferenceResults =>
       compiler.globalInference.results;
+
+  ClosureDataLookup get closureDataLookup =>
+      compiler.backendStrategy.closureDataLookup;
+
+  NativeData get nativeData => closedWorld.nativeData;
+
+  InterceptorData get interceptorData => closedWorld.interceptorData;
+
+  BackendUsage get backendUsage => closedWorld.backendUsage;
+
+  Namer get namer => backend.namer;
+
+  RuntimeTypesNeed get rtiNeed => closedWorld.rtiNeed;
+
+  JavaScriptConstantCompiler get constants => backend.constants;
+
+  ConstantSystem get constantSystem => constants.constantSystem;
+
+  RuntimeTypesEncoder get rtiEncoder => backend.rtiEncoder;
+
+  FunctionInlineCache get inlineCache => backend.inlineCache;
+
+  MirrorsData get mirrorsData => backend.mirrorsData;
+
+  JsInteropAnalysis get jsInteropAnalysis => backend.jsInteropAnalysis;
+
+  DeferredLoadTask get deferredLoadTask => compiler.deferredLoadTask;
+
+  DartTypes get types => closedWorld.dartTypes;
 
   /// Used to track the locals while building the graph.
   LocalsHandler localsHandler;
@@ -115,8 +167,7 @@ abstract class GraphBuilder {
 
   HParameterValue lastAddedParameter;
 
-  Map<ParameterElement, HInstruction> parameters =
-      <ParameterElement, HInstruction>{};
+  Map<Local, HInstruction> parameters = <Local, HInstruction>{};
 
   HBasicBlock addNewBlock() {
     HBasicBlock block = graph.addNewBlock();
@@ -189,18 +240,10 @@ abstract class GraphBuilder {
     return new HSubExpressionBlockInformation(expression);
   }
 
-  HInstruction buildFunctionType(ResolutionFunctionType type) {
-    type.accept(new ReifiedTypeRepresentationBuilder(closedWorld), this);
-    return pop();
-  }
-
-  HInstruction buildFunctionTypeConversion(
-      HInstruction original, ResolutionDartType type, int kind);
-
   /// Returns the current source element.
   ///
   /// The returned element is a declaration element.
-  Element get sourceElement;
+  MemberEntity get sourceElement;
 
   // TODO(karlklose): this is needed to avoid a bug where the resolved type is
   // not stored on a type annotation in the closure translator. Remove when
@@ -210,9 +253,9 @@ abstract class GraphBuilder {
         localsHandler.directLocals[local] != null;
   }
 
-  HInstruction callSetRuntimeTypeInfoWithTypeArguments(ResolutionDartType type,
+  HInstruction callSetRuntimeTypeInfoWithTypeArguments(InterfaceType type,
       List<HInstruction> rtiInputs, HInstruction newObject) {
-    if (!backend.classNeedsRti(type.element)) {
+    if (!rtiNeed.classNeedsRti(type.element)) {
       return newObject;
     }
 
@@ -239,108 +282,26 @@ abstract class GraphBuilder {
       HInstruction typeInfo, HInstruction newObject);
 
   /// The element for which this SSA builder is being used.
-  Element get targetElement;
+  MemberEntity get targetElement;
   TypeBuilder get typeBuilder;
-}
 
-class ReifiedTypeRepresentationBuilder
-    implements DartTypeVisitor<dynamic, GraphBuilder> {
-  final ClosedWorld closedWorld;
-
-  ReifiedTypeRepresentationBuilder(this.closedWorld);
-
-  void visit(ResolutionDartType type, GraphBuilder builder) =>
-      type.accept(this, builder);
-
-  void visitVoidType(ResolutionVoidType type, GraphBuilder builder) {
-    ClassElement cls = builder.backend.helpers.VoidRuntimeType;
-    builder.push(new HVoidType(type, new TypeMask.exact(cls, closedWorld)));
-  }
-
-  void visitTypeVariableType(
-      ResolutionTypeVariableType type, GraphBuilder builder) {
-    ClassElement cls = builder.backend.helpers.RuntimeType;
-    TypeMask instructionType = new TypeMask.subclass(cls, closedWorld);
-
-    // TODO(floitsch): this hack maps type variables of generic function
-    // typedefs to dynamic. For example: `typedef F = Function<T>(T)`.
-    if (type is MethodTypeVariableType) {
-      visitDynamicType(const ResolutionDynamicType(), builder);
-      return;
+  /// Helper to implement JS_GET_FLAG.
+  ///
+  /// The concrete SSA graph builder will extract a flag parameter from the
+  /// JS_GET_FLAG call and then push a boolean result onto the stack. This
+  /// function provides the boolean value corresponding to the given [flagName].
+  /// If [flagName] is not recognized, this function returns `null` and the
+  /// concrete SSA builder reports an error.
+  bool getFlagValue(String flagName) {
+    switch (flagName) {
+      case 'MUST_RETAIN_METADATA':
+        return mirrorsData.mustRetainMetadata;
+      case 'USE_CONTENT_SECURITY_POLICY':
+        return options.useContentSecurityPolicy;
+      case 'IS_FULL_EMITTER':
+        return !USE_LAZY_EMITTER && !options.useStartupEmitter;
+      default:
+        return null;
     }
-
-    if (!builder.sourceElement.enclosingElement.isClosure &&
-        builder.sourceElement.isInstanceMember) {
-      HInstruction receiver = builder.localsHandler.readThis();
-      builder.push(new HReadTypeVariable(type, receiver, instructionType));
-    } else {
-      builder.push(new HReadTypeVariable.noReceiver(
-          type,
-          builder.typeBuilder
-              .addTypeVariableReference(type, builder.sourceElement),
-          instructionType));
-    }
-  }
-
-  void visitFunctionType(ResolutionFunctionType type, GraphBuilder builder) {
-    type.returnType.accept(this, builder);
-    HInstruction returnType = builder.pop();
-    List<HInstruction> inputs = <HInstruction>[returnType];
-
-    for (ResolutionDartType parameter in type.parameterTypes) {
-      parameter.accept(this, builder);
-      inputs.add(builder.pop());
-    }
-
-    for (ResolutionDartType parameter in type.optionalParameterTypes) {
-      parameter.accept(this, builder);
-      inputs.add(builder.pop());
-    }
-
-    List<ResolutionDartType> namedParameterTypes = type.namedParameterTypes;
-    List<String> names = type.namedParameters;
-    for (int index = 0; index < names.length; index++) {
-      ast.DartString dartString = new ast.DartString.literal(names[index]);
-      inputs.add(
-          builder.graph.addConstantString(dartString, builder.closedWorld));
-      namedParameterTypes[index].accept(this, builder);
-      inputs.add(builder.pop());
-    }
-
-    ClassElement cls = builder.backend.helpers.RuntimeFunctionType;
-    builder.push(
-        new HFunctionType(inputs, type, new TypeMask.exact(cls, closedWorld)));
-  }
-
-  void visitMalformedType(MalformedType type, GraphBuilder builder) {
-    visitDynamicType(const ResolutionDynamicType(), builder);
-  }
-
-  void visitInterfaceType(ResolutionInterfaceType type, GraphBuilder builder) {
-    List<HInstruction> inputs = <HInstruction>[];
-    for (ResolutionDartType typeArgument in type.typeArguments) {
-      typeArgument.accept(this, builder);
-      inputs.add(builder.pop());
-    }
-    ClassElement cls;
-    if (type.typeArguments.isEmpty) {
-      cls = builder.backend.helpers.RuntimeTypePlain;
-    } else {
-      cls = builder.backend.helpers.RuntimeTypeGeneric;
-    }
-    builder.push(
-        new HInterfaceType(inputs, type, new TypeMask.exact(cls, closedWorld)));
-  }
-
-  void visitTypedefType(ResolutionTypedefType type, GraphBuilder builder) {
-    ResolutionDartType unaliased = type.unaliased;
-    if (unaliased is ResolutionTypedefType) throw 'unable to unalias $type';
-    unaliased.accept(this, builder);
-  }
-
-  void visitDynamicType(ResolutionDynamicType type, GraphBuilder builder) {
-    JavaScriptBackend backend = builder.compiler.backend;
-    ClassElement cls = backend.helpers.DynamicRuntimeType;
-    builder.push(new HDynamicType(type, new TypeMask.exact(cls, closedWorld)));
   }
 }

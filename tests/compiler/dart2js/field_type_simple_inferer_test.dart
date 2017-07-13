@@ -15,7 +15,7 @@ void compileAndFind(String code, String className, String memberName,
   Uri uri = new Uri(scheme: 'source');
   var compiler = compilerFor(code, uri, disableInlining: disableInlining);
   asyncTest(() => compiler.run(uri).then((_) {
-        var cls = findElement(compiler, className);
+        dynamic cls = findElement(compiler, className);
         var member = cls.lookupMember(memberName);
         check(compiler, member);
       }));
@@ -470,6 +470,63 @@ const String TEST_27 = r"""
   }
 """;
 
+const String TEST_28 = r"""
+  class A {
+    var f1;
+    var f2;
+    A(x) {
+      this.f1 = x;
+      if (x == 0) return;
+      this.f2 = x;
+    }
+  }
+  main() {
+    new A(0);
+    new A(1);
+  }
+""";
+
+const String TEST_29 = r"""
+  class A {
+    var f1;
+    var f2;
+    A(x) {
+      this.f1 = x;
+      if (x == 0) {
+      } else {
+        return;
+      }
+      this.f2 = x;
+    }
+  }
+  main() {
+    new A(0);
+    new A(1);
+  }
+""";
+
+const String TEST_30 = r"""
+  class A {
+    var f1;
+    var f2;
+    var f3;
+    A(x) {
+      this.f1 = x;
+      if (x == 0) {
+        this.f2 = 1;
+      } else {
+        this.f2 = x;
+        return;
+      }
+      this.f3 = x;
+    }
+  }
+  main() {
+    new A(0);
+    new A(1);
+  }
+""";
+
 typedef TypeMask TestCallback(ClosedWorld closedWorld);
 
 void doTest(
@@ -480,8 +537,8 @@ void doTest(
       var closedWorld = inferrer.closedWorld;
       TypeMask type = f(closedWorld);
       TypeMask inferredType =
-          simplify(inferrer.getTypeOfElement(field), closedWorld);
-      Expect.equals(type, inferredType, test);
+          simplify(inferrer.getTypeOfMember(field), closedWorld);
+      Expect.equals(type, inferredType, '$name of:\n$test');
     });
   });
 }
@@ -550,7 +607,7 @@ void test() {
   });
   runTest(TEST_15, <String, TestCallback>{
     'f': (closedWorld) {
-      ClassElement cls = closedWorld.backendClasses.indexableClass;
+      ClassElement cls = closedWorld.commonElements.jsIndexableClass;
       return new TypeMask.nonNullSubtype(cls, closedWorld);
     }
   });
@@ -608,6 +665,19 @@ void test() {
   runTest(TEST_27, <String, TestCallback>{
     'f1': (closedWorld) => closedWorld.commonMasks.uint31Type,
     'f2': (closedWorld) => closedWorld.commonMasks.uint31Type.nullable()
+  });
+  runTest(TEST_28, <String, TestCallback>{
+    'f1': (closedWorld) => closedWorld.commonMasks.uint31Type,
+    'f2': (closedWorld) => closedWorld.commonMasks.uint31Type.nullable()
+  });
+  runTest(TEST_29, <String, TestCallback>{
+    'f1': (closedWorld) => closedWorld.commonMasks.uint31Type,
+    'f2': (closedWorld) => closedWorld.commonMasks.uint31Type.nullable()
+  });
+  runTest(TEST_30, <String, TestCallback>{
+    'f1': (closedWorld) => closedWorld.commonMasks.uint31Type,
+    'f2': (closedWorld) => closedWorld.commonMasks.uint31Type,
+    'f3': (closedWorld) => closedWorld.commonMasks.uint31Type.nullable()
   });
 }
 

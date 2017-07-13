@@ -9,7 +9,7 @@ import "package:expect/expect.dart";
 
 class A<T> {
   var map;
-  // Usage of type variables in the intializer makes the SSA builder
+  // Usage of type variables in the initializer makes the SSA builder
   // want to access [:this:]. And because the initializers of A are
   // inlined in the constructor of B, we have to make sure the
   // [:this:] in the A constructor has a corresponding
@@ -17,8 +17,7 @@ class A<T> {
   A() : map = new Map<T, T>();
 }
 
-class B<T> extends A<T> {
-}
+class B<T> extends A<T> {}
 
 main() {
   Expect.isTrue(new B<int>().map is Map<int, int>);

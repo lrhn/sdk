@@ -56,22 +56,22 @@ main() {
         compiler.resolutionWorldBuilder.closedWorldForTesting;
     Expect.isFalse(compiler.compilationFailed, 'Unsuccessful compilation');
     JavaScriptBackend backend = compiler.backend;
-    Expect.isNotNull(backend.annotations.expectNoInlineClass,
+    Expect.isNotNull(closedWorld.commonElements.expectNoInlineClass,
         'NoInlineClass is unresolved.');
-    Expect.isNotNull(backend.annotations.expectTrustTypeAnnotationsClass,
+    Expect.isNotNull(closedWorld.commonElements.expectTrustTypeAnnotationsClass,
         'TrustTypeAnnotations is unresolved.');
-    Expect.isNotNull(backend.annotations.expectAssumeDynamicClass,
+    Expect.isNotNull(closedWorld.commonElements.expectAssumeDynamicClass,
         'AssumeDynamicClass is unresolved.');
 
-    void testTypeMatch(FunctionElement function, TypeMask expectedParameterType,
+    void testTypeMatch(MethodElement function, TypeMask expectedParameterType,
         TypeMask expectedReturnType, TypesInferrer inferrer) {
       for (ParameterElement parameter in function.parameters) {
-        TypeMask type = inferrer.getTypeOfElement(parameter);
+        TypeMask type = inferrer.getTypeOfParameter(parameter);
         Expect.equals(
             expectedParameterType, simplify(type, closedWorld), "$parameter");
       }
       if (expectedReturnType != null) {
-        TypeMask type = inferrer.getReturnTypeOfElement(function);
+        TypeMask type = inferrer.getReturnTypeOfMember(function);
         Expect.equals(
             expectedReturnType, simplify(type, closedWorld), "$function");
       }
@@ -83,17 +83,19 @@ main() {
         TypeMask expectedParameterType: null,
         TypeMask expectedReturnType: null,
         bool expectAssumeDynamic: false}) {
-      Element method = compiler.mainApp.find(name);
+      LibraryElement mainApp =
+          compiler.frontendStrategy.elementEnvironment.mainLibrary;
+      MethodElement method = mainApp.find(name);
       Expect.isNotNull(method);
-      Expect.equals(expectNoInline, backend.annotations.noInline(method),
+      Expect.equals(expectNoInline, backend.optimizerHints.noInline(method),
           "Unexpected annotation of @NoInline on '$method'.");
       Expect.equals(
           expectTrustTypeAnnotations,
-          backend.annotations.trustTypeAnnotations(method),
+          backend.optimizerHints.trustTypeAnnotations(method),
           "Unexpected annotation of @TrustTypeAnnotations on '$method'.");
       Expect.equals(
           expectAssumeDynamic,
-          backend.annotations.assumeDynamic(method),
+          backend.optimizerHints.assumeDynamic(method),
           "Unexpected annotation of @AssumeDynamic on '$method'.");
       TypesInferrer inferrer = compiler.globalInference.typesInferrerInternal;
       if (expectTrustTypeAnnotations && expectedParameterType != null) {

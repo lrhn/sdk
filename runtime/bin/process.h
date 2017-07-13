@@ -12,7 +12,7 @@
 #include "bin/lockers.h"
 #include "bin/thread.h"
 #include "platform/globals.h"
-#if !defined(TARGET_OS_WINDOWS)
+#if !defined(HOST_OS_WINDOWS)
 #include "platform/signal_blocker.h"
 #endif
 #include "platform/utils.h"
@@ -73,7 +73,8 @@ enum ProcessSignals {
   kSigprof = 27,
   kSigwinch = 28,
   kSigpoll = 29,
-  kSigsys = 31
+  kSigsys = 31,
+  kLastSignal = kSigsys,
 };
 
 
@@ -138,11 +139,19 @@ class Process {
   static intptr_t CurrentProcessId();
 
   static intptr_t SetSignalHandler(intptr_t signal);
-  static void ClearSignalHandler(intptr_t signal);
+  // When there is a current Isolate and the 'port' argument is
+  // Dart_GetMainPortId(), this clears the signal handler for the current
+  // isolate. When 'port' is ILLEGAL_PORT, this clears all signal handlers for
+  // 'signal' for all Isolates.
+  static void ClearSignalHandler(intptr_t signal, Dart_Port port);
+  static void ClearAllSignalHandlers();
 
   static Dart_Handle GetProcessIdNativeField(Dart_Handle process,
                                              intptr_t* pid);
   static Dart_Handle SetProcessIdNativeField(Dart_Handle process, intptr_t pid);
+
+  static int64_t CurrentRSS();
+  static int64_t MaxRSS();
 
  private:
   static int global_exit_code_;
@@ -322,8 +331,8 @@ class BufferListBase {
   DISALLOW_COPY_AND_ASSIGN(BufferListBase);
 };
 
-#if defined(TARGET_OS_ANDROID) || defined(TARGET_OS_FUCHSIA) ||                \
-    defined(TARGET_OS_LINUX) || defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_ANDROID) || defined(HOST_OS_FUCHSIA) ||                    \
+    defined(HOST_OS_LINUX) || defined(HOST_OS_MACOS)
 class BufferList : public BufferListBase {
  public:
   BufferList() {}
@@ -340,13 +349,13 @@ class BufferList : public BufferListBase {
       ASSERT(free_size() > 0);
       ASSERT(free_size() <= kBufferSize);
       intptr_t block_size = dart::Utils::Minimum(free_size(), available);
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
       intptr_t bytes = NO_RETRY_EXPECTED(
           read(fd, reinterpret_cast<void*>(FreeSpaceAddress()), block_size));
 #else
       intptr_t bytes = TEMP_FAILURE_RETRY(
           read(fd, reinterpret_cast<void*>(FreeSpaceAddress()), block_size));
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)
       if (bytes < 0) {
         return false;
       }
@@ -360,7 +369,7 @@ class BufferList : public BufferListBase {
  private:
   DISALLOW_COPY_AND_ASSIGN(BufferList);
 };
-#endif  // defined(TARGET_OS_ANDROID) ...
+#endif  // defined(HOST_OS_ANDROID) ...
 
 }  // namespace bin
 }  // namespace dart

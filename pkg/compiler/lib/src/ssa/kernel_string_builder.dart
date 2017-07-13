@@ -4,17 +4,13 @@
 
 import 'package:kernel/ast.dart' as ir;
 
-import '../compiler.dart';
-
+import '../common.dart';
 import 'builder_kernel.dart';
-import 'kernel_ast_adapter.dart';
 import 'nodes.dart';
 
 /// Visits and concatenates the expressions in a string concatenation.
 class KernelStringBuilder extends ir.Visitor {
-  final KernelSsaBuilder builder;
-  Compiler get compiler => builder.compiler;
-  KernelAstAdapter get astAdapter => builder.astAdapter;
+  final KernelSsaGraphBuilder builder;
 
   /// The string value generated so far.
   HInstruction result = null;
@@ -23,8 +19,8 @@ class KernelStringBuilder extends ir.Visitor {
 
   @override
   void defaultNode(ir.Node node) {
-    compiler.reporter
-        .internalError(astAdapter.getNode(node), 'Unexpected node.');
+    throw new SpannableAssertionFailure(
+        CURRENT_ELEMENT_SPANNABLE, 'Unexpected node: $node');
   }
 
   @override

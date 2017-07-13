@@ -2,19 +2,16 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library services.completion.contributor.dart.local_lib;
-
 import 'dart:async';
 
 import 'package:analysis_server/src/provisional/completion/dart/completion_dart.dart';
 import 'package:analysis_server/src/services/completion/dart/completion_manager.dart';
-import 'package:analysis_server/src/services/completion/dart/optype.dart';
 import 'package:analysis_server/src/services/completion/dart/suggestion_builder.dart'
     show createSuggestion, ElementSuggestionBuilder;
-import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/dart/element/visitor.dart';
+import 'package:analyzer_plugin/src/utilities/completion/optype.dart';
 
 import '../../../protocol_server.dart'
     show CompletionSuggestion, CompletionSuggestionKind;
@@ -174,20 +171,11 @@ class LocalLibraryContributor extends DartCompletionContributor {
       return EMPTY_LIST;
     }
 
-    List<CompilationUnitElement> libraryUnits = await request.resolveUnits();
+    List<CompilationUnitElement> libraryUnits =
+        request.result.unit.element.library.units;
     if (libraryUnits == null) {
       return EMPTY_LIST;
     }
-
-    AstNode node = request.target.containingNode;
-
-    // If the target is in an expression
-    // then resolve the outermost/entire expression
-    await request.resolveContainingExpression(node);
-
-    // Discard any cached target information
-    // because it may have changed as a result of the resolution
-    node = request.target.containingNode;
 
     OpType optype = (request as DartCompletionRequestImpl).opType;
     LibraryElementSuggestionBuilder visitor =

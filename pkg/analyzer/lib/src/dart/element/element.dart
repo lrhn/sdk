@@ -12,7 +12,6 @@ import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
-import 'package:analyzer/dart/element/visitor.dart';
 import 'package:analyzer/src/dart/ast/utilities.dart';
 import 'package:analyzer/src/dart/constant/value.dart';
 import 'package:analyzer/src/dart/element/handle.dart';
@@ -116,8 +115,7 @@ abstract class AbstractClassElementImpl extends ElementImpl
   ElementKind get kind => ElementKind.CLASS;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitClassElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitClassElement(this);
 
   @override
   NamedCompilationUnitMember computeNode() {
@@ -259,7 +257,7 @@ abstract class AbstractClassElementImpl extends ElementImpl
    * Return the first element from the given [iterable], or `null` if the
    * iterable is empty.
    */
-  Object/*=E*/ _first/*<E>*/(Iterable/*<E>*/ iterable) {
+  E _first<E>(Iterable<E> iterable) {
     if (iterable.isEmpty) {
       return null;
     }
@@ -411,11 +409,6 @@ class ClassElementImpl extends AbstractClassElementImpl
    * The unlinked representation of the class in the summary.
    */
   final UnlinkedClass _unlinkedClass;
-
-  /**
-   * A list containing all of the type parameters defined for this class.
-   */
-  List<TypeParameterElement> _typeParameters = TypeParameterElement.EMPTY_LIST;
 
   /**
    * The superclass of the class, or `null` for [Object].
@@ -729,7 +722,7 @@ class ClassElementImpl extends AbstractClassElementImpl
     if (_unlinkedClass != null && _interfaces == null) {
       ResynthesizerContext context = enclosingUnit.resynthesizerContext;
       _interfaces = _unlinkedClass.interfaces
-          .map((EntityRef t) => context.resolveTypeRef(t, this))
+          .map((EntityRef t) => context.resolveTypeRef(this, t))
           .where(_isClassInterfaceType)
           .toList(growable: false);
     }
@@ -836,7 +829,7 @@ class ClassElementImpl extends AbstractClassElementImpl
     if (_unlinkedClass != null && _mixins == null) {
       ResynthesizerContext context = enclosingUnit.resynthesizerContext;
       _mixins = _unlinkedClass.mixins
-          .map((EntityRef t) => context.resolveTypeRef(t, this))
+          .map((EntityRef t) => context.resolveTypeRef(this, t))
           .where(_isClassInterfaceType)
           .toList(growable: false);
     }
@@ -870,7 +863,7 @@ class ClassElementImpl extends AbstractClassElementImpl
     if (_unlinkedClass != null && _supertype == null) {
       if (_unlinkedClass.supertype != null) {
         DartType type = enclosingUnit.resynthesizerContext
-            .resolveTypeRef(_unlinkedClass.supertype, this);
+            .resolveTypeRef(this, _unlinkedClass.supertype);
         if (_isClassInterfaceType(type)) {
           _supertype = type;
         } else {
@@ -900,17 +893,6 @@ class ClassElementImpl extends AbstractClassElementImpl
     return _type;
   }
 
-  @override
-  TypeParameterizedElementMixin get typeParameterContext => this;
-
-  @override
-  List<TypeParameterElement> get typeParameters {
-    if (_unlinkedClass != null) {
-      return super.typeParameters;
-    }
-    return _typeParameters;
-  }
-
   /**
    * Set the type parameters defined for this class to the given
    * [typeParameters].
@@ -920,12 +902,12 @@ class ClassElementImpl extends AbstractClassElementImpl
     for (TypeParameterElement typeParameter in typeParameters) {
       (typeParameter as TypeParameterElementImpl).enclosingElement = this;
     }
-    this._typeParameters = typeParameters;
+    this._typeParameterElements = typeParameters;
   }
 
   @override
   List<UnlinkedTypeParam> get unlinkedTypeParams =>
-      _unlinkedClass.typeParameters;
+      _unlinkedClass?.typeParameters;
 
   @override
   ConstructorElement get unnamedConstructor {
@@ -1353,11 +1335,6 @@ class CompilationUnitElementImpl extends UriReferencedElementImpl
   List<TopLevelVariableElement> _variables;
 
   /**
-   * A map from offsets to elements of this unit at these offsets.
-   */
-  final Map<int, Element> _offsetToElementMap = new HashMap<int, Element>();
-
-  /**
    * Resynthesized explicit top-level property accessors.
    */
   UnitExplicitTopLevelAccessors _explicitTopLevelAccessors;
@@ -1500,9 +1477,13 @@ class CompilationUnitElementImpl extends UriReferencedElementImpl
   @override
   List<FunctionTypeAliasElement> get functionTypeAliases {
     if (_unlinkedUnit != null) {
-      _typeAliases ??= _unlinkedUnit.typedefs
-          .map((t) => new FunctionTypeAliasElementImpl.forSerialized(t, this))
-          .toList(growable: false);
+      _typeAliases ??= _unlinkedUnit.typedefs.map((t) {
+        if (t.style == TypedefStyle.functionType) {
+          return new FunctionTypeAliasElementImpl.forSerialized(t, this);
+        } else if (t.style == TypedefStyle.genericFunctionType) {
+          return new GenericTypeAliasElementImpl.forSerialized(t, this);
+        }
+      }).toList(growable: false);
     }
     return _typeAliases ?? const <FunctionTypeAliasElement>[];
   }
@@ -1584,7 +1565,7 @@ class CompilationUnitElementImpl extends UriReferencedElementImpl
   void set typeAliases(List<FunctionTypeAliasElement> typeAliases) {
     _assertNotResynthesized(_unlinkedUnit);
     for (FunctionTypeAliasElement typeAlias in typeAliases) {
-      (typeAlias as FunctionTypeAliasElementImpl).enclosingElement = this;
+      (typeAlias as ElementImpl).enclosingElement = this;
     }
     this._typeAliases = typeAliases;
   }
@@ -1624,15 +1605,8 @@ class CompilationUnitElementImpl extends UriReferencedElementImpl
       object is CompilationUnitElementImpl && source == object.source;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitCompilationUnitElement(this);
-
-  /**
-   * This method is invoked after this unit was incrementally resolved.
-   */
-  void afterIncrementalResolution() {
-    _offsetToElementMap.clear();
-  }
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -1702,14 +1676,6 @@ class CompilationUnitElementImpl extends UriReferencedElementImpl
       }
     }
     return null;
-  }
-
-  @override
-  Element getElementAt(int offset) {
-    if (_offsetToElementMap.isEmpty) {
-      accept(new _BuildOffsetToElementMap(_offsetToElementMap));
-    }
-    return _offsetToElementMap[offset];
   }
 
   @override
@@ -1949,13 +1915,6 @@ class ConstLocalVariableElementImpl extends LocalVariableElementImpl
    * Initialize a newly created local variable element to have the given [name].
    */
   ConstLocalVariableElementImpl.forNode(Identifier name) : super.forNode(name);
-
-  /**
-   * Initialize using the given serialized information.
-   */
-  ConstLocalVariableElementImpl.forSerialized(UnlinkedVariable unlinkedVariable,
-      ExecutableElementImpl enclosingExecutable)
-      : super.forSerialized(unlinkedVariable, enclosingExecutable);
 }
 
 /**
@@ -2179,7 +2138,7 @@ class ConstructorElementImpl extends ExecutableElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitConstructorElement(this);
 
   @override
@@ -2438,7 +2397,7 @@ class DynamicElementImpl extends ElementImpl implements TypeDefiningElement {
    * with this element. The single instance of this class should be accessed
    * through the method [instance].
    */
-  DynamicElementImpl() : super(Keyword.DYNAMIC.syntax, -1) {
+  DynamicElementImpl() : super(Keyword.DYNAMIC.lexeme, -1) {
     setModifier(Modifier.SYNTHETIC, true);
   }
 
@@ -2446,7 +2405,7 @@ class DynamicElementImpl extends ElementImpl implements TypeDefiningElement {
   ElementKind get kind => ElementKind.DYNAMIC;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) => null;
+  T accept<T>(ElementVisitor<T> visitor) => null;
 }
 
 /**
@@ -2475,6 +2434,12 @@ class ElementAnnotationImpl implements ElementAnnotation {
    * factory.
    */
   static String _FACTORY_VARIABLE_NAME = "factory";
+
+  /**
+   * The name of the top-level variable used to mark a class and its subclasses
+   * as being immutable.
+   */
+  static String _IMMUTABLE_VARIABLE_NAME = "immutable";
 
   /**
    * The name of the class used to JS annotate an element.
@@ -2525,12 +2490,6 @@ class ElementAnnotationImpl implements ElementAnnotation {
    * required.
    */
   static String _REQUIRED_VARIABLE_NAME = "required";
-
-  /**
-   * The name of the top-level variable used to mark a member as intended to be
-   * overridden.
-   */
-  static String _VIRTUAL_VARIABLE_NAME = "virtual";
 
   /**
    * The element representing the field, variable, or constructor being used as
@@ -2596,6 +2555,12 @@ class ElementAnnotationImpl implements ElementAnnotation {
       element.library?.name == _META_LIB_NAME;
 
   @override
+  bool get isImmutable =>
+      element is PropertyAccessorElement &&
+      element.name == _IMMUTABLE_VARIABLE_NAME &&
+      element.library?.name == _META_LIB_NAME;
+
+  @override
   bool get isJS =>
       element is ConstructorElement &&
       element.enclosingElement.name == _JS_CLASS_NAME &&
@@ -2635,18 +2600,6 @@ class ElementAnnotationImpl implements ElementAnnotation {
           element.library?.name == _META_LIB_NAME;
 
   /**
-   * Return `true` if this annotation marks the associated member as supporting
-   * overrides.
-   *
-   * This is currently used by fields in Strong Mode, as other members are
-   * already virtual-by-default.
-   */
-  bool get isVirtual =>
-      element is PropertyAccessorElement &&
-      element.name == _VIRTUAL_VARIABLE_NAME &&
-      element.library?.name == _META_LIB_NAME;
-
-  /**
    * Get the library containing this annotation.
    */
   Source get librarySource => compilationUnit.librarySource;
@@ -2661,6 +2614,9 @@ class ElementAnnotationImpl implements ElementAnnotation {
     }
     return constantValue;
   }
+
+  @override
+  String toSource() => annotationAst.toSource();
 
   @override
   String toString() => '@$element';
@@ -2789,8 +2745,6 @@ abstract class ElementImpl implements Element {
 
   /**
    * Set the enclosing element of this element to the given [element].
-   *
-   * Throws [FrozenHashCodeException] if the hashCode can't be changed.
    */
   void set enclosingElement(Element element) {
     _enclosingElement = element as ElementImpl;
@@ -2939,8 +2893,6 @@ abstract class ElementImpl implements Element {
 
   /**
    * Changes the name of this element.
-   *
-   * Throws [FrozenHashCodeException] if the hashCode can't be changed.
    */
   void set name(String name) {
     this._name = name;
@@ -2955,8 +2907,6 @@ abstract class ElementImpl implements Element {
   /**
    * Sets the offset of the name of this element in the file that contains the
    * declaration of this element.
-   *
-   * Throws [FrozenHashCodeException] if the hashCode can't be changed.
    */
   void set nameOffset(int offset) {
     _nameOffset = offset;
@@ -3039,14 +2989,22 @@ abstract class ElementImpl implements Element {
     element.enclosingElement = this;
   }
 
+  /**
+   * Set this element as the enclosing element for given [elements].
+   */
+  void encloseElements(List<Element> elements) {
+    for (Element element in elements) {
+      (element as ElementImpl)._enclosingElement = this;
+    }
+  }
+
   @override
-  Element/*=E*/ getAncestor/*<E extends Element >*/(
-      Predicate<Element> predicate) {
+  E getAncestor<E extends Element>(Predicate<Element> predicate) {
     Element ancestor = _enclosingElement;
     while (ancestor != null && !predicate(ancestor)) {
       ancestor = ancestor.enclosingElement;
     }
-    return ancestor as Element/*=E*/;
+    return ancestor as E;
   }
 
   /**
@@ -3152,6 +3110,32 @@ abstract class ElementImpl implements Element {
       return annotations;
     } else {
       return const <ElementAnnotation>[];
+    }
+  }
+
+  /**
+   * If the element associated with the given [type] is a generic function type
+   * element, then make it a child of this element. Return the [type] as a
+   * convenience.
+   */
+  DartType _checkElementOfType(DartType type) {
+    Element element = type?.element;
+    if (element is GenericFunctionTypeElementImpl &&
+        element.enclosingElement == null) {
+      element.enclosingElement = this;
+    }
+    return type;
+  }
+
+  /**
+   * If the given [type] is a generic function type, then the element associated
+   * with the type is implicitly a child of this element and should be visted by
+   * the given [visitor].
+   */
+  void _safelyVisitPossibleChild(DartType type, ElementVisitor visitor) {
+    Element element = type?.element;
+    if (element is GenericFunctionTypeElementImpl) {
+      element.accept(visitor);
     }
   }
 
@@ -3571,26 +3555,9 @@ abstract class ExecutableElementImpl extends ElementImpl
   List<FunctionElement> _functions;
 
   /**
-   * A list containing all of the labels defined within this executable element.
-   */
-  List<LabelElement> _labels;
-
-  /**
-   * A list containing all of the local variables defined within this executable
-   * element.
-   */
-  List<LocalVariableElement> _localVariables;
-
-  /**
    * A list containing all of the parameters defined by this executable element.
    */
   List<ParameterElement> _parameters;
-
-  /**
-   * A list containing all of the type parameters defined for this executable
-   * element.
-   */
-  List<TypeParameterElement> _typeParameters;
 
   /**
    * The declared return type of this executable element.
@@ -3655,7 +3622,7 @@ abstract class ExecutableElementImpl extends ElementImpl
 
   void set declaredReturnType(DartType returnType) {
     _assertNotResynthesized(serializedExecutable);
-    _declaredReturnType = returnType;
+    _declaredReturnType = _checkElementOfType(returnType);
   }
 
   @override
@@ -3767,60 +3734,6 @@ abstract class ExecutableElementImpl extends ElementImpl
   bool get isSynchronous => !isAsynchronous;
 
   @override
-  List<LabelElement> get labels {
-    if (serializedExecutable != null) {
-      _labels ??= LabelElementImpl.resynthesizeList(
-          this, serializedExecutable.localLabels);
-    }
-    return _labels ?? const <LabelElement>[];
-  }
-
-  /**
-   * Set the labels defined within this executable element to the given
-   * [labels].
-   */
-  void set labels(List<LabelElement> labels) {
-    _assertNotResynthesized(serializedExecutable);
-    for (LabelElement label in labels) {
-      (label as LabelElementImpl).enclosingElement = this;
-    }
-    this._labels = labels;
-  }
-
-  @override
-  List<LocalVariableElement> get localVariables {
-    if (serializedExecutable != null && _localVariables == null) {
-      List<UnlinkedVariable> unlinkedVariables =
-          serializedExecutable.localVariables;
-      int length = unlinkedVariables.length;
-      if (length != 0) {
-        List<LocalVariableElementImpl> localVariables =
-            new List<LocalVariableElementImpl>(length);
-        for (int i = 0; i < length; i++) {
-          localVariables[i] = new LocalVariableElementImpl.forSerializedFactory(
-              unlinkedVariables[i], this);
-        }
-        _localVariables = localVariables;
-      } else {
-        _localVariables = const <LocalVariableElement>[];
-      }
-    }
-    return _localVariables ?? const <LocalVariableElement>[];
-  }
-
-  /**
-   * Set the local variables defined within this executable element to the given
-   * [variables].
-   */
-  void set localVariables(List<LocalVariableElement> variables) {
-    _assertNotResynthesized(serializedExecutable);
-    for (LocalVariableElement variable in variables) {
-      (variable as LocalVariableElementImpl).enclosingElement = this;
-    }
-    this._localVariables = variables;
-  }
-
-  @override
   List<ElementAnnotation> get metadata {
     if (serializedExecutable != null) {
       return _metadata ??=
@@ -3874,10 +3787,10 @@ abstract class ExecutableElementImpl extends ElementImpl
         _returnType == null) {
       bool isSetter =
           serializedExecutable.kind == UnlinkedExecutableKind.setter;
-      _returnType = enclosingUnit.resynthesizerContext.resolveLinkedType(
-          serializedExecutable.inferredReturnTypeSlot, typeParameterContext);
+      _returnType = enclosingUnit.resynthesizerContext
+          .resolveLinkedType(this, serializedExecutable.inferredReturnTypeSlot);
       _declaredReturnType = enclosingUnit.resynthesizerContext.resolveTypeRef(
-          serializedExecutable.returnType, typeParameterContext,
+          this, serializedExecutable.returnType,
           defaultVoid: isSetter && context.analysisOptions.strongMode,
           declaredType: true);
     }
@@ -3886,7 +3799,7 @@ abstract class ExecutableElementImpl extends ElementImpl
 
   void set returnType(DartType returnType) {
     _assertNotResynthesized(serializedExecutable);
-    _returnType = returnType;
+    _returnType = _checkElementOfType(returnType);
   }
 
   @override
@@ -3903,17 +3816,6 @@ abstract class ExecutableElementImpl extends ElementImpl
     _type = type;
   }
 
-  @override
-  TypeParameterizedElementMixin get typeParameterContext => this;
-
-  @override
-  List<TypeParameterElement> get typeParameters {
-    if (serializedExecutable != null) {
-      return super.typeParameters;
-    }
-    return _typeParameters ?? const <TypeParameterElement>[];
-  }
-
   /**
    * Set the type parameters defined by this executable element to the given
    * [typeParameters].
@@ -3923,12 +3825,12 @@ abstract class ExecutableElementImpl extends ElementImpl
     for (TypeParameterElement parameter in typeParameters) {
       (parameter as TypeParameterElementImpl).enclosingElement = this;
     }
-    this._typeParameters = typeParameters;
+    this._typeParameterElements = typeParameters;
   }
 
   @override
   List<UnlinkedTypeParam> get unlinkedTypeParams =>
-      serializedExecutable.typeParameters;
+      serializedExecutable?.typeParameters;
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -3990,18 +3892,6 @@ abstract class ExecutableElementImpl extends ElementImpl
         return functionImpl;
       }
     }
-    for (LabelElement label in _labels) {
-      LabelElementImpl labelImpl = label;
-      if (labelImpl.identifier == identifier) {
-        return labelImpl;
-      }
-    }
-    for (LocalVariableElement variable in _localVariables) {
-      LocalVariableElementImpl variableImpl = variable;
-      if (variableImpl.identifier == identifier) {
-        return variableImpl;
-      }
-    }
     for (ParameterElement parameter in parameters) {
       ParameterElementImpl parameterImpl = parameter;
       if (parameterImpl.identifier == identifier) {
@@ -4014,11 +3904,9 @@ abstract class ExecutableElementImpl extends ElementImpl
   @override
   void visitChildren(ElementVisitor visitor) {
     super.visitChildren(visitor);
+    _safelyVisitPossibleChild(returnType, visitor);
     safelyVisitChildren(typeParameters, visitor);
     safelyVisitChildren(parameters, visitor);
-    safelyVisitChildren(_functions, visitor);
-    safelyVisitChildren(_labels, visitor);
-    safelyVisitChildren(_localVariables, visitor);
   }
 }
 
@@ -4170,8 +4058,7 @@ class ExportElementImpl extends UriReferencedElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitExportElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitExportElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -4242,7 +4129,7 @@ class FieldElementImpl extends PropertyInducingElementImpl
 
   @override
   bool get isEnumConstant =>
-      enclosingElement != null ? enclosingElement.isEnum : false;
+      enclosingElement != null && enclosingElement.isEnum && !isSynthetic;
 
   @override
   bool get isStatic {
@@ -4261,21 +4148,13 @@ class FieldElementImpl extends PropertyInducingElementImpl
   }
 
   @override
-  bool get isVirtual {
-    for (ElementAnnotationImpl annotation in metadata) {
-      if (annotation.isVirtual) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool get isVirtual => true;
 
   @override
   ElementKind get kind => ElementKind.FIELD;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitFieldElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitFieldElement(this);
 
   @override
   AstNode computeNode() {
@@ -4358,7 +4237,7 @@ class FieldFormalParameterElementImpl extends ParameterElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitFieldFormalParameterElement(this);
 }
 
@@ -4460,8 +4339,7 @@ class FunctionElementImpl extends ExecutableElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitFunctionElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitFunctionElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -4502,7 +4380,7 @@ class FunctionElementImpl extends ExecutableElementImpl
    * alias.
    */
   void shareTypeParameters(List<TypeParameterElement> typeParameters) {
-    this._typeParameters = typeParameters;
+    this._typeParameterElements = typeParameters;
   }
 
   /**
@@ -4555,17 +4433,10 @@ class FunctionElementImpl_forFunctionTypedParameter
  * that was synthesized by a LUB computation.
  */
 class FunctionElementImpl_forLUB extends FunctionElementImpl {
-  @override
-  final CompilationUnitElementImpl enclosingUnit;
-
-  @override
-  final TypeParameterizedElementMixin enclosingTypeParameterContext;
-
   final EntityRef _entityRef;
 
-  FunctionElementImpl_forLUB(
-      this.enclosingUnit, this.enclosingTypeParameterContext, this._entityRef)
-      : super('', -1);
+  FunctionElementImpl_forLUB(ElementImpl enclosingElement, this._entityRef)
+      : super.forSerialized(null, enclosingElement);
 
   @override
   bool get isSynthetic => true;
@@ -4584,7 +4455,7 @@ class FunctionElementImpl_forLUB extends FunctionElementImpl {
   @override
   DartType get returnType {
     return _returnType ??= enclosingUnit.resynthesizerContext
-        .resolveTypeRef(_entityRef.syntheticReturnType, typeParameterContext);
+        .resolveTypeRef(this, _entityRef.syntheticReturnType);
   }
 
   @override
@@ -4629,11 +4500,6 @@ class FunctionTypeAliasElementImpl extends ElementImpl
    * The type of function defined by this type alias.
    */
   FunctionType _type;
-
-  /**
-   * A list containing all of the type parameters defined for this type.
-   */
-  List<TypeParameterElement> _typeParameters = TypeParameterElement.EMPTY_LIST;
 
   /**
    * Initialize a newly created type alias element to have the given name.
@@ -4753,7 +4619,7 @@ class FunctionTypeAliasElementImpl extends ElementImpl
   DartType get returnType {
     if (_unlinkedTypedef != null && _returnType == null) {
       _returnType = enclosingUnit.resynthesizerContext.resolveTypeRef(
-          _unlinkedTypedef.returnType, this,
+          this, _unlinkedTypedef.returnType,
           declaredType: true);
     }
     return _returnType;
@@ -4761,7 +4627,7 @@ class FunctionTypeAliasElementImpl extends ElementImpl
 
   void set returnType(DartType returnType) {
     _assertNotResynthesized(_unlinkedTypedef);
-    _returnType = returnType;
+    _returnType = _checkElementOfType(returnType);
   }
 
   @override
@@ -4777,17 +4643,6 @@ class FunctionTypeAliasElementImpl extends ElementImpl
     _type = type;
   }
 
-  @override
-  TypeParameterizedElementMixin get typeParameterContext => this;
-
-  @override
-  List<TypeParameterElement> get typeParameters {
-    if (_unlinkedTypedef != null) {
-      return super.typeParameters;
-    }
-    return _typeParameters;
-  }
-
   /**
    * Set the type parameters defined for this type to the given
    * [typeParameters].
@@ -4797,29 +4652,30 @@ class FunctionTypeAliasElementImpl extends ElementImpl
     for (TypeParameterElement typeParameter in typeParameters) {
       (typeParameter as TypeParameterElementImpl).enclosingElement = this;
     }
-    this._typeParameters = typeParameters;
+    this._typeParameterElements = typeParameters;
   }
 
   @override
   List<UnlinkedTypeParam> get unlinkedTypeParams =>
-      _unlinkedTypedef.typeParameters;
+      _unlinkedTypedef?.typeParameters;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitFunctionTypeAliasElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
     buffer.write("typedef ");
     buffer.write(displayName);
-    int typeParameterCount = _typeParameters.length;
+    List<TypeParameterElement> typeParameters = this.typeParameters;
+    int typeParameterCount = typeParameters.length;
     if (typeParameterCount > 0) {
       buffer.write("<");
       for (int i = 0; i < typeParameterCount; i++) {
         if (i > 0) {
           buffer.write(", ");
         }
-        (_typeParameters[i] as TypeParameterElementImpl).appendTo(buffer);
+        (typeParameters[i] as TypeParameterElementImpl).appendTo(buffer);
       }
       buffer.write(">");
     }
@@ -4854,7 +4710,7 @@ class FunctionTypeAliasElementImpl extends ElementImpl
         return parameterImpl;
       }
     }
-    for (TypeParameterElement typeParameter in _typeParameters) {
+    for (TypeParameterElement typeParameter in typeParameters) {
       TypeParameterElementImpl typeParameterImpl = typeParameter;
       if (typeParameterImpl.identifier == identifier) {
         return typeParameterImpl;
@@ -4866,8 +4722,425 @@ class FunctionTypeAliasElementImpl extends ElementImpl
   @override
   void visitChildren(ElementVisitor visitor) {
     super.visitChildren(visitor);
+    _safelyVisitPossibleChild(returnType, visitor);
     safelyVisitChildren(parameters, visitor);
     safelyVisitChildren(typeParameters, visitor);
+  }
+}
+
+/**
+ * The element used for a generic function type.
+ *
+ * Clients may not extend, implement or mix-in this class.
+ */
+class GenericFunctionTypeElementImpl extends ElementImpl
+    with TypeParameterizedElementMixin
+    implements GenericFunctionTypeElement {
+  /**
+   * The unlinked representation of the generic function type in the summary.
+   */
+  EntityRef _entityRef;
+
+  /**
+   * The declared return type of the function.
+   */
+  DartType _returnType;
+
+  /**
+   * The elements representing the parameters of the function.
+   */
+  List<ParameterElement> _parameters;
+
+  /**
+   * The type defined by this element.
+   */
+  FunctionType _type;
+
+  /**
+   * Initialize a newly created function element to have no name and the given
+   * [nameOffset]. This is used for function expressions, that have no name.
+   */
+  GenericFunctionTypeElementImpl.forOffset(int nameOffset)
+      : super("", nameOffset);
+
+  /**
+   * Initialize from serialized information.
+   */
+  GenericFunctionTypeElementImpl.forSerialized(
+      ElementImpl enclosingElement, this._entityRef)
+      : super.forSerialized(enclosingElement);
+
+  @override
+  TypeParameterizedElementMixin get enclosingTypeParameterContext {
+    return _enclosingElement.typeParameterContext;
+  }
+
+  @override
+  String get identifier => '-';
+
+  @override
+  ElementKind get kind => ElementKind.GENERIC_FUNCTION_TYPE;
+
+  @override
+  List<ParameterElement> get parameters {
+    if (_entityRef != null) {
+      _parameters ??= ParameterElementImpl.resynthesizeList(
+          _entityRef.syntheticParams, this);
+    }
+    return _parameters ?? const <ParameterElement>[];
+  }
+
+  /**
+   * Set the parameters defined by this function type element to the given
+   * [parameters].
+   */
+  void set parameters(List<ParameterElement> parameters) {
+    _assertNotResynthesized(_entityRef);
+    for (ParameterElement parameter in parameters) {
+      (parameter as ParameterElementImpl).enclosingElement = this;
+    }
+    this._parameters = parameters;
+  }
+
+  @override
+  DartType get returnType {
+    if (_entityRef != null && _returnType == null) {
+      _returnType = enclosingUnit.resynthesizerContext.resolveTypeRef(
+          this, _entityRef.syntheticReturnType,
+          defaultVoid: false, declaredType: true);
+    }
+    return _returnType;
+  }
+
+  /**
+   * Set the return type defined by this function type element to the given
+   * [returnType].
+   */
+  void set returnType(DartType returnType) {
+    _assertNotResynthesized(_entityRef);
+    _returnType = _checkElementOfType(returnType);
+  }
+
+  @override
+  FunctionType get type {
+    if (_entityRef != null) {
+      _type ??= new FunctionTypeImpl.elementWithNameAndArgs(
+          this, null, allEnclosingTypeParameterTypes, false);
+    }
+    return _type;
+  }
+
+  /**
+   * Set the function type defined by this function type element to the given
+   * [type].
+   */
+  void set type(FunctionType type) {
+    _assertNotResynthesized(_entityRef);
+    _type = type;
+  }
+
+  /**
+   * Set the type parameters defined by this function type element to the given
+   * [typeParameters].
+   */
+  void set typeParameters(List<TypeParameterElement> typeParameters) {
+    _assertNotResynthesized(_entityRef);
+    for (TypeParameterElement parameter in typeParameters) {
+      (parameter as TypeParameterElementImpl).enclosingElement = this;
+    }
+    this._typeParameterElements = typeParameters;
+  }
+
+  @override
+  List<UnlinkedTypeParam> get unlinkedTypeParams => _entityRef?.typeParameters;
+
+  @override
+  T accept<T>(ElementVisitor<T> visitor) {
+    return visitor.visitGenericFunctionTypeElement(this);
+  }
+
+  @override
+  void appendTo(StringBuffer buffer) {
+    DartType type = returnType;
+    if (type is TypeImpl) {
+      type.appendTo(buffer, new HashSet<TypeImpl>());
+      buffer.write(' Function');
+    } else {
+      buffer.write('Function');
+    }
+    List<TypeParameterElement> typeParams = typeParameters;
+    int typeParameterCount = typeParams.length;
+    if (typeParameterCount > 0) {
+      buffer.write('<');
+      for (int i = 0; i < typeParameterCount; i++) {
+        if (i > 0) {
+          buffer.write(', ');
+        }
+        (typeParams[i] as TypeParameterElementImpl).appendTo(buffer);
+      }
+      buffer.write('>');
+    }
+    List<ParameterElement> params = parameters;
+    buffer.write('(');
+    for (int i = 0; i < params.length; i++) {
+      if (i > 0) {
+        buffer.write(', ');
+      }
+      (params[i] as ParameterElementImpl).appendTo(buffer);
+    }
+    buffer.write(')');
+  }
+
+  @override
+  void visitChildren(ElementVisitor visitor) {
+    super.visitChildren(visitor);
+    _safelyVisitPossibleChild(returnType, visitor);
+    safelyVisitChildren(typeParameters, visitor);
+    safelyVisitChildren(parameters, visitor);
+  }
+}
+
+/**
+ * A function type alias of the form
+ *     `typedef` identifier typeParameters = genericFunctionType;
+ *
+ * Clients may not extend, implement or mix-in this class.
+ */
+class GenericTypeAliasElementImpl extends ElementImpl
+    with TypeParameterizedElementMixin
+    implements GenericTypeAliasElement {
+  /**
+   * The unlinked representation of the type in the summary.
+   */
+  final UnlinkedTypedef _unlinkedTypedef;
+
+  /**
+   * The element representing the generic function type.
+   */
+  GenericFunctionTypeElement _function;
+
+  /**
+   * The type of function defined by this type alias.
+   */
+  FunctionType _type;
+
+  /**
+   * Initialize a newly created type alias element to have the given [name].
+   */
+  GenericTypeAliasElementImpl.forNode(Identifier name)
+      : _unlinkedTypedef = null,
+        super.forNode(name);
+
+  /**
+   * Initialize using the given serialized information.
+   */
+  GenericTypeAliasElementImpl.forSerialized(
+      this._unlinkedTypedef, CompilationUnitElementImpl enclosingUnit)
+      : super.forSerialized(enclosingUnit);
+
+  @override
+  int get codeLength {
+    if (_unlinkedTypedef != null) {
+      return _unlinkedTypedef.codeRange?.length;
+    }
+    return super.codeLength;
+  }
+
+  @override
+  int get codeOffset {
+    if (_unlinkedTypedef != null) {
+      return _unlinkedTypedef.codeRange?.offset;
+    }
+    return super.codeOffset;
+  }
+
+  @override
+  String get displayName => name;
+
+  @override
+  String get documentationComment {
+    if (_unlinkedTypedef != null) {
+      return _unlinkedTypedef?.documentationComment?.text;
+    }
+    return super.documentationComment;
+  }
+
+  @override
+  CompilationUnitElement get enclosingElement =>
+      super.enclosingElement as CompilationUnitElement;
+
+  @override
+  TypeParameterizedElementMixin get enclosingTypeParameterContext => null;
+
+  @override
+  CompilationUnitElementImpl get enclosingUnit =>
+      _enclosingElement as CompilationUnitElementImpl;
+
+  @override
+  GenericFunctionTypeElement get function {
+    if (_function == null && _unlinkedTypedef != null) {
+      DartType type = enclosingUnit.resynthesizerContext.resolveTypeRef(
+          this, _unlinkedTypedef.returnType,
+          declaredType: true);
+      if (type is FunctionType) {
+        Element element = type.element;
+        if (element is GenericFunctionTypeElement) {
+          (element as GenericFunctionTypeElementImpl).enclosingElement = this;
+          _function = element;
+        }
+      }
+    }
+    return _function;
+  }
+
+  /**
+   * Set the function element representing the generic function type on the
+   * right side of the equals to the given [function].
+   */
+  void set function(GenericFunctionTypeElement function) {
+    _assertNotResynthesized(_unlinkedTypedef);
+    if (function != null) {
+      (function as GenericFunctionTypeElementImpl).enclosingElement = this;
+    }
+    _function = function;
+  }
+
+  @override
+  ElementKind get kind => ElementKind.FUNCTION_TYPE_ALIAS;
+
+  @override
+  List<ElementAnnotation> get metadata {
+    if (_unlinkedTypedef != null) {
+      return _metadata ??=
+          _buildAnnotations(enclosingUnit, _unlinkedTypedef.annotations);
+    }
+    return super.metadata;
+  }
+
+  @override
+  String get name {
+    if (_unlinkedTypedef != null) {
+      return _unlinkedTypedef.name;
+    }
+    return super.name;
+  }
+
+  @override
+  int get nameOffset {
+    int offset = super.nameOffset;
+    if (offset == 0 && _unlinkedTypedef != null) {
+      return _unlinkedTypedef.nameOffset;
+    }
+    return offset;
+  }
+
+  @override
+  List<ParameterElement> get parameters =>
+      function?.parameters ?? const <ParameterElement>[];
+
+  @override
+  DartType get returnType => function?.returnType;
+
+  @override
+  FunctionType get type {
+    if (_unlinkedTypedef != null && _type == null) {
+      _type = new FunctionTypeImpl.forTypedef(this);
+    }
+    return _type;
+  }
+
+  void set type(FunctionType type) {
+    _assertNotResynthesized(_unlinkedTypedef);
+    _type = type;
+  }
+
+  /**
+   * Set the type parameters defined for this type to the given
+   * [typeParameters].
+   */
+  void set typeParameters(List<TypeParameterElement> typeParameters) {
+    _assertNotResynthesized(_unlinkedTypedef);
+    for (TypeParameterElement typeParameter in typeParameters) {
+      (typeParameter as TypeParameterElementImpl).enclosingElement = this;
+    }
+    this._typeParameterElements = typeParameters;
+  }
+
+  @override
+  List<UnlinkedTypeParam> get unlinkedTypeParams =>
+      _unlinkedTypedef?.typeParameters;
+
+  @override
+  T accept<T>(ElementVisitor<T> visitor) =>
+      visitor.visitFunctionTypeAliasElement(this);
+
+  @override
+  void appendTo(StringBuffer buffer) {
+    buffer.write("typedef ");
+    buffer.write(displayName);
+    var typeParameters = this.typeParameters;
+    int typeParameterCount = typeParameters.length;
+    if (typeParameterCount > 0) {
+      buffer.write("<");
+      for (int i = 0; i < typeParameterCount; i++) {
+        if (i > 0) {
+          buffer.write(", ");
+        }
+        (typeParameters[i] as TypeParameterElementImpl).appendTo(buffer);
+      }
+      buffer.write(">");
+    }
+    buffer.write(" = ");
+    if (function != null) {
+      (function as ElementImpl).appendTo(buffer);
+    }
+  }
+
+  @override
+  GenericTypeAlias computeNode() =>
+      getNodeMatching((node) => node is GenericTypeAlias);
+
+  @override
+  ElementImpl getChild(String identifier) {
+    for (TypeParameterElement typeParameter in typeParameters) {
+      TypeParameterElementImpl typeParameterImpl = typeParameter;
+      if (typeParameterImpl.identifier == identifier) {
+        return typeParameterImpl;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Return the type of the function defined by this typedef after substituting
+   * the given [typeArguments] for the type parameters defined for this typedef
+   * (but not the type parameters defined by the function). If the number of
+   * [typeArguments] does not match the number of type parameters, then
+   * `dynamic` will be used in place of each of the type arguments.
+   */
+  FunctionType typeAfterSubstitution(List<DartType> typeArguments) {
+    GenericFunctionTypeElement function = this.function;
+    if (function == null) {
+      return null;
+    }
+    FunctionType functionType = function.type;
+    List<TypeParameterElement> parameterElements = typeParameters;
+    List<DartType> parameterTypes =
+        TypeParameterTypeImpl.getTypes(parameterElements);
+    int parameterCount = parameterTypes.length;
+    if (typeArguments == null ||
+        parameterElements.length != typeArguments.length) {
+      DartType dynamicType = DynamicElementImpl.instance.type;
+      typeArguments = new List<DartType>.filled(parameterCount, dynamicType);
+    }
+    return functionType.substitute2(typeArguments, parameterTypes);
+  }
+
+  @override
+  void visitChildren(ElementVisitor visitor) {
+    super.visitChildren(visitor);
+    safelyVisitChildren(typeParameters, visitor);
+    function?.accept(visitor);
   }
 }
 
@@ -5152,8 +5425,7 @@ class ImportElementImpl extends UriReferencedElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitImportElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitImportElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -5191,11 +5463,6 @@ class ImportElementImpl extends UriReferencedElementImpl
  */
 class LabelElementImpl extends ElementImpl implements LabelElement {
   /**
-   * The unlinked representation of the label in the summary.
-   */
-  final UnlinkedLabel _unlinkedLabel;
-
-  /**
    * A flag indicating whether this label is associated with a `switch`
    * statement.
    */
@@ -5217,8 +5484,7 @@ class LabelElementImpl extends ElementImpl implements LabelElement {
    */
   LabelElementImpl(String name, int nameOffset, this._onSwitchStatement,
       this._onSwitchMember)
-      : _unlinkedLabel = null,
-        super(name, nameOffset);
+      : super(name, nameOffset);
 
   /**
    * Initialize a newly created label element to have the given [name].
@@ -5228,18 +5494,7 @@ class LabelElementImpl extends ElementImpl implements LabelElement {
    */
   LabelElementImpl.forNode(
       Identifier name, this._onSwitchStatement, this._onSwitchMember)
-      : _unlinkedLabel = null,
-        super.forNode(name);
-
-  /**
-   * Initialize using the given serialized information.
-   */
-  LabelElementImpl.forSerialized(
-      UnlinkedLabel unlinkedLabel, ExecutableElementImpl enclosingExecutable)
-      : _unlinkedLabel = unlinkedLabel,
-        _onSwitchStatement = unlinkedLabel.isOnSwitchStatement,
-        _onSwitchMember = unlinkedLabel.isOnSwitchMember,
-        super.forSerialized(enclosingExecutable);
+      : super.forNode(name);
 
   @override
   String get displayName => name;
@@ -5263,46 +5518,7 @@ class LabelElementImpl extends ElementImpl implements LabelElement {
   ElementKind get kind => ElementKind.LABEL;
 
   @override
-  String get name {
-    if (_unlinkedLabel != null) {
-      return _unlinkedLabel.name;
-    }
-    return super.name;
-  }
-
-  @override
-  int get nameOffset {
-    int offset = super.nameOffset;
-    if (offset == 0 &&
-        _unlinkedLabel != null &&
-        _unlinkedLabel.nameOffset != 0) {
-      return _unlinkedLabel.nameOffset;
-    }
-    return offset;
-  }
-
-  @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitLabelElement(this);
-
-  /**
-   * Create and return [LabelElement]s for the given [unlinkedLabels].
-   */
-  static List<LabelElement> resynthesizeList(
-      ExecutableElementImpl enclosingExecutable,
-      List<UnlinkedLabel> unlinkedLabels) {
-    int length = unlinkedLabels.length;
-    if (length != 0) {
-      List<LabelElement> elements = new List<LabelElement>(length);
-      for (int i = 0; i < length; i++) {
-        elements[i] = new LabelElementImpl.forSerialized(
-            unlinkedLabels[i], enclosingExecutable);
-      }
-      return elements;
-    } else {
-      return const <LabelElement>[];
-    }
-  }
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitLabelElement(this);
 }
 
 /**
@@ -5510,16 +5726,11 @@ class LibraryElementImpl extends ElementImpl implements LibraryElement {
         for (int i = 0; i < length; i++) {
           UnlinkedExportPublic serializedExportPublic =
               unlinkedPublicExports[i];
-          LibraryElement exportedLibrary = resynthesizerContext
-              .buildExportedLibrary(serializedExportPublic.uri);
-          if (exportedLibrary != null) {
-            UnlinkedExportNonPublic serializedExportNonPublic =
-                unlinkedNonPublicExports[i];
-            ExportElementImpl exportElement =
-                new ExportElementImpl.forSerialized(
-                    serializedExportPublic, serializedExportNonPublic, library);
-            exports.add(exportElement);
-          }
+          UnlinkedExportNonPublic serializedExportNonPublic =
+              unlinkedNonPublicExports[i];
+          ExportElementImpl exportElement = new ExportElementImpl.forSerialized(
+              serializedExportPublic, serializedExportNonPublic, library);
+          exports.add(exportElement);
         }
         _exports = exports;
       } else {
@@ -5600,14 +5811,9 @@ class LibraryElementImpl extends ElementImpl implements LibraryElement {
         LinkedLibrary linkedLibrary = resynthesizerContext.linkedLibrary;
         for (int i = 0; i < length; i++) {
           int dependency = linkedLibrary.importDependencies[i];
-          LibraryElement importedLibrary =
-              resynthesizerContext.buildImportedLibrary(dependency);
-          if (importedLibrary != null) {
-            ImportElementImpl importElement =
-                new ImportElementImpl.forSerialized(
-                    unlinkedImports[i], dependency, library);
-            imports.add(importElement);
-          }
+          ImportElementImpl importElement = new ImportElementImpl.forSerialized(
+              unlinkedImports[i], dependency, library);
+          imports.add(importElement);
         }
         _imports = imports;
       } else {
@@ -5844,8 +6050,7 @@ class LibraryElementImpl extends ElementImpl implements LibraryElement {
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitLibraryElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitLibraryElement(this);
 
   /**
    * Create the [FunctionElement] to be returned by [loadLibraryFunction],
@@ -6085,39 +6290,9 @@ class LocalVariableElementImpl extends NonParameterVariableElementImpl
    */
   LocalVariableElementImpl.forNode(Identifier name) : super.forNode(name);
 
-  /**
-   * Initialize using the given serialized information.
-   */
-  LocalVariableElementImpl.forSerialized(UnlinkedVariable unlinkedVariable,
-      ExecutableElementImpl enclosingExecutable)
-      : super.forSerialized(unlinkedVariable, enclosingExecutable);
-
-  /**
-   * Initialize using the given serialized information.
-   */
-  factory LocalVariableElementImpl.forSerializedFactory(
-      UnlinkedVariable unlinkedVariable,
-      ExecutableElementImpl enclosingExecutable) {
-    if (unlinkedVariable.isConst &&
-        unlinkedVariable.initializer?.bodyExpr != null) {
-      return new ConstLocalVariableElementImpl.forSerialized(
-          unlinkedVariable, enclosingExecutable);
-    } else {
-      return new LocalVariableElementImpl.forSerialized(
-          unlinkedVariable, enclosingExecutable);
-    }
-  }
-
   @override
   String get identifier {
-    String identifier = super.identifier;
-    Element enclosing = this.enclosingElement;
-    if (enclosing is ExecutableElement) {
-      int id = ElementImpl.findElementIndexUsingIdentical(
-          enclosing.localVariables, this);
-      identifier += "@$id";
-    }
-    return identifier;
+    return '$name$nameOffset';
   }
 
   @override
@@ -6131,13 +6306,6 @@ class LocalVariableElementImpl extends NonParameterVariableElementImpl
 
   @override
   SourceRange get visibleRange {
-    if (_unlinkedVariable != null) {
-      if (_unlinkedVariable.visibleLength == 0) {
-        return null;
-      }
-      return new SourceRange(
-          _unlinkedVariable.visibleOffset, _unlinkedVariable.visibleLength);
-    }
     if (_visibleRangeLength < 0) {
       return null;
     }
@@ -6145,7 +6313,7 @@ class LocalVariableElementImpl extends NonParameterVariableElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitLocalVariableElement(this);
 
   @override
@@ -6164,7 +6332,6 @@ class LocalVariableElementImpl extends NonParameterVariableElementImpl
    * [offset] with the given [length].
    */
   void setVisibleRange(int offset, int length) {
-    _assertNotResynthesized(_unlinkedVariable);
     _visibleRangeOffset = offset;
     _visibleRangeLength = length;
   }
@@ -6266,8 +6433,7 @@ class MethodElementImpl extends ExecutableElementImpl implements MethodElement {
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitMethodElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitMethodElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -6281,25 +6447,24 @@ class MethodElementImpl extends ExecutableElementImpl implements MethodElement {
 
   @override
   FunctionType getReifiedType(DartType objectType) {
-    // Collect the covariant parameters. Do this first so we don't allocate
-    // anything in the common case where there are none.
-    Set<String> covariantNames;
+    // Check whether we have any covariant parameters.
+    // Usually we don't, so we can use the same type.
+    bool hasCovariant = false;
     for (ParameterElement parameter in parameters) {
       if (parameter.isCovariant) {
-        covariantNames ??= new Set();
-        covariantNames.add(parameter.name);
+        hasCovariant = true;
+        break;
       }
     }
 
-    if (covariantNames == null) return type;
+    if (!hasCovariant) {
+      return type;
+    }
 
     List<ParameterElement> covariantParameters = parameters.map((parameter) {
-      if (!covariantNames.contains(parameter.name)) {
-        return parameter;
-      }
-
+      DartType type = parameter.isCovariant ? objectType : parameter.type;
       return new ParameterElementImpl.synthetic(
-          parameter.name, objectType, parameter.parameterKind);
+          parameter.name, type, parameter.parameterKind);
     }).toList();
 
     return new FunctionElementImpl.synthetic(covariantParameters, returnType)
@@ -6591,7 +6756,7 @@ class MultiplyDefinedElementImpl implements MultiplyDefinedElement {
   CompilationUnit get unit => null;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitMultiplyDefinedElement(this);
 
   @override
@@ -6601,9 +6766,7 @@ class MultiplyDefinedElementImpl implements MultiplyDefinedElement {
   AstNode computeNode() => null;
 
   @override
-  Element/*=E*/ getAncestor/*<E extends Element >*/(
-          Predicate<Element> predicate) =>
-      null;
+  E getAncestor<E extends Element>(Predicate<Element> predicate) => null;
 
   @override
   String getExtendedDisplayName(String shortName) {
@@ -6823,8 +6986,9 @@ abstract class NonParameterVariableElementImpl extends VariableElementImpl {
     if (_unlinkedVariable != null && _initializer == null) {
       UnlinkedExecutable unlinkedInitializer = _unlinkedVariable.initializer;
       if (unlinkedInitializer != null) {
-        _initializer = new FunctionElementImpl.forSerialized(
-            unlinkedInitializer, this)..isSynthetic = true;
+        _initializer =
+            new FunctionElementImpl.forSerialized(unlinkedInitializer, this)
+              ..isSynthetic = true;
       } else {
         return null;
       }
@@ -6898,11 +7062,10 @@ abstract class NonParameterVariableElementImpl extends VariableElementImpl {
   @override
   DartType get type {
     if (_unlinkedVariable != null && _declaredType == null && _type == null) {
-      _type = enclosingUnit.resynthesizerContext.resolveLinkedType(
-          _unlinkedVariable.inferredTypeSlot, typeParameterContext);
-      _declaredType = enclosingUnit.resynthesizerContext.resolveTypeRef(
-          _unlinkedVariable.type, typeParameterContext,
-          declaredType: true);
+      _type = enclosingUnit.resynthesizerContext
+          .resolveLinkedType(this, _unlinkedVariable.inferredTypeSlot);
+      declaredType = enclosingUnit.resynthesizerContext
+          .resolveTypeRef(this, _unlinkedVariable.type, declaredType: true);
     }
     return super.type;
   }
@@ -6910,7 +7073,17 @@ abstract class NonParameterVariableElementImpl extends VariableElementImpl {
   @override
   void set type(DartType type) {
     _assertNotResynthesized(_unlinkedVariable);
-    _type = type;
+    _type = _checkElementOfType(type);
+  }
+
+  @override
+  TopLevelInferenceError get typeInferenceError {
+    if (_unlinkedVariable != null) {
+      return enclosingUnit.resynthesizerContext
+          .getTypeInferenceError(_unlinkedVariable.inferredTypeSlot);
+    }
+    // We don't support type inference errors without linking.
+    return null;
   }
 
   /**
@@ -7067,7 +7240,7 @@ class ParameterElementImpl extends VariableElementImpl
   @override
   bool get hasImplicitType {
     if (_unlinkedParam != null) {
-      return _unlinkedParam.type == null;
+      return _unlinkedParam.type == null && !_unlinkedParam.isFunctionTyped;
     }
     return super.hasImplicitType;
   }
@@ -7105,8 +7278,9 @@ class ParameterElementImpl extends VariableElementImpl
     if (_unlinkedParam != null && _initializer == null) {
       UnlinkedExecutable unlinkedInitializer = _unlinkedParam.initializer;
       if (unlinkedInitializer != null) {
-        _initializer = new FunctionElementImpl.forSerialized(
-            unlinkedInitializer, this)..isSynthetic = true;
+        _initializer =
+            new FunctionElementImpl.forSerialized(unlinkedInitializer, this)
+              ..isSynthetic = true;
       } else {
         return null;
       }
@@ -7215,7 +7389,10 @@ class ParameterElementImpl extends VariableElementImpl
   int get nameOffset {
     int offset = super.nameOffset;
     if (offset == 0 && _unlinkedParam != null) {
-      if (isSynthetic) {
+      if (isSynthetic ||
+          (_unlinkedParam.name.isEmpty &&
+              _unlinkedParam.kind != UnlinkedParamKind.named &&
+              enclosingElement is GenericFunctionTypeElement)) {
         return -1;
       }
       return _unlinkedParam.nameOffset;
@@ -7270,6 +7447,16 @@ class ParameterElementImpl extends VariableElementImpl
   }
 
   @override
+  TopLevelInferenceError get typeInferenceError {
+    if (_unlinkedParam != null) {
+      return enclosingUnit.resynthesizerContext
+          .getTypeInferenceError(_unlinkedParam.inferredTypeSlot);
+    }
+    // We don't support type inference errors without linking.
+    return null;
+  }
+
+  @override
   List<TypeParameterElement> get typeParameters => _typeParameters;
 
   /**
@@ -7304,8 +7491,7 @@ class ParameterElementImpl extends VariableElementImpl
   UnlinkedExpr get _unlinkedConst => _unlinkedParam?.initializer?.bodyExpr;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitParameterElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitParameterElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -7381,18 +7567,17 @@ class ParameterElementImpl extends VariableElementImpl
           parameterTypeElement.shareParameters(subParameters);
         }
         parameterTypeElement.returnType = enclosingUnit.resynthesizerContext
-            .resolveTypeRef(_unlinkedParam.type, typeParameterContext);
+            .resolveTypeRef(this, _unlinkedParam.type);
         FunctionTypeImpl parameterType =
             new FunctionTypeImpl.elementWithNameAndArgs(parameterTypeElement,
                 null, typeParameterContext.allTypeParameterTypes, false);
         parameterTypeElement.type = parameterType;
         _type = parameterType;
       } else {
-        _type = enclosingUnit.resynthesizerContext.resolveLinkedType(
-            _unlinkedParam.inferredTypeSlot, typeParameterContext);
-        _declaredType = enclosingUnit.resynthesizerContext.resolveTypeRef(
-            _unlinkedParam.type, typeParameterContext,
-            declaredType: true);
+        _type = enclosingUnit.resynthesizerContext
+            .resolveLinkedType(this, _unlinkedParam.inferredTypeSlot);
+        declaredType = enclosingUnit.resynthesizerContext
+            .resolveTypeRef(this, _unlinkedParam.type, declaredType: true);
       }
     }
   }
@@ -7431,6 +7616,16 @@ class ParameterElementImpl_ofImplicitSetter extends ParameterElementImpl {
     enclosingElement = setter;
     isSynthetic = true;
     parameterKind = ParameterKind.REQUIRED;
+  }
+
+  @override
+  bool get inheritsCovariant {
+    PropertyInducingElement variable = setter.variable;
+    if (variable is FieldElementImpl && variable._unlinkedVariable != null) {
+      return enclosingUnit.resynthesizerContext
+          .inheritsCovariant(variable._unlinkedVariable.inheritsCovariantSlot);
+    }
+    return super.inheritsCovariant;
   }
 
   @override
@@ -7555,8 +7750,7 @@ class PrefixElementImpl extends ElementImpl implements PrefixElement {
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
-      visitor.visitPrefixElement(this);
+  T accept<T>(ElementVisitor<T> visitor) => visitor.visitPrefixElement(this);
 
   @override
   void appendTo(StringBuffer buffer) {
@@ -7728,7 +7922,7 @@ class PropertyAccessorElementImpl extends ExecutableElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitPropertyAccessorElement(this);
 
   @override
@@ -7879,15 +8073,15 @@ abstract class PropertyInducingElementImpl
   @override
   DartType get propagatedType {
     if (_unlinkedVariable != null && _propagatedType == null) {
-      _propagatedType = enclosingUnit.resynthesizerContext.resolveLinkedType(
-          _unlinkedVariable.propagatedTypeSlot, typeParameterContext);
+      _propagatedType = enclosingUnit.resynthesizerContext
+          .resolveLinkedType(this, _unlinkedVariable.propagatedTypeSlot);
     }
     return _propagatedType;
   }
 
   void set propagatedType(DartType propagatedType) {
     _assertNotResynthesized(_unlinkedVariable);
-    _propagatedType = propagatedType;
+    _propagatedType = _checkElementOfType(propagatedType);
   }
 
   @override
@@ -7935,6 +8129,12 @@ abstract class ResynthesizerContext {
   UnitExplicitTopLevelVariables buildTopLevelVariables();
 
   /**
+   * Return the error reported during type inference for the given [slot],
+   * or `null` if there was no error.
+   */
+  TopLevelInferenceError getTypeInferenceError(int slot);
+
+  /**
    * Return `true` if the given parameter [slot] inherits `@covariant` behavior.
    */
   bool inheritsCovariant(int slot);
@@ -7949,14 +8149,13 @@ abstract class ResynthesizerContext {
    * unresolved, return `null`.
    */
   ConstructorElement resolveConstructorRef(
-      TypeParameterizedElementMixin typeParameterContext, EntityRef entry);
+      ElementImpl context, EntityRef entry);
 
   /**
    * Build the appropriate [DartType] object corresponding to a slot id in the
    * [LinkedUnit.types] table.
    */
-  DartType resolveLinkedType(
-      int slot, TypeParameterizedElementMixin typeParameterContext);
+  DartType resolveLinkedType(ElementImpl context, int slot);
 
   /**
    * Resolve an [EntityRef] into a type.  If the reference is
@@ -7965,8 +8164,7 @@ abstract class ResynthesizerContext {
    * TODO(paulberry): or should we have a class representing an
    * unresolved type, for consistency with the full element model?
    */
-  DartType resolveTypeRef(
-      EntityRef type, TypeParameterizedElementMixin typeParameterContext,
+  DartType resolveTypeRef(ElementImpl context, EntityRef type,
       {bool defaultVoid: false,
       bool instantiateToBoundsAllowed: true,
       bool declaredType: false});
@@ -8090,7 +8288,7 @@ class TopLevelVariableElementImpl extends PropertyInducingElementImpl
   ElementKind get kind => ElementKind.TOP_LEVEL_VARIABLE;
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitTopLevelVariableElement(this);
 
   @override
@@ -8168,7 +8366,7 @@ class TypeParameterElementImpl extends ElementImpl
         return null;
       }
       return _bound ??= enclosingUnit.resynthesizerContext.resolveTypeRef(
-          _unlinkedTypeParam.bound, enclosingElement,
+          this, _unlinkedTypeParam.bound,
           instantiateToBoundsAllowed: false, declaredType: true);
     }
     return _bound;
@@ -8176,7 +8374,7 @@ class TypeParameterElementImpl extends ElementImpl
 
   void set bound(DartType bound) {
     _assertNotResynthesized(_unlinkedTypeParam);
-    _bound = bound;
+    _bound = _checkElementOfType(bound);
   }
 
   @override
@@ -8239,7 +8437,7 @@ class TypeParameterElementImpl extends ElementImpl
   }
 
   @override
-  /*=T*/ accept/*<T>*/(ElementVisitor<dynamic/*=T*/ > visitor) =>
+  T accept<T>(ElementVisitor<T> visitor) =>
       visitor.visitTypeParameterElement(this);
 
   @override
@@ -8257,9 +8455,30 @@ class TypeParameterElementImpl extends ElementImpl
  */
 abstract class TypeParameterizedElementMixin
     implements TypeParameterizedElement, ElementImpl {
+  /**
+   * The cached number of type parameters that are in scope in this context, or
+   * `null` if the number has not yet been computed.
+   */
   int _nestingLevel;
+
+  /**
+   * A cached list containing the type parameters declared by this element
+   * directly, or `null` if the elements have not been created yet. This does
+   * not include type parameters that are declared by any enclosing elements.
+   */
   List<TypeParameterElement> _typeParameterElements;
+
+  /**
+   * A cached list containing the type parameter types declared by this element
+   * directly, or `null` if the list has not been computed yet.
+   */
   List<TypeParameterType> _typeParameterTypes;
+
+  /**
+   * A cached list containing all of the type parameter types of this element,
+   * including those declared by this element directly and those declared by any
+   * enclosing elements, or `null` if the list has not been computed yet.
+   */
   List<TypeParameterType> _allTypeParameterTypes;
 
   /**
@@ -8296,6 +8515,9 @@ abstract class TypeParameterizedElementMixin
    */
   CompilationUnitElementImpl get enclosingUnit;
 
+  @override
+  TypeParameterizedElementMixin get typeParameterContext => this;
+
   /**
    * Find out how many type parameters are in scope in this context.
    */
@@ -8303,19 +8525,24 @@ abstract class TypeParameterizedElementMixin
       _nestingLevel ??= unlinkedTypeParams.length +
           (enclosingTypeParameterContext?.typeParameterNestingLevel ?? 0);
 
+  @override
   List<TypeParameterElement> get typeParameters {
     if (_typeParameterElements == null) {
-      int enclosingNestingLevel =
-          enclosingTypeParameterContext?.typeParameterNestingLevel ?? 0;
-      int numTypeParameters = unlinkedTypeParams.length;
-      _typeParameterElements =
-          new List<TypeParameterElement>(numTypeParameters);
-      for (int i = 0; i < numTypeParameters; i++) {
-        _typeParameterElements[i] = new TypeParameterElementImpl.forSerialized(
-            unlinkedTypeParams[i], this, enclosingNestingLevel + i);
+      List<UnlinkedTypeParam> unlinkedParams = unlinkedTypeParams;
+      if (unlinkedParams != null) {
+        int enclosingNestingLevel =
+            enclosingTypeParameterContext?.typeParameterNestingLevel ?? 0;
+        int numTypeParameters = unlinkedParams.length;
+        _typeParameterElements =
+            new List<TypeParameterElement>(numTypeParameters);
+        for (int i = 0; i < numTypeParameters; i++) {
+          _typeParameterElements[i] =
+              new TypeParameterElementImpl.forSerialized(
+                  unlinkedParams[i], this, enclosingNestingLevel + i);
+        }
       }
     }
-    return _typeParameterElements;
+    return _typeParameterElements ?? const <TypeParameterElement>[];
   }
 
   /**
@@ -8330,7 +8557,7 @@ abstract class TypeParameterizedElementMixin
 
   /**
    * Get the [UnlinkedTypeParam]s representing the type parameters declared by
-   * this element.
+   * this element, or `null` if this element isn't from a summary.
    *
    * TODO(scheglov) make private after switching linker to Impl
    */
@@ -8530,7 +8757,7 @@ abstract class VariableElementImpl extends ElementImpl
   DartObject get constantValue => evaluationResult?.value;
 
   void set declaredType(DartType type) {
-    _declaredType = type;
+    _declaredType = _checkElementOfType(type);
   }
 
   @override
@@ -8616,7 +8843,16 @@ abstract class VariableElementImpl extends ElementImpl
   DartType get type => _type ?? _declaredType;
 
   void set type(DartType type) {
-    _type = type;
+    _type = _checkElementOfType(type);
+  }
+
+  /**
+   * Return the error reported during type inference for this variable, or
+   * `null` if this variable is not a subject of type inference, or there was
+   * no error.
+   */
+  TopLevelInferenceError get typeInferenceError {
+    return null;
   }
 
   @override
@@ -8633,23 +8869,5 @@ abstract class VariableElementImpl extends ElementImpl
   void visitChildren(ElementVisitor visitor) {
     super.visitChildren(visitor);
     _initializer?.accept(visitor);
-  }
-}
-
-/**
- * A visitor that visit all the elements recursively and fill the given [map].
- */
-class _BuildOffsetToElementMap extends GeneralizingElementVisitor {
-  final Map<int, Element> map;
-
-  _BuildOffsetToElementMap(this.map);
-
-  @override
-  void visitElement(Element element) {
-    int offset = element.nameOffset;
-    if (offset != -1) {
-      map[offset] = element;
-    }
-    super.visitElement(element);
   }
 }

@@ -5,10 +5,10 @@
 /// Test that the dart2js copy of [KernelVisitor] generates the expected class
 /// hierarchy.
 
-import 'package:compiler/src/compiler.dart' show Compiler;
-import 'package:compiler/src/elements/elements.dart';
-import 'package:compiler/src/js_backend/backend.dart' show JavaScriptBackend;
 import 'package:compiler/src/commandline_options.dart' show Flags;
+import 'package:compiler/src/compiler.dart' show Compiler;
+import 'package:compiler/src/js_backend/backend.dart' show JavaScriptBackend;
+import 'package:compiler/src/library_loader.dart' show LoadedLibraries;
 import 'package:kernel/ast.dart' as ir;
 import 'package:kernel/class_hierarchy.dart';
 import 'package:test/test.dart';
@@ -37,10 +37,13 @@ main(List<String> arguments) {
   test('mixin', () async {
     Uri mainUri = Uri.parse('memory:main.dart');
     await compiler.run(mainUri);
-    LibraryElement library = await compiler.libraryLoader.loadLibrary(mainUri);
+    LoadedLibraries libraries =
+        await compiler.libraryLoader.loadLibrary(mainUri);
+    compiler.processLoadedLibraries(libraries);
     JavaScriptBackend backend = compiler.backend;
-    ir.Program program = backend.kernelTask.buildProgram(library);
-    ClassHierarchy hierarchy = new ClassHierarchy(program);
+    ir.Program program = backend.kernelTask.buildProgram(libraries.rootLibrary);
+    ClosedWorldClassHierarchy hierarchy =
+        new ClosedWorldClassHierarchy(program);
 
     ir.Class getClass(String name) {
       for (ir.Class cls in hierarchy.classes) {
@@ -56,6 +59,7 @@ main(List<String> arguments) {
         }
       }
       fail('Class $name not found.');
+      throw "Not reachable.";
     }
 
     ir.Class classS = getClass('S');

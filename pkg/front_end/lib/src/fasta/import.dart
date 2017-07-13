@@ -4,13 +4,9 @@
 
 library fasta.import;
 
-import 'builder/builder.dart' show
-    Builder,
-    LibraryBuilder,
-    PrefixBuilder;
+import 'builder/builder.dart' show Builder, LibraryBuilder, PrefixBuilder;
 
-import 'combinator.dart' show
-    Combinator;
+import 'combinator.dart' show Combinator;
 
 typedef void AddToScope(String name, Builder member);
 
@@ -21,6 +17,8 @@ class Import {
   /// The library being imported.
   final LibraryBuilder imported;
 
+  final bool deferred;
+
   final String prefix;
 
   final List<Combinator> combinators;
@@ -29,8 +27,8 @@ class Import {
 
   final int prefixCharOffset;
 
-  Import(this.importer, this.imported, this.prefix, this.combinators,
-      this.charOffset, this.prefixCharOffset);
+  Import(this.importer, this.imported, this.deferred, this.prefix,
+      this.combinators, this.charOffset, this.prefixCharOffset);
 
   Uri get fileUri => importer.fileUri;
 
@@ -38,12 +36,18 @@ class Import {
     AddToScope add;
     PrefixBuilder prefix;
     if (this.prefix == null) {
-      add = importer.addToScope;
-    } else {
-      prefix = new PrefixBuilder(
-          this.prefix, <String, Builder>{}, importer, prefixCharOffset);
       add = (String name, Builder member) {
-        prefix.exports[name] = member;
+        importer.addToScope(name, member, charOffset, true);
+      };
+    } else {
+      prefix =
+          new PrefixBuilder(this.prefix, deferred, importer, prefixCharOffset);
+      add = (String name, Builder member) {
+        if (member.isSetter) {
+          prefix.exports.setters[name] = member;
+        } else {
+          prefix.exports.local[name] = member;
+        }
       };
     }
     imported.exports.forEach((String name, Builder member) {
@@ -58,7 +62,7 @@ class Import {
     if (prefix != null) {
       Builder existing = importer.addBuilder(prefix.name, prefix, charOffset);
       if (existing == prefix) {
-        importer.addToScope(prefix.name, prefix);
+        importer.addToScope(prefix.name, prefix, prefixCharOffset, true);
       }
     }
   }

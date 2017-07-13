@@ -4,114 +4,140 @@
 
 library fasta.source_loader;
 
-import 'dart:async' show
-    Future;
+import 'dart:async' show Future;
 
-import 'dart:io' show
-    FileSystemException;
+import 'dart:typed_data' show Uint8List;
 
-import 'package:front_end/src/fasta/scanner/io.dart' show
-    readBytesFromFile;
+import 'package:kernel/ast.dart' show Arguments, Expression, Program;
 
-import 'package:front_end/src/fasta/scanner.dart' show
-    ErrorToken,
-    ScannerResult,
-    Token,
-    scan;
+import 'package:kernel/class_hierarchy.dart' show ClassHierarchy;
 
-import 'package:front_end/src/fasta/parser/class_member_parser.dart' show
-    ClassMemberParser;
+import 'package:kernel/core_types.dart' show CoreTypes;
 
-import 'package:kernel/ast.dart' show
-    Program;
+import 'package:kernel/src/incremental_class_hierarchy.dart'
+    show IncrementalClassHierarchy;
 
-import 'package:kernel/class_hierarchy.dart' show
-    ClassHierarchy;
+import '../../../file_system.dart';
 
-import 'package:kernel/core_types.dart' show
-    CoreTypes;
+import '../../base/instrumentation.dart' show Instrumentation;
 
-import '../errors.dart' show
-    InputError,
-    inputError;
+import '../builder/builder.dart'
+    show
+        Builder,
+        ClassBuilder,
+        EnumBuilder,
+        LibraryBuilder,
+        NamedTypeBuilder,
+        TypeBuilder;
 
-import '../messages.dart' show
-    warning;
+import '../compiler_context.dart' show CompilerContext;
 
-import '../export.dart' show
-    Export;
+import '../deprecated_problems.dart' show deprecated_inputError;
 
-import '../analyzer/element_store.dart' show
-    ElementStore;
+import '../export.dart' show Export;
 
-import '../builder/builder.dart' show
-    Builder,
-    ClassBuilder,
-    LibraryBuilder;
+import '../fasta_codes.dart'
+    show
+        templateCyclicClassHierarchy,
+        templateExtendingEnum,
+        templateExtendingRestricted,
+        templateIllegalMixin,
+        templateIllegalMixinDueToConstructors,
+        templateIllegalMixinDueToConstructorsCause,
+        templateUnspecified;
 
-import 'outline_builder.dart' show
-    OutlineBuilder;
+import '../kernel/kernel_shadow_ast.dart' show KernelTypeInferenceEngine;
 
-import '../loader.dart' show
-    Loader;
+import '../kernel/kernel_target.dart' show KernelTarget;
 
-import '../target_implementation.dart' show
-    TargetImplementation;
+import '../loader.dart' show Loader;
 
-import 'diet_listener.dart' show
-    DietListener;
+import '../parser/class_member_parser.dart' show ClassMemberParser;
 
-import 'diet_parser.dart' show
-    DietParser;
+import '../scanner.dart' show ErrorToken, ScannerResult, Token, scan;
 
-import 'source_library_builder.dart' show
-    SourceLibraryBuilder;
+import '../type_inference/type_inference_engine.dart' show TypeInferenceEngine;
 
-import '../ast_kind.dart' show
-    AstKind;
+import 'diet_listener.dart' show DietListener;
+
+import 'diet_parser.dart' show DietParser;
+
+import 'outline_builder.dart' show OutlineBuilder;
+
+import 'source_class_builder.dart' show SourceClassBuilder;
+
+import 'source_library_builder.dart' show SourceLibraryBuilder;
 
 class SourceLoader<L> extends Loader<L> {
+  /// The [FileSystem] which should be used to access files.
+  final FileSystem fileSystem;
+
+  final Map<Uri, List<int>> sourceBytes = <Uri, List<int>>{};
+  final bool excludeSource = CompilerContext.current.options.excludeSource;
+
   // Used when building directly to kernel.
   ClassHierarchy hierarchy;
   CoreTypes coreTypes;
 
-  // Used when building analyzer ASTs.
-  ElementStore elementStore;
+  TypeInferenceEngine typeInferenceEngine;
 
-  SourceLoader(TargetImplementation target)
-      : super(target);
+  Instrumentation instrumentation;
+
+  SourceLoader(this.fileSystem, KernelTarget target) : super(target);
 
   Future<Token> tokenize(SourceLibraryBuilder library,
       {bool suppressLexicalErrors: false}) async {
     Uri uri = library.fileUri;
-    if (uri == null || uri.scheme != "file") {
-      return inputError(library.uri, -1, "Not found: ${library.uri}.");
+    // TODO(sigmund): source-loader shouldn't check schemes, but defer to the
+    // underlying file system to decide whether it is supported.
+    if (uri == null || uri.scheme != "file" && uri.scheme != "multi-root") {
+      return deprecated_inputError(
+          library.uri, -1, "Not found: ${library.uri}.");
     }
-    try {
-      List<int> bytes = await readBytesFromFile(uri);
-      byteCount += bytes.length - 1;
-      ScannerResult result = scan(bytes);
-      Token token = result.tokens;
+
+    // Get the library text from the cache, or read from the file system.
+    List<int> bytes = sourceBytes[uri];
+    if (bytes == null) {
+      try {
+        List<int> rawBytes = await fileSystem.entityForUri(uri).readAsBytes();
+        Uint8List zeroTerminatedBytes = new Uint8List(rawBytes.length + 1);
+        zeroTerminatedBytes.setRange(0, rawBytes.length, rawBytes);
+        bytes = zeroTerminatedBytes;
+        sourceBytes[uri] = bytes;
+      } on FileSystemException catch (e) {
+        return deprecated_inputError(uri, -1, e.message);
+      }
+    }
+
+    byteCount += bytes.length - 1;
+    ScannerResult result = scan(bytes);
+    Token token = result.tokens;
+    if (!suppressLexicalErrors) {
+      List<int> source = getSource(bytes);
+      target.addSourceInformation(library.fileUri, result.lineStarts, source);
+    }
+    while (token is ErrorToken) {
       if (!suppressLexicalErrors) {
-        target.addLineStarts(library.fileUri, result.lineStarts);
+        ErrorToken error = token;
+        library.addCompileTimeError(
+            templateUnspecified.withArguments(error.assertionMessage),
+            token.charOffset,
+            uri);
       }
-      while (token is ErrorToken) {
-        if (!suppressLexicalErrors) {
-          ErrorToken error = token;
-          print(new InputError(uri, token.charOffset, error.assertionMessage)
-              .format());
-        }
-        token = token.next;
-      }
-      return token;
-    } on FileSystemException catch (e) {
-      String message = e.message;
-      String osMessage = e.osError?.message;
-      if (osMessage != null && osMessage.isNotEmpty) {
-        message = osMessage;
-      }
-      return inputError(uri, -1, message);
+      token = token.next;
     }
+    return token;
+  }
+
+  List<int> getSource(List<int> bytes) {
+    if (excludeSource) return const <int>[];
+
+    // bytes is 0-terminated. We don't want that included.
+    if (bytes is Uint8List) {
+      return new Uint8List.view(
+          bytes.buffer, bytes.offsetInBytes, bytes.length - 1);
+    }
+    return bytes.sublist(0, bytes.length - 1);
   }
 
   Future<Null> buildOutline(SourceLibraryBuilder library) async {
@@ -121,15 +147,14 @@ class SourceLoader<L> extends Loader<L> {
     new ClassMemberParser(listener).parseUnit(tokens);
   }
 
-  Future<Null> buildBody(LibraryBuilder library, AstKind astKind) async {
+  Future<Null> buildBody(LibraryBuilder library) async {
     if (library is SourceLibraryBuilder) {
       // We tokenize source files twice to keep memory usage low. This is the
       // second time, and the first time was in [buildOutline] above. So this
       // time we suppress lexical errors.
       Token tokens = await tokenize(library, suppressLexicalErrors: true);
       if (tokens == null) return;
-      DietListener listener = new DietListener(
-          library, elementStore, hierarchy, coreTypes, astKind);
+      DietListener listener = createDietListener(library);
       DietParser parser = new DietParser(listener);
       parser.parseUnit(tokens);
       for (SourceLibraryBuilder part in library.parts) {
@@ -142,17 +167,23 @@ class SourceLoader<L> extends Loader<L> {
     }
   }
 
+  KernelTarget get target => super.target;
+
+  DietListener createDietListener(LibraryBuilder library) {
+    return new DietListener(library, hierarchy, coreTypes, typeInferenceEngine);
+  }
+
   void resolveParts() {
     List<Uri> parts = <Uri>[];
     builders.forEach((Uri uri, LibraryBuilder library) {
-        if (library is SourceLibraryBuilder) {
-          if (library.isPart) {
-            library.validatePart();
-            parts.add(uri);
-          } else {
-            library.includeParts();
-          }
+      if (library is SourceLibraryBuilder) {
+        if (library.isPart) {
+          library.validatePart();
+          parts.add(uri);
+        } else {
+          library.includeParts();
         }
+      }
     });
     parts.forEach(builders.remove);
     ticker.logMs("Resolved parts");
@@ -209,7 +240,7 @@ class SourceLoader<L> extends Loader<L> {
     builders.forEach((Uri uri, dynamic l) {
       SourceLibraryBuilder library = l;
       Set<Builder> members = new Set<Builder>();
-      library.members.forEach((String name, Builder member) {
+      library.forEach((String name, Builder member) {
         while (member != null) {
           members.add(member);
           member = member.next;
@@ -343,31 +374,160 @@ class SourceLoader<L> extends Loader<L> {
             reported.add(cls);
           }
         }
-        warning(cls.fileUri, cls.charOffset, "'${cls.name}' is a supertype of "
-            "itself via '${involved.map((c) => c.name).join(' ')}'.");
+        String involvedString =
+            involved.map((c) => c.fullNameForErrors).join("', '");
+        cls.addCompileTimeError(
+            templateCyclicClassHierarchy.withArguments(
+                cls.fullNameForErrors, involvedString),
+            cls.charOffset);
       }
     });
     ticker.logMs("Found cycles");
+    Set<ClassBuilder> blackListedClasses = new Set<ClassBuilder>.from([
+      coreLibrary["bool"],
+      coreLibrary["int"],
+      coreLibrary["num"],
+      coreLibrary["double"],
+      coreLibrary["String"],
+    ]);
+    for (ClassBuilder cls in allClasses) {
+      if (cls.library.loader != this) continue;
+      Set<ClassBuilder> directSupertypes = new Set<ClassBuilder>();
+      target.addDirectSupertype(cls, directSupertypes);
+      for (ClassBuilder supertype in directSupertypes) {
+        if (supertype is EnumBuilder) {
+          cls.addCompileTimeError(
+              templateExtendingEnum.withArguments(supertype.name),
+              cls.charOffset);
+        } else if (!cls.library.mayImplementRestrictedTypes &&
+            blackListedClasses.contains(supertype)) {
+          cls.addCompileTimeError(
+              templateExtendingRestricted.withArguments(supertype.name),
+              cls.charOffset);
+        }
+      }
+      TypeBuilder mixedInType = cls.mixedInType;
+      if (mixedInType != null) {
+        bool isClassBuilder = false;
+        if (mixedInType is NamedTypeBuilder) {
+          var builder = mixedInType.builder;
+          if (builder is ClassBuilder) {
+            isClassBuilder = true;
+            for (Builder constructory in builder.constructors.local.values) {
+              if (constructory.isConstructor && !constructory.isSynthetic) {
+                cls.addCompileTimeError(
+                    templateIllegalMixinDueToConstructors
+                        .withArguments(builder.fullNameForErrors),
+                    cls.charOffset);
+                builder.addCompileTimeError(
+                    templateIllegalMixinDueToConstructorsCause
+                        .withArguments(builder.fullNameForErrors),
+                    constructory.charOffset);
+              }
+            }
+          }
+        }
+        if (!isClassBuilder) {
+          cls.addCompileTimeError(
+              templateIllegalMixin.withArguments(mixedInType.fullNameForErrors),
+              cls.charOffset);
+        }
+      }
+    }
+    ticker.logMs("Checked restricted supertypes");
   }
 
   void buildProgram() {
     builders.forEach((Uri uri, LibraryBuilder library) {
       if (library is SourceLibraryBuilder) {
-        libraries.add(library.build());
+        libraries.add(library.build(coreLibrary));
       }
     });
     ticker.logMs("Built program");
   }
 
-  void buildElementStore() {
-    elementStore = new ElementStore(coreLibrary, builders);
-    ticker.logMs("Built analyzer element model.");
-  }
-
   void computeHierarchy(Program program) {
-    hierarchy = new ClassHierarchy(program);
+    hierarchy = new IncrementalClassHierarchy();
     ticker.logMs("Computed class hierarchy");
     coreTypes = new CoreTypes(program);
     ticker.logMs("Computed core types");
+  }
+
+  void checkOverrides(List<SourceClassBuilder> sourceClasses) {
+    assert(hierarchy != null);
+    for (SourceClassBuilder builder in sourceClasses) {
+      builder.checkOverrides(hierarchy);
+    }
+    ticker.logMs("Checked overrides");
+  }
+
+  void createTypeInferenceEngine() {
+    typeInferenceEngine =
+        new KernelTypeInferenceEngine(instrumentation, target.strongMode);
+  }
+
+  /// Performs the first phase of top level initializer inference, which
+  /// consists of creating kernel objects for all fields and top level variables
+  /// that might be subject to type inference, and records dependencies between
+  /// them.
+  void prepareInitializerInference() {
+    typeInferenceEngine.prepareTopLevel(coreTypes, hierarchy);
+    builders.forEach((Uri uri, LibraryBuilder library) {
+      if (library is SourceLibraryBuilder) {
+        library.prepareInitializerInference(library, null);
+      }
+    });
+    ticker.logMs("Prepared initializer inference");
+  }
+
+  /// Performs the second phase of top level initializer inference, which is to
+  /// visit fields and top level variables in topologically-sorted order and
+  /// assign their types.
+  void performInitializerInference() {
+    typeInferenceEngine.finishTopLevel();
+    ticker.logMs("Performed initializer inference");
+  }
+
+  List<Uri> getDependencies() => sourceBytes.keys.toList();
+
+  Expression instantiateInvocation(Expression receiver, String name,
+      Arguments arguments, int offset, bool isSuper) {
+    return target.backendTarget.instantiateInvocation(
+        coreTypes, receiver, name, arguments, offset, isSuper);
+  }
+
+  Expression instantiateNoSuchMethodError(
+      Expression receiver, String name, Arguments arguments, int offset,
+      {bool isMethod: false,
+      bool isGetter: false,
+      bool isSetter: false,
+      bool isField: false,
+      bool isLocalVariable: false,
+      bool isDynamic: false,
+      bool isSuper: false,
+      bool isStatic: false,
+      bool isConstructor: false,
+      bool isTopLevel: false}) {
+    return target.backendTarget.instantiateNoSuchMethodError(
+        coreTypes, receiver, name, arguments, offset,
+        isMethod: isMethod,
+        isGetter: isGetter,
+        isSetter: isSetter,
+        isField: isField,
+        isLocalVariable: isLocalVariable,
+        isDynamic: isDynamic,
+        isSuper: isSuper,
+        isStatic: isStatic,
+        isConstructor: isConstructor,
+        isTopLevel: isTopLevel);
+  }
+
+  Expression throwCompileConstantError(Expression error) {
+    return target.backendTarget.throwCompileConstantError(coreTypes, error);
+  }
+
+  Expression deprecated_buildCompileTimeError(String message, int offset) {
+    return target.backendTarget
+        .buildCompileTimeError(coreTypes, message, offset);
   }
 }

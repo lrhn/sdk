@@ -6,20 +6,20 @@ import 'package:testing/testing.dart';
 
 import 'package:front_end/src/fasta/scanner.dart';
 
-import 'package:front_end/src/fasta/scanner/testing/scanner_chain.dart';
+import 'package:front_end/src/fasta/testing/scanner_chain.dart';
 
 import 'package:front_end/src/fasta/parser.dart';
 
 Future<ChainContext> createContext(
-    Chain suite, Map<String, String> enviroment) async {
+    Chain suite, Map<String, String> environment) async {
   return new ScannerContext();
 }
 
 class ScannerContext extends ChainContext {
   final List<Step> steps = const <Step>[
-      const Read(),
-      const Scan(),
-      const Parse(),
+    const Read(),
+    const Scan(),
+    const Parse(),
   ];
 }
 
@@ -28,8 +28,7 @@ class Parse extends Step<ScannerResult, Null, ChainContext> {
 
   String get name => "parse";
 
-  Future<Result<Null>> run(
-      ScannerResult result, ChainContext context) async {
+  Future<Result<Null>> run(ScannerResult result, ChainContext context) async {
     try {
       List<ParserError> errors = parse(result.tokens);
       if (errors.isNotEmpty) {
@@ -42,4 +41,5 @@ class Parse extends Step<ScannerResult, Null, ChainContext> {
   }
 }
 
-main(List<String> arguments) => runMe(arguments, createContext);
+main(List<String> arguments) =>
+    runMe(arguments, createContext, "../../../testing.json");

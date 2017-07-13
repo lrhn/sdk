@@ -18,29 +18,27 @@ main() {
   const isolate = const IsolateRefMock();
   const object = const InstanceRefMock();
   final paths = new RetainingPathRepositoryMock();
-  final instances = new InstanceRepositoryMock();
+  final objects = new ObjectRepositoryMock();
   test('instantiation', () {
-    final e = new RetainingPathElement(isolate, object, paths, instances);
+    final e = new RetainingPathElement(isolate, object, paths, objects);
     expect(e, isNotNull, reason: 'element correctly created');
     expect(e.isolate, equals(isolate));
     expect(e.object, equals(object));
   });
   test('elements created after attachment', () async {
     const source = const InstanceRefMock(id: 'source-id', name: 'source_name');
-    const path = const RetainingPathMock(elements: const [
-      const RetainingPathItemMock(source: source)
-    ]);
+    const path = const RetainingPathMock(
+        elements: const [const RetainingPathItemMock(source: source)]);
     bool invoked = false;
     final paths = new RetainingPathRepositoryMock(
-      getter: expectAsync((i, id) async {
-        expect(i, equals(isolate));
-        expect(id, equals(object.id));
-        invoked = true;
-        return path;
-      }, count: 1)
-    );
-    final instances = new InstanceRepositoryMock();
-    final e = new RetainingPathElement(isolate, object, paths, instances);
+        getter: expectAsync((i, id) async {
+      expect(i, equals(isolate));
+      expect(id, equals(object.id));
+      invoked = true;
+      return path;
+    }, count: 1));
+    final objects = new ObjectRepositoryMock();
+    final e = new RetainingPathElement(isolate, object, paths, objects);
     document.body.append(e);
     await e.onRendered.first;
     expect(invoked, isFalse);

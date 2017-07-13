@@ -16,7 +16,12 @@ import 'package:analyzer/dart/ast/ast.dart'
         MethodInvocation,
         SimpleIdentifier;
 import 'package:analyzer/dart/element/element.dart'
-    show ClassElement, Element, ExecutableElement, FunctionElement;
+    show
+        ClassElement,
+        Element,
+        ExecutableElement,
+        FunctionElement,
+        LibraryElement;
 import 'package:analyzer/dart/element/type.dart'
     show DartType, InterfaceType, ParameterizedType;
 import 'package:analyzer/src/dart/element/type.dart' show DynamicTypeImpl;
@@ -138,4 +143,33 @@ List<ClassElement> getSuperclasses(ClassElement cls) {
     result.add(cls);
   }
   return result;
+}
+
+List<ClassElement> getImmediateSuperclasses(ClassElement c) {
+  var result = <ClassElement>[];
+  for (var m in c.mixins.reversed) {
+    result.add(m.element);
+  }
+  var s = c.supertype;
+  if (s != null) result.add(s.element);
+  return result;
+}
+
+/// Returns true if the library [l] is dart:_runtime.
+// TODO(jmesserly): unlike other methods in this file, this one wouldn't be
+// suitable for upstream to Analyzer, as it's DDC specific.
+bool isSdkInternalRuntime(LibraryElement l) =>
+    l.isInSdk && l.source.uri.toString() == 'dart:_runtime';
+
+/// Return `true` if the given [classElement] has a noSuchMethod() method
+/// distinct from the one declared in class Object, as per the Dart Language
+/// Specification (section 10.4).
+// TODO(jmesserly): this was taken from error_verifier.dart
+bool hasNoSuchMethod(ClassElement classElement) {
+  // TODO(jmesserly): this is slow in Analyzer. It's a linear scan through all
+  // methods, up through the class hierarchy.
+  var method = classElement.lookUpMethod(
+      FunctionElement.NO_SUCH_METHOD_METHOD_NAME, classElement.library);
+  var definingClass = method?.enclosingElement;
+  return definingClass != null && !definingClass.type.isObject;
 }

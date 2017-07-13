@@ -3,59 +3,100 @@
 // BSD-style license that can be found in the LICENSE file.
 part of dart._runtime;
 
-bool _trapRuntimeErrors = true;
+// We need to set these properties while the sdk is only partially initialized
+// so we cannot use regular Dart fields.
+// The default values for these properties are set when the global_ final field
+// in runtime.dart is initialized.
 
 // Override, e.g., for testing
 void trapRuntimeErrors(bool flag) {
-  _trapRuntimeErrors = flag;
+  JS('', 'dart.__trapRuntimeErrors = #', flag);
 }
 
-throwCastError(object, actual, type) => JS('', '''(() => {
-  var found = $typeName($actual);
-  var expected = $typeName($type);
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $CastErrorImplementation($object, found, expected));
-})()''');
+void ignoreWhitelistedErrors(bool flag) {
+  JS('', 'dart.__ignoreWhitelistedErrors = #', flag);
+}
 
-throwTypeError(object, actual, type) => JS('', '''(() => {
-  var found = $typeName($actual);
-  var expected = $typeName($type);
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $TypeErrorImplementation($object, found, expected));
-})()''');
+void ignoreAllErrors(bool flag) {
+  JS('', 'dart.__ignoreAllErrors = #', flag);
+}
 
-throwStrongModeCastError(object, actual, type) => JS('', '''(() => {
-  var found = $typeName($actual);
-  var expected = $typeName($type);
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $StrongModeCastError($object, found, expected));
-})()''');
+/// Throw an exception on `is` checks that would return an unsound answer in
+/// non-strong mode Dart.
+///
+/// For example `x is List<int>` where `x = <Object>['hello']`.
+///
+/// These checks behave correctly in strong mode (they return false), however,
+/// they will produce a different answer if run on a platform without strong
+/// mode. As a debugging feature, these checks can be configured to throw, to
+/// avoid seeing different behavior between modes.
+///
+/// (There are many other ways that different `is` behavior can be observed,
+/// however, even with this flag. The most obvious is due to lack of reified
+/// generic type parameters. This affects generic functions and methods, as
+/// well as generic types when the type parameter was inferred. Setting this
+/// flag to `true` will not catch these differences in behavior..)
+void failForWeakModeIsChecks(bool flag) {
+  JS('', 'dart.__failForWeakModeIsChecks = #', flag);
+}
 
-throwStrongModeTypeError(object, actual, type) => JS('', '''(() => {
-  var found = $typeName($actual);
-  var expected = $typeName($type);
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $StrongModeTypeError($object, found, expected));
-})()''');
+throwCastError(object, actual, type) {
+  var found = typeName(actual);
+  var expected = typeName(type);
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new CastErrorImplementation(object, found, expected);
+}
 
-throwUnimplementedError(message) => JS('', '''(() => {
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $UnimplementedError($message));
-})()''');
+throwTypeError(object, actual, type) {
+  var found = typeName(actual);
+  var expected = typeName(type);
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new TypeErrorImplementation(object, found, expected);
+}
 
-throwAssertionError([message]) => JS('', '''(() => {
-  if ($_trapRuntimeErrors) debugger;
-  let error = $message != null
-        ? new $AssertionErrorWithMessage($message())
-        : new $AssertionError();
-  $throw_(error);
-})()''');
+throwStrongModeCastError(object, actual, type) {
+  var found = typeName(actual);
+  var expected = typeName(type);
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new StrongModeCastError(object, found, expected);
+}
 
-throwNullValueError() => JS('', '''(() => {
+throwStrongModeTypeError(object, actual, type) {
+  var found = typeName(actual);
+  var expected = typeName(type);
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new StrongModeTypeError(object, found, expected);
+}
+
+throwUnimplementedError(String message) {
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new UnimplementedError(message);
+}
+
+throwAssertionError([String message()]) {
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw message != null
+      ? new AssertionErrorWithMessage(message())
+      : new AssertionError();
+}
+
+throwCyclicInitializationError([String message]) {
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new CyclicInitializationError(message);
+}
+
+throwNullValueError() {
   // TODO(vsm): Per spec, we should throw an NSM here.  Technically, we ought
   // to thread through method info, but that uglifies the code and can't
   // actually be queried ... it only affects how the error is printed.
-  if ($_trapRuntimeErrors) debugger;
-  $throw_(new $NoSuchMethodError(null,
-      new $Symbol('<Unexpected Null Value>'), null, null, null));
-})()''');
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new NoSuchMethodError(
+      null, new Symbol('<Unexpected Null Value>'), null, null, null);
+}
+
+throwNoSuchMethodError(Object receiver, Symbol memberName,
+    List positionalArguments, Map<Symbol, dynamic> namedArguments) {
+  if (JS('bool', 'dart.__trapRuntimeErrors')) JS('', 'debugger');
+  throw new NoSuchMethodError(
+      receiver, memberName, positionalArguments, namedArguments);
+}

@@ -2,8 +2,6 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library testing.abstract_context;
-
 import 'dart:async';
 
 import 'package:analyzer/dart/ast/ast.dart';
@@ -13,13 +11,14 @@ import 'package:analyzer/exception/exception.dart';
 import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/file_system/memory_file_system.dart';
 import 'package:analyzer/source/package_map_resolver.dart';
-import 'package:analyzer/src/dart/analysis/byte_store.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/dart/analysis/file_state.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/engine.dart' as engine;
 import 'package:analyzer/src/generated/sdk.dart';
 import 'package:analyzer/src/generated/source_io.dart';
+import 'package:front_end/src/base/performace_logger.dart';
+import 'package:front_end/src/incremental/byte_store.dart';
 
 import 'mock_sdk.dart';
 
@@ -51,30 +50,25 @@ class AbstractContextTest {
   Map<String, List<Folder>> packageMap;
   UriResolver resourceResolver;
 
-  AnalysisContext _context;
-
   StringBuffer _logBuffer = new StringBuffer();
   FileContentOverlay _fileContentOverlay = new FileContentOverlay();
   AnalysisDriver _driver;
 
-  AnalysisContext get context {
-    if (enableNewAnalysisDriver) {
-      throw new StateError('Should not be used with the new analysis driver.');
-    }
-    return _context;
-  }
+  AnalysisDriver get driver => _driver;
 
-  AnalysisDriver get driver {
-    if (enableNewAnalysisDriver) {
-      return _driver;
-    }
-    throw new StateError('Should be used with the new analysis driver.');
-  }
+  Source addMetaPackageSource() => addPackageSource(
+      'meta',
+      'meta.dart',
+      r'''
+library meta;
 
-  /**
-   * Return `true` if the new analysis driver should be used by these tests.
-   */
-  bool get enableNewAnalysisDriver => false;
+const Required required = const Required();
+
+class Required {
+  final String reason;
+  const Required([this.reason]);
+}
+''');
 
   Source addPackageSource(String packageName, String filePath, String content) {
     packageMap[packageName] = [(newFolder('/pubcache/$packageName'))];
@@ -83,20 +77,15 @@ class AbstractContextTest {
   }
 
   Source addSource(String path, String content, [Uri uri]) {
-    File file = newFile(path, content);
-    if (enableNewAnalysisDriver) {
-      driver.addFile(path);
-      driver.changeFile(path);
-      _fileContentOverlay[path] = content;
-      return null;
-    } else {
-      Source source = file.createSource(uri);
-      ChangeSet changeSet = new ChangeSet();
-      changeSet.addedSource(source);
-      context.applyChanges(changeSet);
-      context.setContents(source, content);
-      return source;
+    if (path.startsWith('/')) {
+      path = provider.convertPath(path);
     }
+    File file = newFile(path, content);
+    Source source = file.createSource(uri);
+    driver.addFile(path);
+    driver.changeFile(path);
+    _fileContentOverlay[path] = content;
+    return source;
   }
 
   File newFile(String path, [String content]) =>
@@ -105,31 +94,12 @@ class AbstractContextTest {
   Folder newFolder(String path) =>
       provider.newFolder(provider.convertPath(path));
 
-  /**
-   * Performs all analysis tasks in [context].
-   */
-  void performAllAnalysisTasks() {
-    if (enableNewAnalysisDriver) {
-      return;
-    }
-    while (true) {
-      engine.AnalysisResult result = context.performAnalysisTask();
-      if (!result.hasMoreWork) {
-        break;
-      }
-    }
-  }
-
   void processRequiredPlugins() {
     AnalysisEngine.instance.processRequiredPlugins();
   }
 
   Future<CompilationUnit> resolveLibraryUnit(Source source) async {
-    if (enableNewAnalysisDriver) {
-      return (await driver.getResult(source.fullName))?.unit;
-    } else {
-      return context.resolveCompilationUnit2(source, source);
-    }
+    return (await driver.getResult(source.fullName))?.unit;
   }
 
   void setUp() {
@@ -142,23 +112,18 @@ class AbstractContextTest {
         new PackageMapUriResolver(provider, packageMap);
     SourceFactory sourceFactory = new SourceFactory(
         [new DartUriResolver(sdk), packageResolver, resourceResolver]);
-    if (enableNewAnalysisDriver) {
-      PerformanceLog log = new PerformanceLog(_logBuffer);
-      AnalysisDriverScheduler scheduler = new AnalysisDriverScheduler(log);
-      _driver = new AnalysisDriver(
-          scheduler,
-          log,
-          provider,
-          new MemoryByteStore(),
-          _fileContentOverlay,
-          'test',
-          sourceFactory,
-          new AnalysisOptionsImpl());
-      scheduler.start();
-    } else {
-      _context = AnalysisEngine.instance.createAnalysisContext();
-      context.sourceFactory = sourceFactory;
-    }
+    PerformanceLog log = new PerformanceLog(_logBuffer);
+    AnalysisDriverScheduler scheduler = new AnalysisDriverScheduler(log);
+    _driver = new AnalysisDriver(
+        scheduler,
+        log,
+        provider,
+        new MemoryByteStore(),
+        _fileContentOverlay,
+        null,
+        sourceFactory,
+        new AnalysisOptionsImpl()..strongMode = true);
+    scheduler.start();
     AnalysisEngine.instance.logger = PrintLogger.instance;
   }
 
@@ -167,7 +132,6 @@ class AbstractContextTest {
   }
 
   void tearDown() {
-    _context = null;
     provider = null;
     AnalysisEngine.instance.clearCaches();
     AnalysisEngine.instance.logger = null;

@@ -16,7 +16,7 @@ class ObjectPointerVisitor;
 // A list of the bootstrap libraries including CamelName and name.
 //
 // These are listed in the order that they are compiled (see vm/bootstrap.cc).
-#define FOR_EACH_PRODUCT_LIBRARY(M)                                            \
+#define FOR_EACH_BOOTSTRAP_LIBRARY(M)                                          \
   M(Core, core)                                                                \
   M(Async, async)                                                              \
   M(Collection, collection)                                                    \
@@ -25,19 +25,10 @@ class ObjectPointerVisitor;
   M(Internal, _internal)                                                       \
   M(Isolate, isolate)                                                          \
   M(Math, math)                                                                \
+  M(Mirrors, mirrors)                                                          \
   M(Profiler, profiler)                                                        \
   M(TypedData, typed_data)                                                     \
   M(VMService, _vmservice)
-
-#ifdef PRODUCT
-#define FOR_EACH_BOOTSTRAP_LIBRARY(M) FOR_EACH_PRODUCT_LIBRARY(M)
-
-#else
-#define FOR_EACH_BOOTSTRAP_LIBRARY(M)                                          \
-  FOR_EACH_PRODUCT_LIBRARY(M)                                                  \
-  M(Mirrors, mirrors)
-
-#endif
 
 // The object store is a per isolate instance which stores references to
 // objects used by the VM.
@@ -89,6 +80,9 @@ class ObjectStore {
   static intptr_t int_type_offset() {
     return OFFSET_OF(ObjectStore, int_type_);
   }
+
+  RawType* int64_type() const { return int64_type_; }
+  void set_int64_type(const Type& value) { int64_type_ = value.raw(); }
 
   RawClass* integer_implementation_class() const {
     return integer_implementation_class_;
@@ -290,6 +284,7 @@ class ObjectStore {
     }
   }
 
+  RawLibrary* builtin_library() const { return builtin_library_; }
   void set_builtin_library(const Library& value) {
     builtin_library_ = value.raw();
   }
@@ -340,9 +335,6 @@ class ObjectStore {
   RawGrowableObjectArray* exit_listeners() const { return exit_listeners_; }
 
   RawGrowableObjectArray* error_listeners() const { return error_listeners_; }
-
-  RawContext* empty_context() const { return empty_context_; }
-  void set_empty_context(const Context& value) { empty_context_ = value.raw(); }
 
   RawInstance* stack_overflow() const { return stack_overflow_; }
   void set_stack_overflow(const Instance& value) {
@@ -432,11 +424,20 @@ class ObjectStore {
   RawFunction* simple_instance_of_function() const {
     return simple_instance_of_function_;
   }
+  void set_simple_instance_of_function(const Function& value) {
+    simple_instance_of_function_ = value.raw();
+  }
   RawFunction* simple_instance_of_true_function() const {
     return simple_instance_of_true_function_;
   }
+  void set_simple_instance_of_true_function(const Function& value) {
+    simple_instance_of_true_function_ = value.raw();
+  }
   RawFunction* simple_instance_of_false_function() const {
     return simple_instance_of_false_function_;
+  }
+  void set_simple_instance_of_false_function(const Function& value) {
+    simple_instance_of_false_function_ = value.raw();
   }
   RawFunction* async_clear_thread_stack_trace() const {
     return async_clear_thread_stack_trace_;
@@ -450,7 +451,24 @@ class ObjectStore {
   }
   void set_async_set_thread_stack_trace(const Function& func) {
     async_set_thread_stack_trace_ = func.raw();
-    ASSERT(async_set_thread_stack_trace_ != Object::null());
+  }
+  RawFunction* async_star_move_next_helper() const {
+    return async_star_move_next_helper_;
+  }
+  void set_async_star_move_next_helper(const Function& func) {
+    async_star_move_next_helper_ = func.raw();
+  }
+  RawFunction* complete_on_async_return() const {
+    return complete_on_async_return_;
+  }
+  void set_complete_on_async_return(const Function& func) {
+    complete_on_async_return_ = func.raw();
+  }
+  RawClass* async_star_stream_controller() const {
+    return async_star_stream_controller_;
+  }
+  void set_async_star_stream_controller(const Class& cls) {
+    async_star_stream_controller_ = cls.raw();
   }
 
   // Visit all object pointers.
@@ -485,6 +503,7 @@ class ObjectStore {
   V(RawType*, number_type_)                                                    \
   V(RawType*, int_type_)                                                       \
   V(RawClass*, integer_implementation_class_)                                  \
+  V(RawType*, int64_type_)                                                     \
   V(RawClass*, smi_class_)                                                     \
   V(RawType*, smi_type_)                                                       \
   V(RawClass*, mint_class_)                                                    \
@@ -543,7 +562,6 @@ class ObjectStore {
   V(RawGrowableObjectArray*, resume_capabilities_)                             \
   V(RawGrowableObjectArray*, exit_listeners_)                                  \
   V(RawGrowableObjectArray*, error_listeners_)                                 \
-  V(RawContext*, empty_context_)                                               \
   V(RawInstance*, stack_overflow_)                                             \
   V(RawInstance*, out_of_memory_)                                              \
   V(RawUnhandledException*, preallocated_unhandled_exception_)                 \
@@ -556,6 +574,9 @@ class ObjectStore {
   V(RawFunction*, simple_instance_of_false_function_)                          \
   V(RawFunction*, async_clear_thread_stack_trace_)                             \
   V(RawFunction*, async_set_thread_stack_trace_)                               \
+  V(RawFunction*, async_star_move_next_helper_)                                \
+  V(RawFunction*, complete_on_async_return_)                                   \
+  V(RawClass*, async_star_stream_controller_)                                  \
   V(RawArray*, library_load_error_table_)                                      \
   V(RawArray*, unique_dynamic_targets_)                                        \
   V(RawGrowableObjectArray*, token_objects_)                                   \
@@ -574,10 +595,10 @@ class ObjectStore {
   }
   RawObject** to_snapshot(Snapshot::Kind kind) {
     switch (kind) {
-      case Snapshot::kCore:
+      case Snapshot::kFull:
         return reinterpret_cast<RawObject**>(&library_load_error_table_);
-      case Snapshot::kAppJIT:
-      case Snapshot::kAppAOT:
+      case Snapshot::kFullJIT:
+      case Snapshot::kFullAOT:
         return to();
       case Snapshot::kScript:
       case Snapshot::kMessage:

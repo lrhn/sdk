@@ -56,13 +56,15 @@ DEFINE_FLAG(bool,
             "Always try to drop code if the function's usage counter is >= 0");
 DEFINE_FLAG(bool, log_growth, false, "Log PageSpace growth policy decisions.");
 
-HeapPage* HeapPage::Initialize(VirtualMemory* memory, PageType type) {
+HeapPage* HeapPage::Initialize(VirtualMemory* memory,
+                               PageType type,
+                               const char* name) {
   ASSERT(memory != NULL);
   ASSERT(memory->size() > VirtualMemory::PageSize());
   bool is_executable = (type == kExecutable);
   // Create the new page executable (RWX) only if we're not in W^X mode
   bool create_executable = !FLAG_write_protect_code && is_executable;
-  if (!memory->Commit(create_executable)) {
+  if (!memory->Commit(create_executable, name)) {
     return NULL;
   }
   HeapPage* result = reinterpret_cast<HeapPage*>(memory->address());
@@ -77,13 +79,15 @@ HeapPage* HeapPage::Initialize(VirtualMemory* memory, PageType type) {
 }
 
 
-HeapPage* HeapPage::Allocate(intptr_t size_in_words, PageType type) {
+HeapPage* HeapPage::Allocate(intptr_t size_in_words,
+                             PageType type,
+                             const char* name) {
   VirtualMemory* memory =
       VirtualMemory::Reserve(size_in_words << kWordSizeLog2);
   if (memory == NULL) {
     return NULL;
   }
-  HeapPage* result = Initialize(memory, type);
+  HeapPage* result = Initialize(memory, type, name);
   if (result == NULL) {
     delete memory;  // Release reservation to OS.
     return NULL;
@@ -228,12 +232,15 @@ intptr_t PageSpace::LargePageSizeInWordsFor(intptr_t size) {
 
 
 HeapPage* PageSpace::AllocatePage(HeapPage::PageType type) {
-  HeapPage* page = HeapPage::Allocate(kPageSizeInWords, type);
+  const bool is_exec = (type == HeapPage::kExecutable);
+  const intptr_t kVmNameSize = 128;
+  char vm_name[kVmNameSize];
+  Heap::RegionName(heap_, is_exec ? Heap::kCode : Heap::kOld, vm_name,
+                   kVmNameSize);
+  HeapPage* page = HeapPage::Allocate(kPageSizeInWords, type, vm_name);
   if (page == NULL) {
     return NULL;
   }
-
-  bool is_exec = (type == HeapPage::kExecutable);
 
   MutexLocker ml(pages_lock_);
   if (!is_exec) {
@@ -246,7 +253,7 @@ HeapPage* PageSpace::AllocatePage(HeapPage::PageType type) {
   } else {
     // Should not allocate executable pages when running from a precompiled
     // snapshot.
-    ASSERT(Dart::vm_snapshot_kind() != Snapshot::kAppAOT);
+    ASSERT(Dart::vm_snapshot_kind() != Snapshot::kFullAOT);
 
     if (exec_pages_ == NULL) {
       exec_pages_ = page;
@@ -268,8 +275,13 @@ HeapPage* PageSpace::AllocatePage(HeapPage::PageType type) {
 
 
 HeapPage* PageSpace::AllocateLargePage(intptr_t size, HeapPage::PageType type) {
-  intptr_t page_size_in_words = LargePageSizeInWordsFor(size);
-  HeapPage* page = HeapPage::Allocate(page_size_in_words, type);
+  const bool is_exec = (type == HeapPage::kExecutable);
+  const intptr_t page_size_in_words = LargePageSizeInWordsFor(size);
+  const intptr_t kVmNameSize = 128;
+  char vm_name[kVmNameSize];
+  Heap::RegionName(heap_, is_exec ? Heap::kCode : Heap::kOld, vm_name,
+                   kVmNameSize);
+  HeapPage* page = HeapPage::Allocate(page_size_in_words, type, vm_name);
   if (page == NULL) {
     return NULL;
   }
@@ -277,7 +289,7 @@ HeapPage* PageSpace::AllocateLargePage(intptr_t size, HeapPage::PageType type) {
   large_pages_ = page;
   IncreaseCapacityInWords(page_size_in_words);
   // Only one object in this page (at least until String::MakeExternal or
-  // Array::MakeArray is called).
+  // Array::MakeFixedLength is called).
   page->set_object_end(page->object_start() + size);
   return page;
 }
@@ -849,6 +861,8 @@ void PageSpace::MarkSweep(bool invoke_api_callbacks) {
   Isolate* isolate = heap_->isolate();
   ASSERT(isolate == Isolate::Current());
 
+  const int64_t pre_wait_for_sweepers = OS::GetCurrentMonotonicMicros();
+
   // Wait for pending tasks to complete and then account for the driver task.
   {
     MonitorLocker locker(tasks_lock());
@@ -857,12 +871,17 @@ void PageSpace::MarkSweep(bool invoke_api_callbacks) {
     }
     set_tasks(1);
   }
+
+  const int64_t pre_safe_point = OS::GetCurrentMonotonicMicros();
+
   // Ensure that all threads for this isolate are at a safepoint (either
   // stopped or in native code). We have guards around Newgen GC and oldgen GC
   // to ensure that if two threads are racing to collect at the same time the
   // loser skips collection and goes straight to allocation.
   {
     SafepointOperationScope safepoint_scope(thread);
+
+    const int64_t start = OS::GetCurrentMonotonicMicros();
 
     // Perform various cleanup that relies on no tasks interfering.
     isolate->class_table()->FreeOldTables();
@@ -881,8 +900,6 @@ void PageSpace::MarkSweep(bool invoke_api_callbacks) {
       heap_->VerifyGC();
       OS::PrintErr(" done.\n");
     }
-
-    const int64_t start = OS::GetCurrentMonotonicMicros();
 
     // Make code pages writable.
     WriteProtectCode(false);
@@ -991,6 +1008,8 @@ void PageSpace::MarkSweep(bool invoke_api_callbacks) {
     page_space_controller_.EvaluateGarbageCollection(
         usage_before, GetCurrentUsage(), start, end);
 
+    heap_->RecordTime(kConcurrentSweep, pre_safe_point - pre_wait_for_sweepers);
+    heap_->RecordTime(kSafePoint, start - pre_safe_point);
     heap_->RecordTime(kMarkObjects, mid1 - start);
     heap_->RecordTime(kResetFreeLists, mid2 - mid1);
     heap_->RecordTime(kSweepPages, mid3 - mid2);
@@ -1210,7 +1229,11 @@ void PageSpaceController::EvaluateGarbageCollection(SpaceUsage before,
   if (allocated_since_previous_gc > 0) {
     const intptr_t garbage = before.used_in_words - after.used_in_words;
     ASSERT(garbage >= 0);
-    const double k = garbage / static_cast<double>(allocated_since_previous_gc);
+    // It makes no sense to expect that each kb allocated will cause more than
+    // one kb of garbage, so we clamp k at 1.0.
+    const double k = Utils::Minimum(
+        1.0, garbage / static_cast<double>(allocated_since_previous_gc));
+
     const int garbage_ratio = static_cast<int>(k * 100);
     heap_->RecordData(PageSpace::kGarbageRatio, garbage_ratio);
 
@@ -1240,7 +1263,7 @@ void PageSpaceController::EvaluateGarbageCollection(SpaceUsage before,
       while (min < max) {
         local_grow_heap = (max + min) / 2;
         const intptr_t limit = after.capacity_in_words +
-                               (grow_heap_ * PageSpace::kPageSizeInWords);
+                               (local_grow_heap * PageSpace::kPageSizeInWords);
         const intptr_t allocated_before_next_gc = limit - after.used_in_words;
         const double estimated_garbage = k * allocated_before_next_gc;
         if (t <= estimated_garbage / limit) {
@@ -1249,12 +1272,13 @@ void PageSpaceController::EvaluateGarbageCollection(SpaceUsage before,
           min = local_grow_heap + 1;
         }
       }
+      local_grow_heap = (max + min) / 2;
       grow_heap_ = local_grow_heap;
       ASSERT(grow_heap_ >= 0);
       // If we are going to grow by heap_grow_max_ then ensure that we
       // will be growing the heap at least by the growth ratio heuristics.
-      if ((grow_heap_ == heap_growth_max_) && (grow_ratio > grow_heap_)) {
-        grow_heap_ = grow_ratio;
+      if (grow_heap_ >= heap_growth_max_) {
+        grow_heap_ = Utils::Maximum(grow_ratio, grow_heap_);
       }
     }
   } else {

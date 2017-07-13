@@ -12,8 +12,16 @@ import '../visitor.dart';
 
 import 'async.dart';
 
-Program transformProgram(Program program) {
-  var helper = new HelperNodes.fromProgram(program);
+void transformLibraries(CoreTypes coreTypes, List<Library> libraries) {
+  var helper = new HelperNodes.fromCoreTypes(coreTypes);
+  var rewriter = new RecursiveContinuationRewriter(helper);
+  for (var library in libraries) {
+    rewriter.rewriteLibrary(library);
+  }
+}
+
+Program transformProgram(CoreTypes coreTypes, Program program) {
+  var helper = new HelperNodes.fromCoreTypes(coreTypes);
   var rewriter = new RecursiveContinuationRewriter(helper);
   return rewriter.rewriteProgram(program);
 }
@@ -30,6 +38,14 @@ class RecursiveContinuationRewriter extends Transformer {
 
   Program rewriteProgram(Program node) {
     return node.accept(this);
+  }
+
+  Library rewriteLibrary(Library node) {
+    return node.accept(this);
+  }
+
+  visitProcedure(Procedure node) {
+    return node.isAbstract ? node : super.visitProcedure(node);
   }
 
   visitFunctionNode(FunctionNode node) {
@@ -124,11 +140,16 @@ class SyncStarFunctionRewriter extends ContinuationRewriterBase {
     // :sync_body(:iterator) {
     //     modified <node.body>;
     // }
+
+    // Note: SyncYielding functions have no Dart equivalent. Since they are
+    // synchronous, we use Sync. (Note also that the Dart VM backend uses the
+    // Dart async marker to decide if functions are debuggable.)
     final nestedClosureVariable = new VariableDeclaration(":sync_op");
     final function = new FunctionNode(buildClosureBody(),
         positionalParameters: [iteratorVariable],
         requiredParameterCount: 1,
-        asyncMarker: AsyncMarker.SyncYielding)
+        asyncMarker: AsyncMarker.SyncYielding,
+        dartAsyncMarker: AsyncMarker.Sync)
       ..fileOffset = enclosingFunction.fileOffset
       ..fileEndOffset = enclosingFunction.fileEndOffset
       ..returnType = helper.coreTypes.boolClass.rawType;
@@ -223,10 +244,15 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
       new VariableDeclaration(':exception'),
       new VariableDeclaration(':stack_trace'),
     ];
+
+    // Note: SyncYielding functions have no Dart equivalent. Since they are
+    // synchronous, we use Sync. (Note also that the Dart VM backend uses the
+    // Dart async marker to decide if functions are debuggable.)
     final function = new FunctionNode(buildWrappedBody(),
         positionalParameters: parameters,
         requiredParameterCount: 0,
-        asyncMarker: AsyncMarker.SyncYielding)
+        asyncMarker: AsyncMarker.SyncYielding,
+        dartAsyncMarker: AsyncMarker.Sync)
       ..fileOffset = enclosingFunction.fileOffset
       ..fileEndOffset = enclosingFunction.fileEndOffset;
 
@@ -400,7 +426,8 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
       initEffects[i] = <Statement>[];
       if (decl.initializer != null) {
         decl.initializer = expressionRewriter.rewrite(
-            decl.initializer, initEffects[i])..parent = decl;
+            decl.initializer, initEffects[i])
+          ..parent = decl;
       }
       isSimple = isSimple && initEffects[i].isEmpty;
     }
@@ -410,7 +437,8 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
     for (int i = 0; i < length; ++i) {
       updateEffects[i] = <Statement>[];
       stmt.updates[i] = expressionRewriter.rewrite(
-          stmt.updates[i], updateEffects[i])..parent = stmt;
+          stmt.updates[i], updateEffects[i])
+        ..parent = stmt;
       isSimple = isSimple && updateEffects[i].isEmpty;
     }
 
@@ -520,8 +548,9 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
     }
     loopBody.add(
         new IfStatement(cond, new Block(newBody), new BreakStatement(labeled)));
-    labeled.body = new WhileStatement(
-        new BoolLiteral(true), new Block(loopBody))..parent = labeled;
+    labeled.body =
+        new WhileStatement(new BoolLiteral(true), new Block(loopBody))
+          ..parent = labeled;
     statements.add(new Block(<Statement>[]
       ..addAll(temps)
       ..add(labeled)));
@@ -544,7 +573,7 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
       //         ...
       //       }
       //     } finally {
-      //       :for-iterator.cancel();
+      //       await :for-iterator.cancel();
       //     }
       //   }
       var iteratorVariable = new VariableDeclaration(':for-iterator',
@@ -557,7 +586,8 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
       var condition = new AwaitExpression(new MethodInvocation(
           new VariableGet(iteratorVariable),
           new Name('moveNext'),
-          new Arguments(<Expression>[])))..fileOffset = stmt.fileOffset;
+          new Arguments(<Expression>[])))
+        ..fileOffset = stmt.fileOffset;
 
       // var <variable> = iterator.current;
       var valueVariable = stmt.variable;
@@ -569,10 +599,9 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
       var tryBody = new WhileStatement(condition, whileBody);
 
       // iterator.cancel();
-      var tryFinalizer = new ExpressionStatement(new MethodInvocation(
-          new VariableGet(iteratorVariable),
-          new Name('cancel'),
-          new Arguments(<Expression>[])));
+      var tryFinalizer = new ExpressionStatement(new AwaitExpression(
+          new MethodInvocation(new VariableGet(iteratorVariable),
+              new Name('cancel'), new Arguments(<Expression>[]))));
 
       var tryFinally = new TryFinally(tryBody, tryFinalizer);
 
@@ -650,7 +679,8 @@ abstract class AsyncRewriterBase extends ContinuationRewriterBase {
   TreeNode visitVariableDeclaration(VariableDeclaration stmt) {
     if (stmt.initializer != null) {
       stmt.initializer = expressionRewriter.rewrite(
-          stmt.initializer, statements)..parent = stmt;
+          stmt.initializer, statements)
+        ..parent = stmt;
     }
     statements.add(stmt);
     return null;
@@ -741,7 +771,8 @@ class AsyncStarFunctionRewriter extends AsyncRewriterBase {
     var addExpression = new MethodInvocation(
         new VariableGet(controllerVariable),
         new Name(stmt.isYieldStar ? 'addStream' : 'add', helper.asyncLibrary),
-        new Arguments(<Expression>[expr]))..fileOffset = stmt.fileOffset;
+        new Arguments(<Expression>[expr]))
+      ..fileOffset = stmt.fileOffset;
 
     statements.add(new IfStatement(
         addExpression,
@@ -785,6 +816,10 @@ class AsyncFunctionRewriter extends AsyncRewriterBase {
         }
       }
     }
+    // In an "Future<FooBar> foo() async {}" function the body can either return
+    // a "FooBar" or a "Future<FooBar>" => a "FutureOr<FooBar>".
+    returnType =
+        new InterfaceType(helper.futureOrClass, <DartType>[returnType]);
     var completerTypeArguments = <DartType>[returnType];
     var completerType =
         new InterfaceType(helper.completerClass, completerTypeArguments);
@@ -793,7 +828,7 @@ class AsyncFunctionRewriter extends AsyncRewriterBase {
     completerVariable = new VariableDeclaration(":completer",
         initializer: new StaticInvocation(helper.completerConstructor,
             new Arguments([], types: completerTypeArguments))
-          ..fileOffset = enclosingFunction.body.fileOffset,
+          ..fileOffset = enclosingFunction.body?.fileOffset ?? -1,
         isFinal: true,
         type: completerType);
     statements.add(completerVariable);
@@ -850,10 +885,9 @@ class AsyncFunctionRewriter extends AsyncRewriterBase {
     var expr = node.expression == null
         ? new NullLiteral()
         : expressionRewriter.rewrite(node.expression, statements);
-    statements
-        .add(new ExpressionStatement(new VariableSet(returnVariable, expr)));
-    statements
-        .add(new BreakStatement(labeledBody)..fileOffset = node.fileOffset);
+    statements.add(new ExpressionStatement(
+        new VariableSet(returnVariable, expr)..fileOffset = node.fileOffset));
+    statements.add(new BreakStatement(labeledBody));
     return null;
   }
 }
@@ -863,6 +897,7 @@ class HelperNodes {
   final Library coreLibrary;
   final Class iteratorClass;
   final Class futureClass;
+  final Class futureOrClass;
   final Class completerClass;
   final Procedure printProcedure;
   final Procedure completerConstructor;
@@ -880,6 +915,7 @@ class HelperNodes {
       this.coreLibrary,
       this.iteratorClass,
       this.futureClass,
+      this.futureOrClass,
       this.completerClass,
       this.printProcedure,
       this.completerConstructor,
@@ -892,23 +928,23 @@ class HelperNodes {
       this.awaitHelper,
       this.coreTypes);
 
-  factory HelperNodes.fromProgram(Program program) {
-    var coreTypes = new CoreTypes(program);
+  factory HelperNodes.fromCoreTypes(CoreTypes coreTypes) {
     return new HelperNodes(
-        coreTypes.getLibrary('dart:async'),
-        coreTypes.getLibrary('dart:core'),
-        coreTypes.getClass('dart:core', 'Iterator'),
-        coreTypes.getClass('dart:async', 'Future'),
-        coreTypes.getClass('dart:async', 'Completer'),
-        coreTypes.getTopLevelMember('dart:core', 'print'),
-        coreTypes.getMember('dart:async', 'Completer', 'sync'),
-        coreTypes.getMember('dart:core', '_SyncIterable', ''),
-        coreTypes.getMember('dart:async', '_StreamIterator', ''),
-        coreTypes.getMember('dart:async', 'Future', 'microtask'),
-        coreTypes.getMember('dart:async', '_AsyncStarStreamController', ''),
-        coreTypes.getTopLevelMember('dart:async', '_asyncThenWrapperHelper'),
-        coreTypes.getTopLevelMember('dart:async', '_asyncErrorWrapperHelper'),
-        coreTypes.getTopLevelMember('dart:async', '_awaitHelper'),
+        coreTypes.asyncLibrary,
+        coreTypes.coreLibrary,
+        coreTypes.iteratorClass,
+        coreTypes.futureClass,
+        coreTypes.futureOrClass,
+        coreTypes.completerClass,
+        coreTypes.printProcedure,
+        coreTypes.completerSyncConstructor,
+        coreTypes.syncIterableDefaultConstructor,
+        coreTypes.streamIteratorDefaultConstructor,
+        coreTypes.futureMicrotaskConstructor,
+        coreTypes.asyncStarStreamControllerDefaultConstructor,
+        coreTypes.asyncThenWrapperHelperProcedure,
+        coreTypes.asyncErrorWrapperHelperProcedure,
+        coreTypes.awaitHelperProcedure,
         coreTypes);
   }
 }

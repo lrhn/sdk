@@ -38,6 +38,188 @@ static void ExpectSubstringF(const char* buff, const char* fmt, ...) {
   EXPECT_SUBSTRING(buffer, buff);
 }
 
+TEST_CASE(Debugger_GetBreakpointsById) {
+  const char* kScriptChars =
+      "main() {\n"
+      "  var x = new StringBuffer();\n"
+      "  x.add('won');\n"
+      "  x.add('too');\n"
+      "  return x.toString();\n"
+      "}\n";
+  SetFlagScope<bool> sfs(&FLAG_remove_script_timestamps_for_test, true);
+  Dart_Handle lib = TestCase::LoadTestScript(kScriptChars, NULL);
+  EXPECT_VALID(lib);
+
+  Isolate* isolate = Isolate::Current();
+  Debugger* debugger = isolate->debugger();
+
+  // Test with one loaded breakpoint, one latent breakpoint.
+  Dart_Handle url = NewString(TestCase::url());
+  Dart_Handle result = Dart_SetBreakpoint(url, 2);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  int64_t bp_id1 = 0;
+  EXPECT_VALID(Dart_IntegerToInt64(result, &bp_id1));
+
+  result = Dart_SetBreakpoint(NewString("not_yet_loaded_script_uri"), 4);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  int64_t bp_id2 = 0;
+  EXPECT_VALID(Dart_IntegerToInt64(result, &bp_id2));
+
+  EXPECT(debugger->GetBreakpointById(bp_id1) != NULL);
+  EXPECT(debugger->GetBreakpointById(bp_id2) != NULL);
+}
+
+static int closure_hit_count = 0;
+int64_t closure_bp_id[4];
+static void PausedInClosuresHandler(Dart_IsolateId isolate_id,
+                                    intptr_t bp_id,
+                                    const Dart_CodeLocation& location) {
+  EXPECT(bp_id == closure_bp_id[closure_hit_count]);
+  closure_hit_count++;
+}
+
+TEST_CASE(Debugger_SetBreakpointInPartOfLibrary) {
+  const char* kMainScript = "main() {}\n";
+  const char* kLib = "library test_lib;\n";
+  const char* kLibPart =
+      "part of test_lib;\n"
+      "void func(int a, int b) {\n"
+      "  return a + b;\n"
+      "}\n";
+  SetFlagScope<bool> sfs(&FLAG_remove_script_timestamps_for_test, true);
+  Dart_Handle root_lib = TestCase::LoadTestScript(kMainScript, NULL);
+  EXPECT_VALID(root_lib);
+
+  Dart_Handle url = NewString("test_lib_url");
+  Dart_Handle lib_source = NewString(kLib);
+  Dart_Handle lib = Dart_LoadLibrary(url, Dart_Null(), lib_source, 0, 0);
+  EXPECT_VALID(lib);
+  EXPECT(Dart_IsLibrary(lib));
+
+  Dart_Handle part_url = NewString("part_url");
+  Dart_Handle part_source = NewString(kLibPart);
+  Dart_Handle result =
+      Dart_LoadSource(lib, part_url, Dart_Null(), part_source, 0, 0);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsLibrary(result));
+  EXPECT(Dart_IdentityEquals(lib, result));
+
+  result = Dart_SetBreakpoint(part_url, 3);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+}
+
+TEST_CASE(Debugger_SetBreakpointInFunctionLiteralFieldInitializers) {
+  const char* kScriptChars =
+      "main() {\n"
+      "  var c = new MyClass();\n"
+      "  c.closure(1, 2);\n"
+      "  MyClass.staticClosure(7, 8);\n"
+      "  closure(3, 4);\n"
+      "  closureSingleLine(5, 6);\n"
+      "}\n"
+      "class MyClass {\n"
+      "  var closure = (int a, int b) {\n"
+      "    return a + b;\n"
+      "  };\n"
+      "  static var staticClosure = (int a, int b) {\n"
+      "    return a * b;\n"
+      "  };\n"
+      "}\n"
+      "var closure = (int a, int b) {\n"
+      "  return a + b;\n"
+      "};\n"
+      "var closureSingleLine = (int a, int b) => a * b;\n"
+      "int v = 10;\n";
+  SetFlagScope<bool> sfs(&FLAG_remove_script_timestamps_for_test, true);
+  Dart_Handle lib = TestCase::LoadTestScript(kScriptChars, NULL);
+  EXPECT_VALID(lib);
+
+  Isolate* isolate = Isolate::Current();
+  Debugger* debugger = isolate->debugger();
+
+  Dart_Handle url = NewString(TestCase::url());
+  Dart_Handle result = Dart_SetBreakpoint(url, 10);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  EXPECT_VALID(Dart_IntegerToInt64(result, &closure_bp_id[0]));
+
+  result = Dart_SetBreakpoint(url, 13);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  EXPECT_VALID(Dart_IntegerToInt64(result, &closure_bp_id[1]));
+
+  result = Dart_SetBreakpoint(url, 17);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  EXPECT_VALID(Dart_IntegerToInt64(result, &closure_bp_id[2]));
+
+  result = Dart_SetBreakpoint(url, 19);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  EXPECT_VALID(Dart_IntegerToInt64(result, &closure_bp_id[3]));
+
+  // Cannot set breakpoint at the start of the class definition.
+  // The implicit constructor token position matches that of the
+  // class definition's token position. So, we do not want to
+  // allow setting breakpoints in implicit consturctors.
+  result = Dart_SetBreakpoint(url, 8);
+  EXPECT_ERROR(result, "could not set breakpoint at line 8");
+
+  result = Dart_SetBreakpoint(url, 20);
+  EXPECT_ERROR(result, "could not set breakpoint at line 20");
+
+  EXPECT(debugger->GetBreakpointById(closure_bp_id[0]) != NULL);
+  EXPECT(debugger->GetBreakpointById(closure_bp_id[1]) != NULL);
+  EXPECT(debugger->GetBreakpointById(closure_bp_id[2]) != NULL);
+  EXPECT(debugger->GetBreakpointById(closure_bp_id[3]) != NULL);
+
+  Dart_SetPausedEventHandler(PausedInClosuresHandler);
+  result = Dart_Invoke(lib, NewString("main"), 0, NULL);
+  EXPECT_VALID(result);
+  EXPECT(closure_hit_count == 4);
+}
+
+TEST_CASE(Debugger_RemoveBreakpoint) {
+  const char* kScriptChars =
+      "main() {\n"
+      "  var x = new StringBuffer();\n"
+      "  x.add('won');\n"
+      "  x.add('too');\n"
+      "  return x.toString();\n"
+      "}\n";
+  SetFlagScope<bool> sfs(&FLAG_remove_script_timestamps_for_test, true);
+  Dart_Handle lib = TestCase::LoadTestScript(kScriptChars, NULL);
+  EXPECT_VALID(lib);
+
+  Isolate* isolate = Isolate::Current();
+  Debugger* debugger = isolate->debugger();
+
+  // Test with one loaded breakpoint, one latent breakpoint.
+  Dart_Handle url = NewString(TestCase::url());
+  Dart_Handle result = Dart_SetBreakpoint(url, 2);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  int64_t bp_id1 = 0;
+  EXPECT_VALID(Dart_IntegerToInt64(result, &bp_id1));
+
+  result = Dart_SetBreakpoint(NewString("not_yet_loaded_script_uri"), 4);
+  EXPECT_VALID(result);
+  EXPECT(Dart_IsInteger(result));
+  int64_t bp_id2 = 0;
+  EXPECT_VALID(Dart_IntegerToInt64(result, &bp_id2));
+
+  EXPECT(debugger->GetBreakpointById(bp_id1) != NULL);
+  EXPECT(debugger->GetBreakpointById(bp_id2) != NULL);
+
+  debugger->RemoveBreakpoint(bp_id1);
+  debugger->RemoveBreakpoint(bp_id2);
+
+  EXPECT(debugger->GetBreakpointById(bp_id1) == NULL);
+  EXPECT(debugger->GetBreakpointById(bp_id2) == NULL);
+}
 
 TEST_CASE(Debugger_PrintBreakpointsToJSONArray) {
   const char* kScriptChars =
@@ -53,6 +235,7 @@ TEST_CASE(Debugger_PrintBreakpointsToJSONArray) {
   Library& vmlib = Library::Handle();
   vmlib ^= Api::UnwrapHandle(lib);
   EXPECT(!vmlib.IsNull());
+  const String& private_key = String::Handle(vmlib.private_key());
 
   Isolate* isolate = Isolate::Current();
   Debugger* debugger = isolate->debugger();
@@ -67,10 +250,11 @@ TEST_CASE(Debugger_PrintBreakpointsToJSONArray) {
     EXPECT_STREQ("[]", js.ToCString());
   }
 
-  // Test with a couple of breakpoints.
+  // Test with a couple of loaded breakpoints, one latent breakpoint.
   Dart_Handle url = NewString(TestCase::url());
   EXPECT_VALID(Dart_SetBreakpoint(url, 2));
   EXPECT_VALID(Dart_SetBreakpoint(url, 3));
+  EXPECT_VALID(Dart_SetBreakpoint(NewString("not_yet_loaded_script_uri"), 4));
   {
     JSONStream js;
     {
@@ -79,23 +263,23 @@ TEST_CASE(Debugger_PrintBreakpointsToJSONArray) {
     }
     ExpectSubstringF(
         js.ToCString(),
-        "[{\"type\":\"Breakpoint\",\"fixedId\":true,\"id\":\"breakpoints\\/2\","
-        "\"breakpointNumber\":2,\"resolved\":false,"
-        "\"location\":{\"type\":\"UnresolvedSourceLocation\","
-        "\"script\":{\"type\":\"@Script\",\"fixedId\":true,"
-        "\"id\":\"libraries\\/%" Pd
-        "\\/scripts\\/test-lib\\/0\","
-        "\"uri\":\"test-lib\","
-        "\"_kind\":\"script\"},\"line\":3}},"
-        "{\"type\":\"Breakpoint\",\"fixedId\":true,\"id\":\"breakpoints\\/1\","
-        "\"breakpointNumber\":1,\"resolved\":false,"
-        "\"location\":{\"type\":\"UnresolvedSourceLocation\","
-        "\"script\":{\"type\":\"@Script\",\"fixedId\":true,"
-        "\"id\":\"libraries\\/%" Pd
-        "\\/scripts\\/test-lib\\/0\","
-        "\"uri\":\"test-lib\","
-        "\"_kind\":\"script\"},\"line\":2}}]",
-        vmlib.index(), vmlib.index());
+        "[{\"type\":\"Breakpoint\",\"fixedId\":true,\"id\":\"breakpoints\\/"
+        "2\",\"breakpointNumber\":2,\"resolved\":false,\"location\":{\"type\":"
+        "\"UnresolvedSourceLocation\",\"script\":{\"type\":\"@Script\","
+        "\"fixedId\":true,\"id\":\"libraries\\/%s\\/scripts\\/"
+        "test-lib\\/"
+        "0\",\"uri\":\"test-lib\",\"_kind\":\"script\"},\"line\":3}},{\"type\":"
+        "\"Breakpoint\",\"fixedId\":true,\"id\":\"breakpoints\\/"
+        "1\",\"breakpointNumber\":1,\"resolved\":false,\"location\":{\"type\":"
+        "\"UnresolvedSourceLocation\",\"script\":{\"type\":\"@Script\","
+        "\"fixedId\":true,\"id\":\"libraries\\/%s\\/scripts\\/"
+        "test-lib\\/"
+        "0\",\"uri\":\"test-lib\",\"_kind\":\"script\"},\"line\":2}},{\"type\":"
+        "\"Breakpoint\",\"fixedId\":true,\"id\":\"breakpoints\\/"
+        "3\",\"breakpointNumber\":3,\"resolved\":false,\"location\":{\"type\":"
+        "\"UnresolvedSourceLocation\",\"scriptUri\":\"not_yet_loaded_script_"
+        "uri\",\"line\":4}}]",
+        private_key.ToCString(), private_key.ToCString());
   }
 }
 

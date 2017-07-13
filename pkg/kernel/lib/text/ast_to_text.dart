@@ -5,7 +5,6 @@ library kernel.ast_to_text;
 
 import '../ast.dart';
 import '../import_table.dart';
-import '../type_propagation/type_propagation.dart';
 
 class Namer<T> {
   int index = 0;
@@ -157,25 +156,6 @@ abstract class Annotator {
   String annotateField(Printer printer, Field node);
 }
 
-class InferredValueAnnotator implements Annotator {
-  const InferredValueAnnotator();
-
-  String annotateVariable(Printer printer, VariableDeclaration node) {
-    if (node.inferredValue == null) return null;
-    return printer.getInferredValueString(node.inferredValue);
-  }
-
-  String annotateReturn(Printer printer, FunctionNode node) {
-    if (node.inferredReturnValue == null) return null;
-    return printer.getInferredValueString(node.inferredReturnValue);
-  }
-
-  String annotateField(Printer printer, Field node) {
-    if (node.inferredValue == null) return null;
-    return printer.getInferredValueString(node.inferredValue);
-  }
-}
-
 /// A quick and dirty ambiguous text printer.
 class Printer extends Visitor<Null> {
   final NameSystem syntheticNames;
@@ -197,7 +177,7 @@ class Printer extends Visitor<Null> {
       this.showExternal,
       this.showOffsets: false,
       this.importTable,
-      this.annotator: const InferredValueAnnotator()})
+      this.annotator})
       : this.syntheticNames = syntheticNames ?? new NameSystem();
 
   Printer._inner(Printer parent, this.importTable)
@@ -230,14 +210,10 @@ class Printer extends Visitor<Null> {
     return '$library::$name';
   }
 
-  String getInferredValueString(InferredValue value) {
-    if (value.isNothing) return 'Nothing';
-    if (value.isAlwaysNull) return 'Null';
-    assert(value.baseClass != null);
-    String baseName = getClassReference(value.baseClass);
-    String baseSuffix = value.isSubclass ? '+' : value.isSubtype ? '*' : '!';
-    String bitSuffix = ValueBit.format(value.valueBits);
-    return '$baseName$baseSuffix $bitSuffix';
+  String getTypedefReference(Typedef node) {
+    if (node == null) return '<No Typedef>';
+    String library = getLibraryReference(node.enclosingLibrary);
+    return '$library::${node.name}';
   }
 
   static final String emptyNameString = '•';
@@ -289,6 +265,7 @@ class Printer extends Visitor<Null> {
   }
 
   void writeLibraryFile(Library library) {
+    writeAnnotationList(library.annotations);
     writeWord('library');
     if (library.name != null) {
       writeWord(library.name);
@@ -306,11 +283,13 @@ class Printer extends Visitor<Null> {
         endLine('import "$importPath" as $prefix;');
       }
     }
-    for (var import in library.deferredImports) {
+    for (var import in library.dependencies) {
       import.accept(this);
     }
     endLine();
     var inner = new Printer._inner(this, imports);
+    library.dependencies.forEach(inner.writeNode);
+    library.typedefs.forEach(inner.writeNode);
     library.classes.forEach(inner.writeNode);
     library.fields.forEach(inner.writeNode);
     library.procedures.forEach(inner.writeNode);
@@ -330,6 +309,7 @@ class Printer extends Visitor<Null> {
         }
         writeWord('external');
       }
+      writeAnnotationList(library.annotations);
       writeWord('library');
       if (library.name != null) {
         writeWord(library.name);
@@ -343,6 +323,8 @@ class Printer extends Visitor<Null> {
       writeWord(prefix);
       endLine(' {');
       ++inner.indentation;
+      library.dependencies.forEach(inner.writeNode);
+      library.typedefs.forEach(inner.writeNode);
       library.classes.forEach(inner.writeNode);
       library.fields.forEach(inner.writeNode);
       library.procedures.forEach(inner.writeNode);
@@ -452,6 +434,19 @@ class Printer extends Visitor<Null> {
         writeList(type.typeArguments, writeType);
         writeSymbol('>');
       }
+    }
+  }
+
+  visitVectorType(VectorType type) {
+    writeWord('Vector');
+  }
+
+  visitTypedefType(TypedefType type) {
+    writeTypedefReference(type.typedefNode);
+    if (type.typeArguments.isNotEmpty) {
+      writeSymbol('<');
+      writeList(type.typeArguments, writeType);
+      writeSymbol('>');
     }
   }
 
@@ -636,6 +631,10 @@ class Printer extends Visitor<Null> {
     writeWord(getClassReference(classNode));
   }
 
+  void writeTypedefReference(Typedef typedefNode) {
+    writeWord(getTypedefReference(typedefNode));
+  }
+
   void writeLibraryReference(Library library) {
     writeWord(getLibraryReference(library));
   }
@@ -738,6 +737,7 @@ class Printer extends Visitor<Null> {
     writeIndentation();
     writeModifier(node.isExternal, 'external');
     writeModifier(node.isConst, 'const');
+    writeModifier(node.isSyntheticDefault, 'default');
     writeWord('constructor');
     writeFunction(node.function,
         name: node.name, initializers: node.initializers);
@@ -775,6 +775,16 @@ class Printer extends Visitor<Null> {
     --indentation;
     writeIndentation();
     endLine('}');
+  }
+
+  visitTypedef(Typedef node) {
+    writeIndentation();
+    writeWord('typedef');
+    writeWord(node.name);
+    writeTypeParameterList(node.typeParameters);
+    writeSpaced('=');
+    writeNode(node.type);
+    endLine(';');
   }
 
   visitInvalidExpression(InvalidExpression node) {
@@ -829,7 +839,10 @@ class Printer extends Visitor<Null> {
 
   visitConditionalExpression(ConditionalExpression node) {
     writeExpression(node.condition, Precedence.LOGICAL_OR);
-    writeSpaced('?');
+    ensureSpace();
+    write('?');
+    writeStaticType(node.staticType);
+    writeSpace();
     writeExpression(node.then);
     writeSpaced(':');
     writeExpression(node.otherwise);
@@ -1017,11 +1030,60 @@ class Printer extends Visitor<Null> {
     state = WORD;
   }
 
-  visitDeferredImport(DeferredImport node) {
-    write('import "');
-    write('${node.importedLibrary.importUri}');
-    write('" deferred as ');
-    write(node.name);
+  visitVectorCreation(VectorCreation node) {
+    writeWord('MakeVector');
+    writeSymbol('(');
+    writeWord(node.length.toString());
+    writeSymbol(')');
+  }
+
+  visitVectorGet(VectorGet node) {
+    writeExpression(node.vectorExpression);
+    writeSymbol('[');
+    writeWord(node.index.toString());
+    writeSymbol(']');
+  }
+
+  visitVectorSet(VectorSet node) {
+    writeExpression(node.vectorExpression);
+    writeSymbol('[');
+    writeWord(node.index.toString());
+    writeSymbol(']');
+    writeSpaced('=');
+    writeExpression(node.value);
+  }
+
+  visitVectorCopy(VectorCopy node) {
+    writeWord('CopyVector');
+    writeSymbol('(');
+    writeExpression(node.vectorExpression);
+    writeSymbol(')');
+  }
+
+  visitClosureCreation(ClosureCreation node) {
+    writeWord('MakeClosure');
+    writeSymbol('<');
+    writeNode(node.functionType);
+    writeSymbol('>');
+    writeSymbol('(');
+    writeMemberReference(node.topLevelFunction);
+    writeComma();
+    writeExpression(node.contextVector);
+    writeSymbol(')');
+  }
+
+  visitLibraryDependency(LibraryDependency node) {
+    writeIndentation();
+    writeWord(node.isImport ? 'import' : 'export');
+    var uriString = '${node.targetLibrary.importUri}';
+    writeWord('"$uriString"');
+    if (node.isDeferred) {
+      writeWord('deferred');
+    }
+    if (node.name != null) {
+      writeWord('as');
+      writeWord(node.name);
+    }
     endLine(';');
   }
 
@@ -1052,6 +1114,14 @@ class Printer extends Visitor<Null> {
       writeSymbol('}');
     } else {
       writeName(name);
+    }
+  }
+
+  void writeStaticType(DartType type) {
+    if (type != null) {
+      writeSymbol('{');
+      writeType(type);
+      writeSymbol('}');
     }
   }
 
@@ -1339,7 +1409,12 @@ class Printer extends Visitor<Null> {
   visitFunctionDeclaration(FunctionDeclaration node) {
     writeIndentation();
     writeWord('function');
-    writeFunction(node.function, name: getVariableName(node.variable));
+    if (node.function != null) {
+      writeFunction(node.function, name: getVariableName(node.variable));
+    } else {
+      writeWord(getVariableName(node.variable));
+      endLine('...;');
+    }
   }
 
   void writeVariableDeclaration(VariableDeclaration node,

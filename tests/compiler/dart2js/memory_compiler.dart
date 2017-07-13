@@ -15,6 +15,9 @@ import 'package:compiler/compiler_new.dart'
         Diagnostic,
         PackagesDiscoveryProvider;
 import 'package:compiler/src/diagnostics/messages.dart' show Message;
+import 'package:compiler/src/elements/entities.dart'
+    show LibraryEntity, MemberEntity;
+import 'package:compiler/src/enqueue.dart' show ResolutionEnqueuer;
 import 'package:compiler/src/null_compiler_output.dart' show NullCompilerOutput;
 import 'package:compiler/src/library_loader.dart' show LoadedLibraries;
 import 'package:compiler/src/options.dart' show CompilerOptions;
@@ -31,8 +34,8 @@ class MultiDiagnostics implements CompilerDiagnostics {
   const MultiDiagnostics([this.diagnosticsList = const []]);
 
   @override
-  void report(Message message, Uri uri, int begin, int end, String text,
-      Diagnostic kind) {
+  void report(covariant Message message, Uri uri, int begin, int end,
+      String text, Diagnostic kind) {
     for (CompilerDiagnostics diagnostics in diagnosticsList) {
       diagnostics.report(message, uri, begin, end, text, kind);
     }
@@ -45,10 +48,13 @@ CompilerDiagnostics createCompilerDiagnostics(
   CompilerDiagnostics handler = diagnostics;
   if (showDiagnostics) {
     if (diagnostics == null) {
-      handler = new FormattingDiagnosticHandler(provider)..verbose = verbose;
+      handler = new FormattingDiagnosticHandler(provider)
+        ..verbose = verbose
+        ..autoReadFileUri = true;
     } else {
       var formattingHandler = new FormattingDiagnosticHandler(provider)
-        ..verbose = verbose;
+        ..verbose = verbose
+        ..autoReadFileUri = true;
       handler = new MultiDiagnostics([diagnostics, formattingHandler]);
     }
   } else if (diagnostics == null) {
@@ -60,8 +66,11 @@ CompilerDiagnostics createCompilerDiagnostics(
 Expando<MemorySourceFileProvider> expando =
     new Expando<MemorySourceFileProvider>();
 
+/// memorySourceFiles can contain a map of string filename to string file
+/// contents or string file name to binary file contents (hence the `dynamic`
+/// type for the second parameter).
 Future<CompilationResult> runCompiler(
-    {Map<String, String> memorySourceFiles: const <String, String>{},
+    {Map<String, dynamic> memorySourceFiles: const <String, dynamic>{},
     Uri entryPoint,
     List<Uri> entryPoints,
     List<Uri> resolutionInputs,
@@ -75,7 +84,11 @@ Future<CompilationResult> runCompiler(
     PackagesDiscoveryProvider packagesDiscoveryProvider,
     void beforeRun(CompilerImpl compiler)}) async {
   if (entryPoint == null) {
-    entryPoint = Uri.parse('memory:main.dart');
+    if (options.contains('--read-dill')) {
+      entryPoint = Uri.parse('memory:main.dill');
+    } else {
+      entryPoint = Uri.parse('memory:main.dart');
+    }
   }
   CompilerImpl compiler = compilerFor(
       entryPoint: entryPoint,
@@ -100,7 +113,7 @@ Future<CompilationResult> runCompiler(
 CompilerImpl compilerFor(
     {Uri entryPoint,
     List<Uri> resolutionInputs,
-    Map<String, String> memorySourceFiles: const <String, String>{},
+    Map<String, dynamic> memorySourceFiles: const <String, dynamic>{},
     CompilerDiagnostics diagnosticHandler,
     CompilerOutput outputProvider,
     List<String> options: const <String>[],
@@ -159,34 +172,25 @@ CompilerImpl compilerFor(
           packagesDiscoveryProvider: packagesDiscoveryProvider));
 
   if (cachedCompiler != null) {
-    compiler.types = cachedCompiler.types.copy(compiler.resolution);
     Map copiedLibraries = {};
-    cachedCompiler.libraryLoader.libraries.forEach((library) {
+    cachedCompiler.libraryLoader.libraries.forEach((dynamic library) {
       if (library.isPlatformLibrary) {
-        var libraryLoader = compiler.libraryLoader;
+        dynamic libraryLoader = compiler.libraryLoader;
         libraryLoader.mapLibrary(library);
-        compiler.onLibraryCreated(library);
-        compiler.onLibraryScanned(library, null);
-        if (library.isPatched) {
-          var patchLibrary = library.patch;
-          compiler.onLibraryCreated(patchLibrary);
-          compiler.onLibraryScanned(patchLibrary, null);
-        }
         copiedLibraries[library.canonicalUri] = library;
       }
     });
-    // TODO(johnniwinther): Assert that no libraries are loaded lazily from
-    // this call.
-    compiler.onLibrariesLoaded(new MemoryLoadedLibraries(copiedLibraries));
+    compiler.processLoadedLibraries(new MemoryLoadedLibraries(copiedLibraries));
+    ResolutionEnqueuer resolutionEnqueuer = compiler.startResolution();
 
     compiler.backend.constantCompilerTask
         .copyConstantValues(cachedCompiler.backend.constantCompilerTask);
 
-    Iterable cachedTreeElements =
+    Iterable<MemberEntity> cachedTreeElements =
         cachedCompiler.enqueuer.resolution.processedEntities;
-    cachedTreeElements.forEach((element) {
-      if (element.library.isPlatformLibrary) {
-        compiler.enqueuer.resolution.registerProcessedElementInternal(element);
+    cachedTreeElements.forEach((MemberEntity element) {
+      if (element.library.canonicalUri.scheme == 'dart') {
+        resolutionEnqueuer.registerProcessedElementInternal(element);
       }
     });
 
@@ -199,7 +203,6 @@ CompilerImpl compilerFor(
     cachedCompiler.patchParser = null;
     cachedCompiler.libraryLoader = null;
     cachedCompiler.resolver = null;
-    cachedCompiler.closureToClassMapper = null;
     cachedCompiler.checker = null;
     cachedCompiler.globalInference = null;
     cachedCompiler.backend = null;
@@ -221,16 +224,18 @@ class MemoryLoadedLibraries implements LoadedLibraries {
   bool containsLibrary(Uri uri) => copiedLibraries.containsKey(uri);
 
   @override
-  void forEachImportChain(f, {callback}) {}
+  void forEachImportChain(f, {callback}) {
+    throw new UnimplementedError();
+  }
 
   @override
-  void forEachLibrary(f) {}
+  void forEachLibrary(f) => copiedLibraries.values.forEach(f);
 
   @override
   getLibrary(Uri uri) => copiedLibraries[uri];
 
   @override
-  Uri get rootUri => null;
+  LibraryEntity get rootLibrary => copiedLibraries.values.first;
 }
 
 DiagnosticHandler createDiagnosticHandler(DiagnosticHandler diagnosticHandler,

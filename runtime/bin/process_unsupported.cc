@@ -19,6 +19,7 @@ Process::ExitHook Process::exit_hook_ = NULL;
 
 void Process::TerminateExitCodeHandler() {}
 
+void Process::ClearAllSignalHandlers() {}
 
 void FUNCTION_NAME(Process_Start)(Dart_NativeArguments args) {
   Dart_ThrowException(
@@ -87,6 +88,18 @@ void FUNCTION_NAME(SystemEncodingToString)(Dart_NativeArguments args) {
 
 
 void FUNCTION_NAME(StringToSystemEncoding)(Dart_NativeArguments args) {
+  Dart_ThrowException(
+      DartUtils::NewInternalError("Process is not supported on this platform"));
+}
+
+
+void FUNCTION_NAME(ProcessInfo_CurrentRSS)(Dart_NativeArguments args) {
+  Dart_ThrowException(
+      DartUtils::NewInternalError("Process is not supported on this platform"));
+}
+
+
+void FUNCTION_NAME(ProcessInfo_MaxRSS)(Dart_NativeArguments args) {
   Dart_ThrowException(
       DartUtils::NewInternalError("Process is not supported on this platform"));
 }

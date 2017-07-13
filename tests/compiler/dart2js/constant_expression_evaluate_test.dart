@@ -7,14 +7,13 @@ library dart2js.constants.expressions.evaluate_test;
 import 'dart:async';
 import 'package:async_helper/async_helper.dart';
 import 'package:expect/expect.dart';
-import 'package:compiler/src/common/backend_api.dart';
 import 'package:compiler/src/constants/constructors.dart';
 import 'package:compiler/src/constants/evaluation.dart';
 import 'package:compiler/src/constants/expressions.dart';
 import 'package:compiler/src/constants/values.dart';
 import 'package:compiler/src/constant_system_dart.dart';
 import 'package:compiler/src/compiler.dart';
-import 'package:compiler/src/core_types.dart';
+import 'package:compiler/src/common_elements.dart';
 import 'package:compiler/src/elements/elements.dart';
 import 'package:compiler/src/elements/resolution_types.dart';
 import 'memory_compiler.dart';
@@ -39,7 +38,7 @@ class ConstantData {
   const ConstantData(this.code, this.expectedValues);
 }
 
-class MemoryEnvironment implements Environment {
+class MemoryEnvironment implements EvaluationEnvironment {
   final Compiler _compiler;
   final Map<String, String> env;
 
@@ -70,10 +69,7 @@ class MemoryEnvironment implements Environment {
   }
 
   @override
-  CommonElements get commonElements => _compiler.commonElements;
-
-  @override
-  BackendClasses get backendClasses => _compiler.backend.backendClasses;
+  CommonElements get commonElements => _compiler.resolution.commonElements;
 }
 
 const List<TestData> DATA = const [
@@ -279,19 +275,19 @@ Future testData(TestData data) async {
   CompilationResult result = await runCompiler(
       memorySourceFiles: {'main.dart': source}, options: ['--analyze-all']);
   Compiler compiler = result.compiler;
-  var library = compiler.mainApp;
+  dynamic library = compiler.frontendStrategy.elementEnvironment.mainLibrary;
   constants.forEach((String name, ConstantData data) {
     FieldElement field = library.localLookup(name);
     ConstantExpression constant = field.constant;
     data.expectedValues.forEach((Map<String, String> env, String expectedText) {
-      Environment environment = new MemoryEnvironment(compiler, env);
+      EvaluationEnvironment environment = new MemoryEnvironment(compiler, env);
       ConstantValue value =
           constant.evaluate(environment, DART_CONSTANT_SYSTEM);
       String valueText = value.toStructuredText();
       Expect.equals(
           expectedText,
           valueText,
-          "Unexpected value '${valueText}' for contant "
+          "Unexpected value '${valueText}' for constant "
           "`${constant.toDartText()}`, expected '${expectedText}'.");
     });
   });

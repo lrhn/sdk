@@ -227,6 +227,30 @@ class CloneVisitor extends TreeVisitor {
     return new Let(newVariable, clone(node.body));
   }
 
+  visitVectorCreation(VectorCreation node) {
+    return new VectorCreation(node.length);
+  }
+
+  visitClosureCreation(ClosureCreation node) {
+    return new ClosureCreation.byReference(
+        node.topLevelFunctionReference,
+        cloneOptional(node.contextVector),
+        visitOptionalType(node.functionType));
+  }
+
+  visitVectorSet(VectorSet node) {
+    return new VectorSet(
+        clone(node.vectorExpression), node.index, clone(node.value));
+  }
+
+  visitVectorGet(VectorGet node) {
+    return new VectorGet(clone(node.vectorExpression), node.index);
+  }
+
+  visitVectorCopy(VectorCopy node) {
+    return new VectorCopy(clone(node.vectorExpression));
+  }
+
   // Statements
   visitInvalidStatement(InvalidStatement node) {
     return new InvalidStatement();
@@ -245,8 +269,10 @@ class CloneVisitor extends TreeVisitor {
   }
 
   visitAssertStatement(AssertStatement node) {
-    return new AssertStatement(
-        clone(node.condition), cloneOptional(node.message));
+    return new AssertStatement(clone(node.condition),
+        conditionStartOffset: node.conditionStartOffset,
+        conditionEndOffset: node.conditionEndOffset,
+        message: cloneOptional(node.message));
   }
 
   visitLabeledStatement(LabeledStatement node) {
@@ -282,8 +308,10 @@ class CloneVisitor extends TreeVisitor {
 
   visitSwitchStatement(SwitchStatement node) {
     for (SwitchCase switchCase in node.cases) {
-      switchCases[switchCase] =
-          new SwitchCase(switchCase.expressions.map(clone).toList(), null);
+      switchCases[switchCase] = new SwitchCase(
+          switchCase.expressions.map(clone).toList(),
+          new List<int>.from(switchCase.expressionOffsets),
+          null);
     }
     return new SwitchStatement(
         clone(node.expression), node.cases.map(clone).toList());
@@ -358,7 +386,8 @@ class CloneVisitor extends TreeVisitor {
         isExternal: node.isExternal,
         isConst: node.isConst,
         transformerFlags: node.transformerFlags,
-        fileUri: node.fileUri)..fileEndOffset = node.fileEndOffset;
+        fileUri: node.fileUri)
+      ..fileEndOffset = node.fileEndOffset;
   }
 
   visitField(Field node) {
@@ -371,7 +400,8 @@ class CloneVisitor extends TreeVisitor {
         hasImplicitGetter: node.hasImplicitGetter,
         hasImplicitSetter: node.hasImplicitSetter,
         transformerFlags: node.transformerFlags,
-        fileUri: node.fileUri)..fileEndOffset = node.fileEndOffset;
+        fileUri: node.fileUri)
+      ..fileEndOffset = node.fileEndOffset;
   }
 
   visitTypeParameter(TypeParameter node) {

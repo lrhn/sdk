@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_WINDOWS)
+#if defined(HOST_OS_WINDOWS)
 
 #include "vm/os.h"
 
@@ -191,7 +191,7 @@ int64_t OS::GetCurrentThreadCPUMicros() {
 intptr_t OS::ActivationFrameAlignment() {
 #if defined(TARGET_ARCH_ARM64)
   return 16;
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_ARM)
   return 8;
 #elif defined(_WIN64)
   // Windows 64-bit ABI requires the stack to be 16-byte aligned.
@@ -208,16 +208,11 @@ intptr_t OS::PreferredCodeAlignment() {
 #if defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_X64) ||                   \
     defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_DBC)
   return 32;
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_ARM)
   return 16;
 #else
 #error Unsupported architecture.
 #endif
-}
-
-
-bool OS::AllowStackFrameIteratorFromAnotherThread() {
-  return true;
 }
 
 
@@ -262,6 +257,11 @@ void OS::DebugBreak() {
     int 3
   }
 #endif
+}
+
+
+DART_NOINLINE uintptr_t OS::GetProgramCounter() {
+  return reinterpret_cast<uintptr_t>(_ReturnAddress());
 }
 
 
@@ -451,4 +451,4 @@ void OS::Exit(int code) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_WINDOWS)
+#endif  // defined(HOST_OS_WINDOWS)

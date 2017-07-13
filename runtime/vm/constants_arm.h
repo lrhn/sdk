@@ -26,7 +26,7 @@ namespace dart {
 
 
 // The Linux/Android ABI and the iOS ABI differ in their choice of frame
-// pointer, their treatment of R9, and the interproduceral stack alignment.
+// pointer, their treatment of R9, and the interprocedural stack alignment.
 
 // EABI (Linux, Android)
 // See "Procedure Call Standard for the ARM Architecture".
@@ -81,14 +81,12 @@ enum Register {
   kNoRegister = -1,  // Signals an illegal register.
 
 // Aliases.
-#if defined(TARGET_ABI_IOS)
+#if defined(TARGET_OS_MACOS) || defined(TARGET_OS_MACOS_IOS)
   FP = R7,
   NOTFP = R11,
-#elif defined(TARGET_ABI_EABI)
+#else
   FP = R11,
   NOTFP = R7,
-#else
-#error Unknown ABI
 #endif
   IP = R12,
   SP = R13,
@@ -262,7 +260,7 @@ static inline SRegister OddSRegisterOf(DRegister d) {
 // Register aliases for floating point scratch registers.
 const QRegister QTMP = Q7;                     // Overlaps with DTMP, STMP.
 const DRegister DTMP = EvenDRegisterOf(QTMP);  // Overlaps with STMP.
-const SRegister STMP = EvenSRegisterOf(DTMP);
+const SRegister STMP DART_USED = EvenSRegisterOf(DTMP);
 
 // Architecture independent aliases.
 typedef QRegister FpuRegister;
@@ -305,17 +303,15 @@ const RegList kAllCpuRegistersList = 0xFFFF;
 // C++ ABI call registers.
 const RegList kAbiArgumentCpuRegs =
     (1 << R0) | (1 << R1) | (1 << R2) | (1 << R3);
-#if defined(TARGET_ABI_IOS)
+#if defined(TARGET_OS_MACOS) || defined(TARGET_OS_MACOS_IOS)
 const RegList kAbiPreservedCpuRegs =
     (1 << R4) | (1 << R5) | (1 << R6) | (1 << R8) | (1 << R10) | (1 << R11);
 const int kAbiPreservedCpuRegCount = 6;
-#elif defined(TARGET_ABI_EABI)
+#else
 const RegList kAbiPreservedCpuRegs = (1 << R4) | (1 << R5) | (1 << R6) |
                                      (1 << R7) | (1 << R8) | (1 << R9) |
                                      (1 << R10);
 const int kAbiPreservedCpuRegCount = 7;
-#else
-#error Unknown ABI
 #endif
 const QRegister kAbiFirstPreservedFpuReg = Q4;
 const QRegister kAbiLastPreservedFpuReg = Q7;
@@ -329,9 +325,9 @@ const RegList kDartAvailableCpuRegs =
 // Registers available to Dart that are not preserved by runtime calls.
 const RegList kDartVolatileCpuRegs =
     kDartAvailableCpuRegs & ~kAbiPreservedCpuRegs;
-#if defined(TARGET_ABI_IOS)
+#if defined(TARGET_OS_MACOS) || defined(TARGET_OS_MACOS_IOS)
 const int kDartVolatileCpuRegCount = 6;
-#elif defined(TARGET_ABI_EABI)
+#else
 const int kDartVolatileCpuRegCount = 5;
 #endif
 const QRegister kDartFirstVolatileFpuReg = Q0;
@@ -358,7 +354,8 @@ enum Condition {
   LE = 13,                 // signed less than or equal
   AL = 14,                 // always (unconditional)
   kSpecialCondition = 15,  // special condition (refer to section A3.2.1)
-  kMaxCondition = 16,
+  kNumberOfConditions = 16,
+  kInvalidCondition = 16
 };
 
 

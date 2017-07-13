@@ -2,12 +2,11 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library services.completion.dart.suggestion.builder;
-
 import 'package:analysis_server/src/protocol_server.dart' as protocol;
 import 'package:analysis_server/src/protocol_server.dart'
     hide Element, ElementKind;
 import 'package:analysis_server/src/provisional/completion/dart/completion_dart.dart';
+import 'package:analysis_server/src/services/completion/dart/utilities.dart';
 import 'package:analysis_server/src/utilities/documentation.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
@@ -70,13 +69,18 @@ CompletionSuggestion createSuggestion(Element element,
       // Gracefully degrade if type not resolved yet
       return paramType != null ? paramType.displayName : 'var';
     }).toList();
-    suggestion.requiredParameterCount = element.parameters
-        .where((ParameterElement parameter) =>
-            parameter.parameterKind == ParameterKind.REQUIRED)
-        .length;
-    suggestion.hasNamedParameters = element.parameters.any(
-        (ParameterElement parameter) =>
-            parameter.parameterKind == ParameterKind.NAMED);
+
+    Iterable<ParameterElement> requiredParameters = element.parameters.where(
+        (ParameterElement param) =>
+            param.parameterKind == ParameterKind.REQUIRED);
+    suggestion.requiredParameterCount = requiredParameters.length;
+
+    Iterable<ParameterElement> namedParameters = element.parameters.where(
+        (ParameterElement param) => param.parameterKind == ParameterKind.NAMED);
+    suggestion.hasNamedParameters = namedParameters.isNotEmpty;
+
+    addDefaultArgDetails(
+        suggestion, element, requiredParameters, namedParameters);
   }
   if (importForSource != null) {
     String srcPath = path.dirname(importForSource.fullName);

@@ -8,8 +8,9 @@ import 'dart:collection';
 import 'package:async_helper/async_helper.dart';
 import 'package:expect/expect.dart';
 import 'package:compiler/src/constants/expressions.dart';
-import 'package:compiler/src/elements/resolution_types.dart';
 import 'package:compiler/src/elements/modelx.dart';
+import 'package:compiler/src/elements/resolution_types.dart';
+import 'package:compiler/src/elements/types.dart';
 import 'package:compiler/src/resolution/constructors.dart';
 import 'package:compiler/src/resolution/members.dart';
 import 'package:compiler/src/resolution/registry.dart';
@@ -116,9 +117,10 @@ class B extends A implements J1, J2 {}
 class C extends B implements L1 {}
 """);
       compiler.resolveStatement("C c;");
-      ClassElement classA = compiler.mainApp.find("A");
-      ClassElement classB = compiler.mainApp.find("B");
-      ClassElement classC = compiler.mainApp.find("C");
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement classA = mainApp.find("A");
+      ClassElement classB = mainApp.find("B");
+      ClassElement classC = mainApp.find("C");
       Expect.equals('[ I2, I1, Object ]', classA.allSupertypes.toString());
       Expect.equals('[ A, J2, J1, I2, I1, K2, K1, Object ]',
           classB.allSupertypes.toString());
@@ -132,7 +134,6 @@ class Foo extends X<Foo> {}
 class Bar extends Foo implements X<Bar> {}
 """);
       compiler.resolveStatement("Bar bar;");
-      ClassElement classBar = compiler.mainApp.find("Bar");
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
       Expect.equals(1, collector.errors.length);
@@ -165,10 +166,11 @@ Future testTypeVariables() {
     MockCompiler.create((MockCompiler compiler) {
       ResolverVisitor visitor = compiler.resolverVisitor();
       compiler.parseScript('class Foo<T, U> {}');
-      ClassElement foo = compiler.mainApp.find('Foo');
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement foo = mainApp.find('Foo');
       matchResolvedTypes(visitor, 'Foo<int, String> x;', 'Foo', [
-        compiler.commonElements.intClass,
-        compiler.commonElements.stringClass
+        compiler.resolution.commonElements.intClass,
+        compiler.resolution.commonElements.stringClass
       ]);
       matchResolvedTypes(visitor, 'Foo<Foo, Foo> x;', 'Foo', [foo, foo]);
     }),
@@ -196,7 +198,8 @@ Future testTypeVariables() {
           '  foo(Foo<T> f) {}'
           '  bar() { g(Foo<T> f) {}; g(); }'
           '}');
-      ClassElement foo = compiler.mainApp.find('Foo');
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement foo = mainApp.find('Foo');
       foo.ensureResolved(compiler.resolution);
       MemberElement tMember = foo.lookupLocalMember('t');
       tMember.computeType(compiler.resolution);
@@ -217,16 +220,17 @@ Future testSuperCalls() {
     compiler.parseScript(script);
     compiler.resolveStatement("B b;");
 
-    ClassElement classB = compiler.mainApp.find("B");
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement classB = mainApp.find("B");
     FunctionElement fooB = classB.lookupLocalMember("foo");
-    ClassElement classA = compiler.mainApp.find("A");
+    ClassElement classA = mainApp.find("A");
     FunctionElement fooA = classA.lookupLocalMember("foo");
 
     ResolverVisitor visitor = new ResolverVisitor(
         compiler.resolution,
         fooB,
         new ResolutionRegistry(
-            compiler.backend, new CollectingTreeElements(fooB)),
+            compiler.backend.target, new CollectingTreeElements(fooB)),
         scope: new MockTypeVariablesScope(classB.buildScope()));
     FunctionExpression node =
         (fooB as FunctionElementX).parseNode(compiler.parsingContext);
@@ -245,11 +249,13 @@ Future testSwitch() {
     compiler.parseScript("class Foo { foo() {"
         "switch (null) { case '': break; case 2: break; } } }");
     compiler.resolveStatement("Foo foo;");
-    ClassElement fooElement = compiler.mainApp.find("Foo");
-    FunctionElement funElement = fooElement.lookupLocalMember("foo");
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement fooElement = mainApp.find("Foo");
+    MethodElement funElement = fooElement.lookupLocalMember("foo");
     compiler.enqueuer.resolution.applyImpact(new WorldImpactBuilderImpl()
-      ..registerStaticUse(new StaticUse.foreignUse(funElement)));
-    compiler.processQueue(compiler.enqueuer.resolution, null);
+      ..registerStaticUse(new StaticUse.implicitInvoke(funElement)));
+    compiler.processQueue(compiler.frontendStrategy.elementEnvironment,
+        compiler.enqueuer.resolution, null, compiler.libraryLoader.libraries);
     DiagnosticCollector collector = compiler.diagnosticCollector;
     Expect.equals(0, collector.warnings.length);
     Expect.equals(1, collector.errors.length);
@@ -268,19 +274,19 @@ Future testThis() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("class Foo { foo() { return this; } }");
       compiler.resolveStatement("Foo foo;");
-      ClassElement fooElement = compiler.mainApp.find("Foo");
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement fooElement = mainApp.find("Foo");
       FunctionElement funElement = fooElement.lookupLocalMember("foo");
       ResolverVisitor visitor = new ResolverVisitor(
           compiler.resolution,
           funElement,
           new ResolutionRegistry(
-              compiler.backend, new CollectingTreeElements(funElement)),
+              compiler.backend.target, new CollectingTreeElements(funElement)),
           scope: new MockTypeVariablesScope(fooElement.buildScope()));
       FunctionExpression function =
           (funElement as FunctionElementX).parseNode(compiler.parsingContext);
       visitor.visit(function.body);
       Map mapping = map(visitor);
-      List<Element> values = mapping.values.toList();
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, mapping.length);
       Expect.equals(0, collector.warnings.length);
@@ -296,13 +302,14 @@ Future testThis() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("class Foo { static foo() { return this; } }");
       compiler.resolveStatement("Foo foo;");
-      ClassElement fooElement = compiler.mainApp.find("Foo");
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement fooElement = mainApp.find("Foo");
       FunctionElement funElement = fooElement.lookupLocalMember("foo");
       ResolverVisitor visitor = new ResolverVisitor(
           compiler.resolution,
           funElement,
           new ResolutionRegistry(
-              compiler.backend, new CollectingTreeElements(funElement)),
+              compiler.backend.target, new CollectingTreeElements(funElement)),
           scope: new MockTypeVariablesScope(fooElement.buildScope()));
       FunctionExpression function =
           (funElement as FunctionElementX).parseNode(compiler.parsingContext);
@@ -577,8 +584,9 @@ Future testSuperclass() {
       Map mapping = compiler.resolveStatement("Foo bar;").map;
       Expect.equals(1, mapping.length);
 
-      ClassElement fooElement = compiler.mainApp.find('Foo');
-      ClassElement barElement = compiler.mainApp.find('Bar');
+      LibraryElement mainApp = compiler.mainApp;
+      ClassElement fooElement = mainApp.find('Foo');
+      ClassElement barElement = mainApp.find('Bar');
       Expect.equals(
           barElement.computeType(compiler.resolution), fooElement.supertype);
       Expect.isTrue(fooElement.interfaces.isEmpty);
@@ -617,15 +625,11 @@ Future testOneInterface() {
     // correctly.
     compiler.parseScript("abstract class Bar {}");
 
-    ResolverVisitor visitor = new ResolverVisitor(
-        compiler.resolution,
-        null,
-        new ResolutionRegistry(
-            compiler.backend, new CollectingTreeElements(null)));
     compiler.resolveStatement("Foo bar;");
 
-    ClassElement fooElement = compiler.mainApp.find('Foo');
-    ClassElement barElement = compiler.mainApp.find('Bar');
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement fooElement = mainApp.find('Foo');
+    ClassElement barElement = mainApp.find('Bar');
 
     Expect.equals(null, barElement.supertype);
     Expect.isTrue(barElement.interfaces.isEmpty);
@@ -643,9 +647,10 @@ Future testTwoInterfaces() {
            class C implements I1, I2 {}""");
     compiler.resolveStatement("Foo bar;");
 
-    ClassElement c = compiler.mainApp.find('C');
-    ClassElement i1 = compiler.mainApp.find('I1');
-    ClassElement i2 = compiler.mainApp.find('I2');
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement c = mainApp.find('C');
+    ClassElement i1 = mainApp.find('I1');
+    ClassElement i2 = mainApp.find('I2');
 
     Expect.equals(2, length(c.interfaces));
     Expect.equals(i1.computeType(compiler.resolution), at(c.interfaces, 0));
@@ -674,9 +679,10 @@ Future testFunctionExpression() {
 Future testNewExpression() {
   return MockCompiler.create((MockCompiler compiler) {
     compiler.parseScript("class A {} foo() { print(new A()); }");
-    ClassElement aElement = compiler.mainApp.find('A');
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement aElement = mainApp.find('A');
 
-    FunctionElement fooElement = compiler.mainApp.find('foo');
+    FunctionElement fooElement = mainApp.find('foo');
     compiler.resolver.resolve(fooElement);
 
     Expect.isNotNull(aElement);
@@ -697,7 +703,8 @@ Future testNewExpression() {
 Future testTopLevelFields() {
   return MockCompiler.create((MockCompiler compiler) {
     compiler.parseScript("int a;");
-    VariableElementX element = compiler.mainApp.find("a");
+    LibraryElement mainApp = compiler.mainApp;
+    VariableElementX element = mainApp.find("a");
     Expect.equals(ElementKind.FIELD, element.kind);
     VariableDefinitions node =
         element.variables.parseNode(element, compiler.parsingContext);
@@ -706,8 +713,8 @@ Future testTopLevelFields() {
     Expect.equals(typeName.source, 'int');
 
     compiler.parseScript("var b, c;");
-    VariableElementX bElement = compiler.mainApp.find("b");
-    VariableElementX cElement = compiler.mainApp.find("c");
+    VariableElementX bElement = mainApp.find("b");
+    VariableElementX cElement = mainApp.find("c");
     Expect.equals(ElementKind.FIELD, bElement.kind);
     Expect.equals(ElementKind.FIELD, cElement.kind);
     Expect.isTrue(bElement != cElement);
@@ -732,7 +739,8 @@ Future resolveConstructor(String script, String statement, String className,
   return compiler.init().then((_) {
     compiler.parseScript(script);
     compiler.resolveStatement(statement);
-    ClassElement classElement = compiler.mainApp.find(className);
+    LibraryElement mainApp = compiler.mainApp;
+    ClassElement classElement = mainApp.find(className);
     Element element;
     element = classElement.lookupConstructor(constructor);
     FunctionExpression tree = (element as FunctionElement).node;
@@ -740,7 +748,7 @@ Future resolveConstructor(String script, String statement, String className,
         compiler.resolution,
         element,
         new ResolutionRegistry(
-            compiler.backend, new CollectingTreeElements(element)),
+            compiler.backend.target, new CollectingTreeElements(element)),
         scope: classElement.buildScope());
     new InitializerResolver(visitor, element, tree).resolveInitializers();
     visitor.visit(tree.body);
@@ -760,7 +768,8 @@ Future testClassHierarchy() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""class A extends A {}
                               main() { return new A(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
@@ -772,7 +781,8 @@ Future testClassHierarchy() {
       compiler.parseScript("""class A extends B {}
                               class B extends A {}
                               main() { return new A(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
@@ -787,7 +797,8 @@ Future testClassHierarchy() {
                               abstract class B extends A {}
                               class C implements A {}
                               main() { return new C(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
@@ -800,13 +811,14 @@ Future testClassHierarchy() {
                               class B extends C {}
                               class C {}
                               main() { return new A(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
       Expect.equals(0, collector.errors.length);
-      ClassElement aElement = compiler.mainApp.find("A");
-      Link<ResolutionDartType> supertypes = aElement.allSupertypes;
+      ClassElement aElement = mainApp.find("A");
+      Link<InterfaceType> supertypes = aElement.allSupertypes;
       Expect.equals(<String>['B', 'C', 'Object'].toString(),
           asSortedStrings(supertypes).toString());
     }),
@@ -817,13 +829,14 @@ Future testClassHierarchy() {
                               class I<X,Y> {}
                               class C extends B<bool,String> {}
                               main() { return new C(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
       Expect.equals(0, collector.errors.length);
-      ClassElement aElement = compiler.mainApp.find("C");
-      Link<ResolutionDartType> supertypes = aElement.allSupertypes;
+      ClassElement aElement = mainApp.find("C");
+      Link<InterfaceType> supertypes = aElement.allSupertypes;
       // Object is once per inheritance path, that is from both A and I.
       Expect.equals(
           <String>[
@@ -839,13 +852,14 @@ Future testClassHierarchy() {
                               class D extends A<E> {}
                               class E extends D {}
                               main() { return new E(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
       Expect.equals(0, collector.errors.length);
-      ClassElement aElement = compiler.mainApp.find("E");
-      Link<ResolutionDartType> supertypes = aElement.allSupertypes;
+      ClassElement aElement = mainApp.find("E");
+      Link<InterfaceType> supertypes = aElement.allSupertypes;
       Expect.equals(<String>['A<E>', 'D', 'Object'].toString(),
           asSortedStrings(supertypes).toString());
     }),
@@ -853,7 +867,8 @@ Future testClassHierarchy() {
       compiler.parseScript("""class A<T> {}
                               class D extends A<int> implements A<double> {}
                               main() { return new D(); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length);
@@ -871,7 +886,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum {}
                               main() { Enum e; }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length,
@@ -882,7 +898,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum { A }
                               main() { Enum e = Enum.A; }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length,
@@ -893,7 +910,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum { A }
                               main() { Enum e = Enum.B; }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(1, collector.warnings.length,
@@ -906,7 +924,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum { A }
                               main() { List values = Enum.values; }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length,
@@ -917,7 +936,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum { A }
                               main() { new Enum(0, ''); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length,
@@ -930,7 +950,8 @@ Future testEnumDeclaration() {
     MockCompiler.create((MockCompiler compiler) {
       compiler.parseScript("""enum Enum { A }
                               main() { const Enum(0, ''); }""");
-      FunctionElement mainElement = compiler.mainApp.find(MAIN);
+      LibraryElement mainApp = compiler.mainApp;
+      FunctionElement mainElement = mainApp.find(MAIN);
       compiler.resolver.resolve(mainElement);
       DiagnosticCollector collector = compiler.diagnosticCollector;
       Expect.equals(0, collector.warnings.length,
@@ -1151,9 +1172,9 @@ Future compileScript(String source) {
 
 checkMemberResolved(compiler, className, memberName) {
   ClassElement cls = findElement(compiler, className);
-  Element memberElement = cls.lookupLocalMember(memberName);
+  MemberElement memberElement = cls.lookupLocalMember(memberName);
   Expect.isNotNull(memberElement);
-  Expect.isTrue(compiler.enqueuer.resolution.hasBeenProcessed(memberElement));
+  Expect.isTrue(compiler.resolutionWorldBuilder.isMemberUsed(memberElement));
 }
 
 testToString() {

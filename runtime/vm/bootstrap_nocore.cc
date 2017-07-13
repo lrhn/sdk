@@ -47,8 +47,25 @@ void Finish(Thread* thread, bool from_kernel) {
   // instances. This allows us to just finalize function types without going
   // through the hoops of trying to compile their scope class.
   ObjectStore* object_store = thread->isolate()->object_store();
-  Class& cls = Class::Handle(thread->zone(), object_store->closure_class());
+  Zone* zone = thread->zone();
+  Class& cls = Class::Handle(zone, object_store->closure_class());
   Compiler::CompileClass(cls);
+
+#if defined(DEBUG)
+  // Verify that closure field offsets are identical in Dart and C++.
+  const Array& fields = Array::Handle(zone, cls.fields());
+  ASSERT(fields.Length() == 4);
+  Field& field = Field::Handle(zone);
+  field ^= fields.At(0);
+  ASSERT(field.Offset() == Closure::instantiator_type_arguments_offset());
+  field ^= fields.At(1);
+  ASSERT(field.Offset() == Closure::function_type_arguments_offset());
+  field ^= fields.At(2);
+  ASSERT(field.Offset() == Closure::function_offset());
+  field ^= fields.At(3);
+  ASSERT(field.Offset() == Closure::context_offset());
+#endif  // defined(DEBUG)
+
   // Eagerly compile Bool class, bool constants are used from within compiler.
   cls = object_store->bool_class();
   Compiler::CompileClass(cls);
@@ -69,26 +86,35 @@ RawError* BootstrapFromKernel(Thread* thread, kernel::Program* program) {
     pending.set_is_marked_for_parsing();
   }
 
+  // Load the bootstrap libraries in order (see object_store.h).
   Library& library = Library::Handle(zone);
   String& dart_name = String::Handle(zone);
-  String& kernel_name = String::Handle(zone);
   for (intptr_t i = 0; i < bootstrap_library_count; ++i) {
     ObjectStore::BootstrapLibraryId id = bootstrap_libraries[i].index;
     library = isolate->object_store()->bootstrap_library(id);
     dart_name = library.url();
-    for (intptr_t j = 0; j < program->libraries().length(); ++j) {
-      kernel::Library* kernel_library = program->libraries()[j];
-      kernel::String* uri = kernel_library->import_uri();
-      kernel_name = Symbols::FromUTF8(thread, uri->buffer(), uri->size());
+    for (intptr_t j = 0; j < program->library_count(); ++j) {
+      const String& kernel_name = reader.LibraryUri(j);
       if (kernel_name.Equals(dart_name)) {
-        reader.ReadLibrary(kernel_library);
+        reader.ReadLibrary(reader.library_offset(j));
         library.SetLoaded();
         break;
       }
     }
   }
 
+  // Finish bootstrapping, including class finalization.
   Finish(thread, /*from_kernel=*/true);
+
+  // The platform binary may contain other libraries (e.g., dart:_builtin or
+  // dart:io) that will not be bundled with application.  Load them now.
+  reader.ReadProgram();
+
+  // The builtin library should be registered with the VM.
+  dart_name = String::New("dart:_builtin");
+  library = Library::LookupLibrary(thread, dart_name);
+  isolate->object_store()->set_builtin_library(library);
+
   return Error::null();
 }
 

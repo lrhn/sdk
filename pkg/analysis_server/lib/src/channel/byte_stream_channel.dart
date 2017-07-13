@@ -2,13 +2,11 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library channel.byte_stream;
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol.dart';
 import 'package:analysis_server/src/analysis_server.dart';
 import 'package:analysis_server/src/channel/channel.dart';
 import 'package:analyzer/instrumentation/instrumentation.dart';
@@ -146,7 +144,11 @@ class ByteStreamServerChannel implements ServerCommunicationChannel {
    * Send the string [s] to [_output] followed by a newline.
    */
   void _outputLine(String s) {
-    _output.writeln(s);
+    runZoned(() {
+      _output.writeln(s);
+    }, onError: (e) {
+      close();
+    });
   }
 
   /**

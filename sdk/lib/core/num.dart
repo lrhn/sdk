@@ -42,7 +42,7 @@ abstract class num implements Comparable<num> {
    * Use [compareTo] for a comparison that distinguishes zero and minus zero,
    * and that considers NaN values as equal.
    */
-  bool operator==(Object other);
+  bool operator ==(Object other);
 
   /**
    * Returns a hash code for a numerical value.
@@ -115,11 +115,11 @@ abstract class num implements Comparable<num> {
   /**
    * Euclidean modulo operator.
    *
-   * Returns the remainder of the euclidean division. The euclidean division of
+   * Returns the remainder of the Euclidean division. The Euclidean division of
    * two integers `a` and `b` yields two integers `q` and `r` such that
    * `a == b * q + r` and `0 <= r < b.abs()`.
    *
-   * The euclidean division is only defined for integers, but can be easily
+   * The Euclidean division is only defined for integers, but can be easily
    * extended to work with doubles. In that case `r` may have a non-integer
    * value, but it still verifies `0 <= r < |b|`.
    *
@@ -146,7 +146,7 @@ abstract class num implements Comparable<num> {
   /** Negate operator. */
   num operator -();
 
- /**
+  /**
    * Returns the remainder of the truncating division of `this` by [other].
    *
    * The result `r` of this operation satisfies:
@@ -416,7 +416,7 @@ abstract class num implements Comparable<num> {
    * exponential representation (see [toStringAsExponential]).
    *
    * Returns `"NaN"` for [double.NAN], `"Infinity"` for [double.INFINITY], and
-   * `"-Infinity"` for [double.MINUS_INFINITY].
+   * `"-Infinity"` for [double.NEGATIVE_INFINITY].
    *
    * An [int] is converted to a decimal representation with no decimal point.
    *

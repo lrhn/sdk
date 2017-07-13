@@ -4,26 +4,20 @@
 
 library fasta.scanner.abstract_scanner;
 
-import '../scanner.dart' show
-    ErrorToken,
-    Scanner,
-    buildUnexpectedCharacterToken;
+import 'dart:collection' show ListMixin;
 
-import 'error_token.dart' show
-    UnmatchedToken,
-    UnterminatedToken;
+import 'dart:typed_data' show Uint16List, Uint32List;
 
-import 'keyword.dart' show
-    KeywordState,
-    Keyword;
+import '../../scanner/token.dart' show BeginToken, Token, TokenType;
 
-import 'precedence.dart';
+import '../scanner.dart'
+    show ErrorToken, Keyword, Scanner, buildUnexpectedCharacterToken;
 
-import 'token.dart' show
-    BeginGroupToken,
-    KeywordToken,
-    SymbolToken,
-    Token;
+import 'error_token.dart' show UnterminatedToken;
+
+import 'keyword_state.dart' show KeywordState;
+
+import 'token.dart' show CommentToken, DartDocToken;
 
 import 'token_constants.dart';
 
@@ -31,6 +25,12 @@ import 'characters.dart';
 
 abstract class AbstractScanner implements Scanner {
   final bool includeComments;
+
+  /**
+   * A flag indicating whether to parse generic method comments, of the form
+   * `/*=T*/` and `/*<T>*/`.  The flag [includeComments] must be set to `true`.
+   */
+  bool scanGenericMethodComments = false;
 
   /**
    * The string offset for the next token that will be created.
@@ -48,16 +48,30 @@ abstract class AbstractScanner implements Scanner {
    * is not exposed to clients of the scanner, which are expected to invoke
    * [firstToken] to access the token stream.
    */
-  final Token tokens = new SymbolToken(EOF_INFO, -1);
+  final Token tokens = new Token.eof(-1);
 
   /**
    * A pointer to the last scanned token.
    */
   Token tail;
 
-  final List<int> lineStarts = <int>[0];
+  /**
+   * A pointer to the stream of comment tokens created by this scanner
+   * before they are assigned to the [Token] precedingComments field
+   * of a non-comment token. A value of `null` indicates no comment tokens.
+   */
+  CommentToken comments;
 
-  AbstractScanner(this.includeComments) {
+  /**
+   * A pointer to the last scanned comment token or `null` if none.
+   */
+  Token commentsTail;
+
+  final List<int> lineStarts;
+
+  AbstractScanner(this.includeComments, this.scanGenericMethodComments,
+      {int numberOfBytesHint})
+      : lineStarts = new LineStarts(numberOfBytesHint) {
     this.tail = this.tokens;
   }
 
@@ -127,12 +141,7 @@ abstract class AbstractScanner implements Scanner {
   /**
    * Returns the first token scanned by this [Scanner].
    */
-  Token firstToken();
-
-  /**
-   * Returns the last token scanned by this [Scanner].
-   */
-  Token previousToken();
+  Token firstToken() => tokens.next;
 
   /**
    * Notifies that a new token starts at current offset.
@@ -150,14 +159,24 @@ abstract class AbstractScanner implements Scanner {
    * Note that [extraOffset] can only be used if the covered character(s) are
    * known to be ASCII.
    */
-  void appendSubstringToken(PrecedenceInfo info, int start, bool asciiOnly,
+  void appendSubstringToken(TokenType type, int start, bool asciiOnly,
       [int extraOffset]);
 
-  /** Documentation in subclass [ArrayBasedScanner]. */
-  void appendPrecedenceToken(PrecedenceInfo info);
+  /**
+   * Appends a substring from the scan offset [start] to the current
+   * [scanOffset] plus [closingQuotes]. The closing quote(s) will be added
+   * to the unterminated string literal's lexeme but the returned
+   * token's length will *not* include those closing quotes
+   * so as to be true to the original source.
+   */
+  void appendSyntheticSubstringToken(
+      TokenType type, int start, bool asciiOnly, String closingQuotes);
 
   /** Documentation in subclass [ArrayBasedScanner]. */
-  int select(int choice, PrecedenceInfo yes, PrecedenceInfo no);
+  void appendPrecedenceToken(TokenType type);
+
+  /** Documentation in subclass [ArrayBasedScanner]. */
+  int select(int choice, TokenType yes, TokenType no);
 
   /** Documentation in subclass [ArrayBasedScanner]. */
   void appendKeywordToken(Keyword keyword);
@@ -172,25 +191,49 @@ abstract class AbstractScanner implements Scanner {
   void lineFeedInMultiline();
 
   /** Documentation in subclass [ArrayBasedScanner]. */
-  void appendBeginGroup(PrecedenceInfo info);
+  void appendBeginGroup(TokenType type);
 
   /** Documentation in subclass [ArrayBasedScanner]. */
-  int appendEndGroup(PrecedenceInfo info, int openKind);
+  int appendEndGroup(TokenType type, int openKind);
 
   /** Documentation in subclass [ArrayBasedScanner]. */
-  void appendGt(PrecedenceInfo info);
+  void appendGt(TokenType type);
 
   /** Documentation in subclass [ArrayBasedScanner]. */
-  void appendGtGt(PrecedenceInfo info);
-
-  /** Documentation in subclass [ArrayBasedScanner]. */
-  void appendComment(start, bool asciiOnly);
+  void appendGtGt(TokenType type);
 
   /// Append [token] to the token stream.
   void appendErrorToken(ErrorToken token);
 
+  /**
+   * Returns a new comment from the scan offset [start] to the current
+   * [scanOffset] plus the [extraOffset]. For example, if the current
+   * scanOffset is 10, then [appendSubstringToken(5, -1)] will append the
+   * substring string [5,9).
+   *
+   * Note that [extraOffset] can only be used if the covered character(s) are
+   * known to be ASCII.
+   */
+  CommentToken createCommentToken(TokenType type, int start, bool asciiOnly,
+      [int extraOffset = 0]);
+
+  /**
+   * Returns a new dartdoc from the scan offset [start] to the current
+   * [scanOffset] plus the [extraOffset]. For example, if the current
+   * scanOffset is 10, then [appendSubstringToken(5, -1)] will append the
+   * substring string [5,9).
+   *
+   * Note that [extraOffset] can only be used if the covered character(s) are
+   * known to be ASCII.
+   */
+  DartDocToken createDartDocToken(TokenType type, int start, bool asciiOnly,
+      [int extraOffset = 0]);
+
   /** Documentation in subclass [ArrayBasedScanner]. */
   void discardOpenLt();
+
+  /** Documentation in subclass [ArrayBasedScanner]. */
+  void discardInterpolation();
 
   /// Return true when at EOF.
   bool atEndOfFile();
@@ -231,17 +274,69 @@ abstract class AbstractScanner implements Scanner {
       return next;
     }
 
-    if ($a <= next && next <= $z) {
+    int nextLower = next | 0x20;
+
+    if ($a <= nextLower && nextLower <= $z) {
       if (identical($r, next)) {
         return tokenizeRawStringKeywordOrIdentifier(next);
       }
       return tokenizeKeywordOrIdentifier(next, true);
     }
 
-    if (($A <= next && next <= $Z) ||
-        identical(next, $_) ||
-        identical(next, $$)) {
+    if (identical(next, $CLOSE_PAREN)) {
+      return appendEndGroup(TokenType.CLOSE_PAREN, OPEN_PAREN_TOKEN);
+    }
+
+    if (identical(next, $OPEN_PAREN)) {
+      appendBeginGroup(TokenType.OPEN_PAREN);
+      return advance();
+    }
+
+    if (identical(next, $SEMICOLON)) {
+      appendPrecedenceToken(TokenType.SEMICOLON);
+      // Type parameters and arguments cannot contain semicolon.
+      discardOpenLt();
+      return advance();
+    }
+
+    if (identical(next, $PERIOD)) {
+      return tokenizeDotsOrNumber(next);
+    }
+
+    if (identical(next, $COMMA)) {
+      appendPrecedenceToken(TokenType.COMMA);
+      return advance();
+    }
+
+    if (identical(next, $EQ)) {
+      return tokenizeEquals(next);
+    }
+
+    if (identical(next, $CLOSE_CURLY_BRACKET)) {
+      return appendEndGroup(
+          TokenType.CLOSE_CURLY_BRACKET, OPEN_CURLY_BRACKET_TOKEN);
+    }
+
+    if (identical(next, $SLASH)) {
+      return tokenizeSlashOrComment(next);
+    }
+
+    if (identical(next, $OPEN_CURLY_BRACKET)) {
+      appendBeginGroup(TokenType.OPEN_CURLY_BRACKET);
+      return advance();
+    }
+
+    if (identical(next, $DQ) || identical(next, $SQ)) {
+      return tokenizeString(next, scanOffset, false);
+    }
+
+    if (identical(next, $_)) {
       return tokenizeKeywordOrIdentifier(next, true);
+    }
+
+    if (identical(next, $COLON)) {
+      appendPrecedenceToken(TokenType.COLON);
+      return advance();
     }
 
     if (identical(next, $LT)) {
@@ -252,16 +347,49 @@ abstract class AbstractScanner implements Scanner {
       return tokenizeGreaterThan(next);
     }
 
-    if (identical(next, $EQ)) {
-      return tokenizeEquals(next);
-    }
-
     if (identical(next, $BANG)) {
       return tokenizeExclamation(next);
     }
 
+    if (identical(next, $OPEN_SQUARE_BRACKET)) {
+      return tokenizeOpenSquareBracket(next);
+    }
+
+    if (identical(next, $CLOSE_SQUARE_BRACKET)) {
+      return appendEndGroup(
+          TokenType.CLOSE_SQUARE_BRACKET, OPEN_SQUARE_BRACKET_TOKEN);
+    }
+
+    if (identical(next, $AT)) {
+      return tokenizeAt(next);
+    }
+
+    if (next >= $1 && next <= $9) {
+      return tokenizeNumber(next);
+    }
+
+    if (identical(next, $AMPERSAND)) {
+      return tokenizeAmpersand(next);
+    }
+
+    if (identical(next, $0)) {
+      return tokenizeHexOrNumber(next);
+    }
+
+    if (identical(next, $QUESTION)) {
+      return tokenizeQuestion(next);
+    }
+
+    if (identical(next, $BAR)) {
+      return tokenizeBar(next);
+    }
+
     if (identical(next, $PLUS)) {
       return tokenizePlus(next);
+    }
+
+    if (identical(next, $$)) {
+      return tokenizeKeywordOrIdentifier(next, true);
     }
 
     if (identical(next, $MINUS)) {
@@ -272,32 +400,25 @@ abstract class AbstractScanner implements Scanner {
       return tokenizeMultiply(next);
     }
 
-    if (identical(next, $PERCENT)) {
-      return tokenizePercent(next);
-    }
-
-    if (identical(next, $AMPERSAND)) {
-      return tokenizeAmpersand(next);
-    }
-
-    if (identical(next, $BAR)) {
-      return tokenizeBar(next);
-    }
-
     if (identical(next, $CARET)) {
       return tokenizeCaret(next);
-    }
-
-    if (identical(next, $OPEN_SQUARE_BRACKET)) {
-      return tokenizeOpenSquareBracket(next);
     }
 
     if (identical(next, $TILDE)) {
       return tokenizeTilde(next);
     }
 
+    if (identical(next, $PERCENT)) {
+      return tokenizePercent(next);
+    }
+
+    if (identical(next, $BACKPING)) {
+      appendPrecedenceToken(TokenType.BACKPING);
+      return advance();
+    }
+
     if (identical(next, $BACKSLASH)) {
-      appendPrecedenceToken(BACKSLASH_INFO);
+      appendPrecedenceToken(TokenType.BACKSLASH);
       return advance();
     }
 
@@ -305,91 +426,6 @@ abstract class AbstractScanner implements Scanner {
       return tokenizeTag(next);
     }
 
-    if (identical(next, $OPEN_PAREN)) {
-      appendBeginGroup(OPEN_PAREN_INFO);
-      return advance();
-    }
-
-    if (identical(next, $CLOSE_PAREN)) {
-      return appendEndGroup(CLOSE_PAREN_INFO, OPEN_PAREN_TOKEN);
-    }
-
-    if (identical(next, $COMMA)) {
-      appendPrecedenceToken(COMMA_INFO);
-      return advance();
-    }
-
-    if (identical(next, $COLON)) {
-      appendPrecedenceToken(COLON_INFO);
-      return advance();
-    }
-
-    if (identical(next, $SEMICOLON)) {
-      appendPrecedenceToken(SEMICOLON_INFO);
-      // Type parameters and arguments cannot contain semicolon.
-      discardOpenLt();
-      return advance();
-    }
-
-    if (identical(next, $QUESTION)) {
-      return tokenizeQuestion(next);
-    }
-
-    if (identical(next, $CLOSE_SQUARE_BRACKET)) {
-      return appendEndGroup(
-          CLOSE_SQUARE_BRACKET_INFO, OPEN_SQUARE_BRACKET_TOKEN);
-    }
-
-    if (identical(next, $BACKPING)) {
-      appendPrecedenceToken(BACKPING_INFO);
-      return advance();
-    }
-
-    if (identical(next, $OPEN_CURLY_BRACKET)) {
-      appendBeginGroup(OPEN_CURLY_BRACKET_INFO);
-      return advance();
-    }
-
-    if (identical(next, $CLOSE_CURLY_BRACKET)) {
-      return appendEndGroup(CLOSE_CURLY_BRACKET_INFO, OPEN_CURLY_BRACKET_TOKEN);
-    }
-
-    if (identical(next, $SLASH)) {
-      return tokenizeSlashOrComment(next);
-    }
-
-    if (identical(next, $AT)) {
-      return tokenizeAt(next);
-    }
-
-    if (identical(next, $DQ) || identical(next, $SQ)) {
-      return tokenizeString(next, scanOffset, false);
-    }
-
-    if (identical(next, $PERIOD)) {
-      return tokenizeDotsOrNumber(next);
-    }
-
-    if (identical(next, $0)) {
-      return tokenizeHexOrNumber(next);
-    }
-
-    // TODO(ahe): Would a range check be faster?
-    if (identical(next, $1) ||
-        identical(next, $2) ||
-        identical(next, $3) ||
-        identical(next, $4) ||
-        identical(next, $5) ||
-        identical(next, $6) ||
-        identical(next, $7) ||
-        identical(next, $8) ||
-        identical(next, $9)) {
-      return tokenizeNumber(next);
-    }
-
-    if (identical(next, $EOF)) {
-      return $EOF;
-    }
     if (next < 0x1f) {
       return unexpected(next);
     }
@@ -403,7 +439,7 @@ abstract class AbstractScanner implements Scanner {
     // # or #!.*[\n\r]
     if (scanOffset == 0) {
       if (identical(peek(), $BANG)) {
-        int start = scanOffset + 1;
+        int start = scanOffset;
         bool asciiOnly = true;
         do {
           next = advance();
@@ -412,10 +448,11 @@ abstract class AbstractScanner implements Scanner {
             !identical(next, $CR) &&
             !identical(next, $EOF));
         if (!asciiOnly) handleUnicode(start);
+        appendSubstringToken(TokenType.SCRIPT_TAG, start, asciiOnly);
         return next;
       }
     }
-    appendPrecedenceToken(HASH_INFO);
+    appendPrecedenceToken(TokenType.HASH);
     return advance();
   }
 
@@ -423,9 +460,9 @@ abstract class AbstractScanner implements Scanner {
     // ~ ~/ ~/=
     next = advance();
     if (identical(next, $SLASH)) {
-      return select($EQ, TILDE_SLASH_EQ_INFO, TILDE_SLASH_INFO);
+      return select($EQ, TokenType.TILDE_SLASH_EQ, TokenType.TILDE_SLASH);
     } else {
-      appendPrecedenceToken(TILDE_INFO);
+      appendPrecedenceToken(TokenType.TILDE);
       return next;
     }
   }
@@ -434,86 +471,93 @@ abstract class AbstractScanner implements Scanner {
     // [ [] []=
     next = advance();
     if (identical(next, $CLOSE_SQUARE_BRACKET)) {
-      Token token = previousToken();
-      if (token is KeywordToken && token.keyword.syntax == 'operator' ||
-          token is SymbolToken && token.info == HASH_INFO) {
-        return select($EQ, INDEX_EQ_INFO, INDEX_INFO);
-      }
+      return select($EQ, TokenType.INDEX_EQ, TokenType.INDEX);
     }
-    appendBeginGroup(OPEN_SQUARE_BRACKET_INFO);
+    appendBeginGroup(TokenType.OPEN_SQUARE_BRACKET);
     return next;
   }
 
   int tokenizeCaret(int next) {
     // ^ ^=
-    return select($EQ, CARET_EQ_INFO, CARET_INFO);
+    return select($EQ, TokenType.CARET_EQ, TokenType.CARET);
   }
 
   int tokenizeQuestion(int next) {
     // ? ?. ?? ??=
     next = advance();
     if (identical(next, $QUESTION)) {
-      return select($EQ, QUESTION_QUESTION_EQ_INFO, QUESTION_QUESTION_INFO);
+      return select(
+          $EQ, TokenType.QUESTION_QUESTION_EQ, TokenType.QUESTION_QUESTION);
     } else if (identical(next, $PERIOD)) {
-      appendPrecedenceToken(QUESTION_PERIOD_INFO);
+      appendPrecedenceToken(TokenType.QUESTION_PERIOD);
       return advance();
     } else {
-      appendPrecedenceToken(QUESTION_INFO);
+      appendPrecedenceToken(TokenType.QUESTION);
       return next;
     }
   }
 
   int tokenizeBar(int next) {
-    // | || |=
+    // | || |= ||=
     next = advance();
     if (identical(next, $BAR)) {
-      appendPrecedenceToken(BAR_BAR_INFO);
-      return advance();
+      next = advance();
+      if (identical(next, $EQ)) {
+        appendPrecedenceToken(TokenType.BAR_BAR_EQ);
+        return advance();
+      }
+      appendPrecedenceToken(TokenType.BAR_BAR);
+      return next;
     } else if (identical(next, $EQ)) {
-      appendPrecedenceToken(BAR_EQ_INFO);
+      appendPrecedenceToken(TokenType.BAR_EQ);
       return advance();
     } else {
-      appendPrecedenceToken(BAR_INFO);
+      appendPrecedenceToken(TokenType.BAR);
       return next;
     }
   }
 
   int tokenizeAmpersand(int next) {
-    // && &= &
+    // && &= & &&=
     next = advance();
     if (identical(next, $AMPERSAND)) {
-      appendPrecedenceToken(AMPERSAND_AMPERSAND_INFO);
-      return advance();
+      next = advance();
+      if (identical(next, $EQ)) {
+        appendPrecedenceToken(TokenType.AMPERSAND_AMPERSAND_EQ);
+        return advance();
+      }
+      appendPrecedenceToken(TokenType.AMPERSAND_AMPERSAND);
+      return next;
     } else if (identical(next, $EQ)) {
-      appendPrecedenceToken(AMPERSAND_EQ_INFO);
+      appendPrecedenceToken(TokenType.AMPERSAND_EQ);
       return advance();
     } else {
-      appendPrecedenceToken(AMPERSAND_INFO);
+      appendPrecedenceToken(TokenType.AMPERSAND);
       return next;
     }
   }
 
   int tokenizePercent(int next) {
     // % %=
-    return select($EQ, PERCENT_EQ_INFO, PERCENT_INFO);
+    return select($EQ, TokenType.PERCENT_EQ, TokenType.PERCENT);
   }
 
   int tokenizeMultiply(int next) {
     // * *=
-    return select($EQ, STAR_EQ_INFO, STAR_INFO);
+    return select($EQ, TokenType.STAR_EQ, TokenType.STAR);
   }
 
   int tokenizeMinus(int next) {
     // - -- -=
     next = advance();
     if (identical(next, $MINUS)) {
-      appendPrecedenceToken(MINUS_MINUS_INFO);
+      appendPrecedenceToken(TokenType.MINUS_MINUS);
       return advance();
     } else if (identical(next, $EQ)) {
-      appendPrecedenceToken(MINUS_EQ_INFO);
+      appendPrecedenceToken(TokenType.MINUS_EQ);
       return advance();
     } else {
-      appendPrecedenceToken(MINUS_INFO);
+      appendPrecedenceToken(TokenType.MINUS);
       return next;
     }
   }
@@ -522,13 +566,13 @@ abstract class AbstractScanner implements Scanner {
     // + ++ +=
     next = advance();
     if (identical($PLUS, next)) {
-      appendPrecedenceToken(PLUS_PLUS_INFO);
+      appendPrecedenceToken(TokenType.PLUS_PLUS);
       return advance();
     } else if (identical($EQ, next)) {
-      appendPrecedenceToken(PLUS_EQ_INFO);
+      appendPrecedenceToken(TokenType.PLUS_EQ);
       return advance();
     } else {
-      appendPrecedenceToken(PLUS_INFO);
+      appendPrecedenceToken(TokenType.PLUS);
       return next;
     }
   }
@@ -539,9 +583,9 @@ abstract class AbstractScanner implements Scanner {
 
     next = advance();
     if (identical(next, $EQ)) {
-      return select($EQ, BANG_EQ_EQ_INFO, BANG_EQ_INFO);
+      return select($EQ, TokenType.BANG_EQ_EQ, TokenType.BANG_EQ);
     }
-    appendPrecedenceToken(BANG_INFO);
+    appendPrecedenceToken(TokenType.BANG);
     return next;
   }
 
@@ -555,12 +599,12 @@ abstract class AbstractScanner implements Scanner {
 
     next = advance();
     if (identical(next, $EQ)) {
-      return select($EQ, EQ_EQ_EQ_INFO, EQ_EQ_INFO);
+      return select($EQ, TokenType.EQ_EQ_EQ, TokenType.EQ_EQ);
     } else if (identical(next, $GT)) {
-      appendPrecedenceToken(FUNCTION_INFO);
+      appendPrecedenceToken(TokenType.FUNCTION);
       return advance();
     }
-    appendPrecedenceToken(EQ_INFO);
+    appendPrecedenceToken(TokenType.EQ);
     return next;
   }
 
@@ -568,19 +612,19 @@ abstract class AbstractScanner implements Scanner {
     // > >= >> >>=
     next = advance();
     if (identical($EQ, next)) {
-      appendPrecedenceToken(GT_EQ_INFO);
+      appendPrecedenceToken(TokenType.GT_EQ);
       return advance();
     } else if (identical($GT, next)) {
       next = advance();
       if (identical($EQ, next)) {
-        appendPrecedenceToken(GT_GT_EQ_INFO);
+        appendPrecedenceToken(TokenType.GT_GT_EQ);
         return advance();
       } else {
-        appendGtGt(GT_GT_INFO);
+        appendGtGt(TokenType.GT_GT);
         return next;
       }
     } else {
-      appendGt(GT_INFO);
+      appendGt(TokenType.GT);
       return next;
     }
   }
@@ -589,12 +633,12 @@ abstract class AbstractScanner implements Scanner {
     // < <= << <<=
     next = advance();
     if (identical($EQ, next)) {
-      appendPrecedenceToken(LT_EQ_INFO);
+      appendPrecedenceToken(TokenType.LT_EQ);
       return advance();
     } else if (identical($LT, next)) {
-      return select($EQ, LT_LT_EQ_INFO, LT_LT_INFO);
+      return select($EQ, TokenType.LT_LT_EQ, TokenType.LT_LT);
     } else {
-      appendBeginGroup(LT_INFO);
+      appendBeginGroup(TokenType.LT);
       return next;
     }
   }
@@ -614,7 +658,7 @@ abstract class AbstractScanner implements Scanner {
             return tokenizeFractionPart(advance(), start);
           }
         }
-        appendSubstringToken(INT_INFO, start, true);
+        appendSubstringToken(TokenType.INT, start, true);
         return next;
       }
     }
@@ -643,7 +687,7 @@ abstract class AbstractScanner implements Scanner {
           unterminated('0x', shouldAdvance: false);
           return next;
         }
-        appendSubstringToken(HEXADECIMAL_INFO, start, true);
+        appendSubstringToken(TokenType.HEXADECIMAL, start, true);
         return next;
       }
     }
@@ -655,9 +699,10 @@ abstract class AbstractScanner implements Scanner {
     if (($0 <= next && next <= $9)) {
       return tokenizeFractionPart(next, start);
     } else if (identical($PERIOD, next)) {
-      return select($PERIOD, PERIOD_PERIOD_PERIOD_INFO, PERIOD_PERIOD_INFO);
+      return select(
+          $PERIOD, TokenType.PERIOD_PERIOD_PERIOD, TokenType.PERIOD_PERIOD);
     } else {
-      appendPrecedenceToken(PERIOD_INFO);
+      appendPrecedenceToken(TokenType.PERIOD);
       return next;
     }
   }
@@ -699,17 +744,18 @@ abstract class AbstractScanner implements Scanner {
     }
     if (!hasDigit) {
       // Reduce offset, we already advanced to the token past the period.
-      appendSubstringToken(INT_INFO, start, true, -1);
+      appendSubstringToken(TokenType.INT, start, true, -1);
 
       // TODO(ahe): Wrong offset for the period. Cannot call beginToken because
       // the scanner already advanced past the period.
       if (identical($PERIOD, next)) {
-        return select($PERIOD, PERIOD_PERIOD_PERIOD_INFO, PERIOD_PERIOD_INFO);
+        return select(
+            $PERIOD, TokenType.PERIOD_PERIOD_PERIOD, TokenType.PERIOD_PERIOD);
       }
-      appendPrecedenceToken(PERIOD_INFO);
+      appendPrecedenceToken(TokenType.PERIOD);
       return next;
     }
-    appendSubstringToken(DOUBLE_INFO, start, true);
+    appendSubstringToken(TokenType.DOUBLE, start, true);
     return next;
   }
 
@@ -721,16 +767,17 @@ abstract class AbstractScanner implements Scanner {
     } else if (identical($SLASH, next)) {
       return tokenizeSingleLineComment(next, start);
     } else if (identical($EQ, next)) {
-      appendPrecedenceToken(SLASH_EQ_INFO);
+      appendPrecedenceToken(TokenType.SLASH_EQ);
       return advance();
     } else {
-      appendPrecedenceToken(SLASH_INFO);
+      appendPrecedenceToken(TokenType.SLASH);
       return next;
     }
   }
 
   int tokenizeSingleLineComment(int next, int start) {
     bool asciiOnly = true;
+    bool dartdoc = identical($SLASH, peek());
     while (true) {
       next = advance();
       if (next > 127) asciiOnly = false;
@@ -738,7 +785,11 @@ abstract class AbstractScanner implements Scanner {
           identical($CR, next) ||
           identical($EOF, next)) {
         if (!asciiOnly) handleUnicode(start);
-        appendComment(start, asciiOnly);
+        if (dartdoc) {
+          appendDartDoc(start, TokenType.SINGLE_LINE_COMMENT, asciiOnly);
+        } else {
+          appendComment(start, TokenType.SINGLE_LINE_COMMENT, asciiOnly);
+        }
         return next;
       }
     }
@@ -750,6 +801,7 @@ abstract class AbstractScanner implements Scanner {
     int unicodeStart = start;
     int nesting = 1;
     next = advance();
+    bool dartdoc = identical($STAR, next);
     while (true) {
       if (identical($EOF, next)) {
         if (!asciiOnlyLines) handleUnicode(unicodeStart);
@@ -762,7 +814,13 @@ abstract class AbstractScanner implements Scanner {
           if (0 == nesting) {
             if (!asciiOnlyLines) handleUnicode(unicodeStart);
             next = advance();
-            appendComment(start, asciiOnlyComment);
+            if (dartdoc) {
+              appendDartDoc(
+                  start, TokenType.MULTI_LINE_COMMENT, asciiOnlyComment);
+            } else {
+              appendComment(
+                  start, TokenType.MULTI_LINE_COMMENT, asciiOnlyComment);
+            }
             break;
           } else {
             next = advance();
@@ -794,6 +852,66 @@ abstract class AbstractScanner implements Scanner {
     return next;
   }
 
+  void appendComment(int start, TokenType type, bool asciiOnly) {
+    if (!includeComments) return;
+    CommentToken newComment = createCommentToken(type, start, asciiOnly);
+    if (scanGenericMethodComments) {
+      String value = newComment.lexeme;
+      int length = value.length;
+      if (length > 5 &&
+          value.codeUnitAt(0) == $SLASH &&
+          value.codeUnitAt(1) == $STAR &&
+          value.codeUnitAt(2) == $EQ) {
+        newComment = new CommentToken.fromString(
+            TokenType.GENERIC_METHOD_TYPE_ASSIGN, value, start);
+      } else if (length > 6 &&
+          value.codeUnitAt(0) == $SLASH &&
+          value.codeUnitAt(1) == $STAR &&
+          value.codeUnitAt(2) == $LT &&
+          value.codeUnitAt(length - 1) == $SLASH &&
+          value.codeUnitAt(length - 2) == $STAR &&
+          value.codeUnitAt(length - 3) == $GT) {
+        newComment = new CommentToken.fromString(
+            TokenType.GENERIC_METHOD_TYPE_LIST, value, start);
+      }
+    }
+    _appendToCommentStream(newComment);
+  }
+
+  void appendDartDoc(int start, TokenType type, bool asciiOnly) {
+    if (!includeComments) return;
+    Token newComment = createDartDocToken(type, start, asciiOnly);
+    _appendToCommentStream(newComment);
+  }
+
+  /**
+   * Append the given token to the [tail] of the current stream of tokens.
+   */
+  void appendToken(Token token) {
+    tail.next = token;
+    tail.next.previous = tail;
+    tail = tail.next;
+    if (comments != null && comments == token.precedingComments) {
+      comments = null;
+      commentsTail = null;
+    } else {
+      // It is the responsibility of the caller to construct the token
+      // being appended with preceeding comments if any
+      assert(comments == null || token.isSynthetic || token is ErrorToken);
+    }
+  }
+
+  void _appendToCommentStream(Token newComment) {
+    if (comments == null) {
+      comments = newComment;
+      commentsTail = comments;
+    } else {
+      commentsTail.next = newComment;
+      commentsTail.next.previous = commentsTail;
+      commentsTail = commentsTail.next;
+    }
+  }
+
   int tokenizeRawStringKeywordOrIdentifier(int next) {
     // [next] is $r.
     int nextnext = peek();
@@ -812,7 +930,7 @@ abstract class AbstractScanner implements Scanner {
     if ($A <= next && next <= $Z) {
       state = state.nextCapital(next);
       next = advance();
-    } else if ($a <= next && next <= $z){
+    } else if ($a <= next && next <= $z) {
       // Do the first next call outside the loop to avoid an additional test
       // and to make the loop monomorphic.
       state = state.next(next);
@@ -853,7 +971,7 @@ abstract class AbstractScanner implements Scanner {
         if (start == scanOffset) {
           return unexpected(next);
         } else {
-          appendSubstringToken(IDENTIFIER_INFO, start, true);
+          appendSubstringToken(TokenType.IDENTIFIER, start, true);
         }
         break;
       }
@@ -862,7 +980,7 @@ abstract class AbstractScanner implements Scanner {
   }
 
   int tokenizeAt(int next) {
-    appendPrecedenceToken(AT_INFO);
+    appendPrecedenceToken(TokenType.AT);
     return advance();
   }
 
@@ -876,7 +994,7 @@ abstract class AbstractScanner implements Scanner {
         return tokenizeMultiLineString(quoteChar, start, raw);
       } else {
         // Empty string.
-        appendSubstringToken(STRING_INFO, start, true);
+        appendSubstringToken(TokenType.STRING, start, true);
         return next;
       }
     }
@@ -916,7 +1034,8 @@ abstract class AbstractScanner implements Scanner {
               identical(next, $CR) ||
               identical(next, $EOF))) {
         if (!asciiOnly) handleUnicode(start);
-        return unterminatedString(quoteChar);
+        return unterminatedString(quoteChar, start,
+            asciiOnly: asciiOnly, isMultiLine: false, isRaw: false);
       }
       if (next > 127) asciiOnly = false;
       next = advance();
@@ -924,12 +1043,12 @@ abstract class AbstractScanner implements Scanner {
     if (!asciiOnly) handleUnicode(start);
     // Advance past the quote character.
     next = advance();
-    appendSubstringToken(STRING_INFO, start, asciiOnly);
+    appendSubstringToken(TokenType.STRING, start, asciiOnly);
     return next;
   }
 
   int tokenizeStringInterpolation(int start, bool asciiOnly) {
-    appendSubstringToken(STRING_INFO, start, asciiOnly);
+    appendSubstringToken(TokenType.STRING, start, asciiOnly);
     beginToken(); // $ starts here.
     int next = advance();
     if (identical(next, $OPEN_CURLY_BRACKET)) {
@@ -940,20 +1059,24 @@ abstract class AbstractScanner implements Scanner {
   }
 
   int tokenizeInterpolatedExpression(int next) {
-    appendBeginGroup(STRING_INTERPOLATION_INFO);
+    appendBeginGroup(TokenType.STRING_INTERPOLATION_EXPRESSION);
     beginToken(); // The expression starts here.
     next = advance(); // Move past the curly bracket.
     while (!identical(next, $EOF) && !identical(next, $STX)) {
       next = bigSwitch(next);
     }
-    if (identical(next, $EOF)) return next;
+    if (identical(next, $EOF)) {
+      beginToken();
+      discardInterpolation();
+      return next;
+    }
     next = advance(); // Move past the $STX.
     beginToken(); // The string interpolation suffix starts here.
     return next;
   }
 
   int tokenizeInterpolatedIdentifier(int next) {
-    appendPrecedenceToken(STRING_INTERPOLATION_IDENTIFIER_INFO);
+    appendPrecedenceToken(TokenType.STRING_INTERPOLATION_IDENTIFIER);
 
     if ($a <= next && next <= $z ||
         $A <= next && next <= $Z ||
@@ -961,6 +1084,8 @@ abstract class AbstractScanner implements Scanner {
       beginToken(); // The identifier starts here.
       next = tokenizeKeywordOrIdentifier(next, false);
     } else {
+      beginToken(); // The synthetic identifier starts here.
+      appendSyntheticSubstringToken(TokenType.IDENTIFIER, scanOffset, true, '');
       unterminated(r'$', shouldAdvance: false);
     }
     beginToken(); // The string interpolation suffix starts here.
@@ -973,18 +1098,20 @@ abstract class AbstractScanner implements Scanner {
       if (identical(next, quoteChar)) {
         if (!asciiOnly) handleUnicode(start);
         next = advance();
-        appendSubstringToken(STRING_INFO, start, asciiOnly);
+        appendSubstringToken(TokenType.STRING, start, asciiOnly);
         return next;
       } else if (identical(next, $LF) || identical(next, $CR)) {
         if (!asciiOnly) handleUnicode(start);
-        return unterminatedRawString(quoteChar);
+        return unterminatedString(quoteChar, start,
+            asciiOnly: asciiOnly, isMultiLine: false, isRaw: true);
       } else if (next > 127) {
         asciiOnly = false;
       }
       next = advance();
     }
     if (!asciiOnly) handleUnicode(start);
-    return unterminatedRawString(quoteChar);
+    return unterminatedString(quoteChar, start,
+        asciiOnly: asciiOnly, isMultiLine: false, isRaw: true);
   }
 
   int tokenizeMultiLineRawString(int quoteChar, int start) {
@@ -1016,13 +1143,14 @@ abstract class AbstractScanner implements Scanner {
         if (identical(next, quoteChar)) {
           if (!asciiOnlyLine) handleUnicode(unicodeStart);
           next = advance();
-          appendSubstringToken(STRING_INFO, start, asciiOnlyString);
+          appendSubstringToken(TokenType.STRING, start, asciiOnlyString);
           return next;
         }
       }
     }
     if (!asciiOnlyLine) handleUnicode(unicodeStart);
-    return unterminatedRawMultiLineString(quoteChar);
+    return unterminatedString(quoteChar, start,
+        asciiOnly: asciiOnlyLine, isMultiLine: true, isRaw: true);
   }
 
   int tokenizeMultiLineString(int quoteChar, int start, bool raw) {
@@ -1048,7 +1176,7 @@ abstract class AbstractScanner implements Scanner {
           if (identical(next, quoteChar)) {
             if (!asciiOnlyLine) handleUnicode(unicodeStart);
             next = advance();
-            appendSubstringToken(STRING_INFO, start, asciiOnlyString);
+            appendSubstringToken(TokenType.STRING, start, asciiOnlyString);
             return next;
           }
         }
@@ -1073,7 +1201,8 @@ abstract class AbstractScanner implements Scanner {
       next = advance();
     }
     if (!asciiOnlyLine) handleUnicode(unicodeStart);
-    return unterminatedMultiLineString(quoteChar);
+    return unterminatedString(quoteChar, start,
+        asciiOnly: asciiOnlyString, isMultiLine: true, isRaw: false);
   }
 
   int unexpected(int character) {
@@ -1086,22 +1215,15 @@ abstract class AbstractScanner implements Scanner {
     return advanceAfterError(shouldAdvance);
   }
 
-  int unterminatedString(int quoteChar) {
-    return unterminated(new String.fromCharCodes([quoteChar]));
-  }
+  int unterminatedString(int quoteChar, int start,
+      {bool asciiOnly, bool isMultiLine, bool isRaw}) {
+    String suffix = new String.fromCharCodes(
+        isMultiLine ? [quoteChar, quoteChar, quoteChar] : [quoteChar]);
+    String prefix = isRaw ? 'r$suffix' : suffix;
 
-  int unterminatedRawString(int quoteChar) {
-    return unterminated('r${new String.fromCharCodes([quoteChar])}');
-  }
-
-  int unterminatedMultiLineString(int quoteChar) {
-    return unterminated(
-        new String.fromCharCodes([quoteChar, quoteChar, quoteChar]));
-  }
-
-  int unterminatedRawMultiLineString(int quoteChar) {
-    return unterminated(
-        'r${new String.fromCharCodes([quoteChar, quoteChar, quoteChar])}');
+    appendSyntheticSubstringToken(TokenType.STRING, start, asciiOnly, suffix);
+    beginToken();
+    return unterminated(prefix);
   }
 
   int advanceAfterError(bool shouldAdvance) {
@@ -1112,65 +1234,91 @@ abstract class AbstractScanner implements Scanner {
       return -1;
     }
   }
-
-  void unmatchedBeginGroup(BeginGroupToken begin) {
-    // We want to ensure that unmatched BeginGroupTokens are reported as
-    // errors.  However, the diet parser assumes that groups are well-balanced
-    // and will never look at the endGroup token.  This is a nice property that
-    // allows us to skip quickly over correct code. By inserting an additional
-    // synthetic token in the stream, we can keep ignoring endGroup tokens.
-    //
-    // [begin] --next--> [tail]
-    // [begin] --endG--> [synthetic] --next--> [next] --next--> [tail]
-    //
-    // This allows the diet parser to skip from [begin] via endGroup to
-    // [synthetic] and ignore the [synthetic] token (assuming it's correct),
-    // then the error will be reported when parsing the [next] token.
-    //
-    // For example, tokenize("{[1};") produces:
-    //
-    // SymbolToken({) --endGroup-----+
-    //      |                        |
-    //     next                      |
-    //      v                        |
-    // SymbolToken([) --endGroup--+  |
-    //      |                     |  |
-    //     next                   |  |
-    //      v                     |  |
-    // StringToken(1)             |  |
-    //      |                     v  |
-    //     next       SymbolToken(]) | <- Synthetic token.
-    //      |                     |  |
-    //      |                   next |
-    //      v                     |  |
-    // UnmatchedToken([)<---------+  |
-    //      |                        |
-    //     next                      |
-    //      v                        |
-    // SymbolToken(})<---------------+
-    //      |
-    //     next
-    //      v
-    // SymbolToken(;)
-    //      |
-    //     next
-    //      v
-    //     EOF
-    Token synthetic =
-        new SymbolToken(closeBraceInfoFor(begin), begin.charOffset);
-    UnmatchedToken next = new UnmatchedToken(begin);
-    begin.endGroup = synthetic;
-    synthetic.next = next;
-    appendErrorToken(next);
-  }
 }
 
-PrecedenceInfo closeBraceInfoFor(BeginGroupToken begin) {
+TokenType closeBraceInfoFor(BeginToken begin) {
   return const {
-    '(': CLOSE_PAREN_INFO,
-    '[': CLOSE_SQUARE_BRACKET_INFO,
-    '{': CLOSE_CURLY_BRACKET_INFO,
-    '<': GT_INFO,
-    r'${': CLOSE_CURLY_BRACKET_INFO,
-  }[begin.value];
+    '(': TokenType.CLOSE_PAREN,
+    '[': TokenType.CLOSE_SQUARE_BRACKET,
+    '{': TokenType.CLOSE_CURLY_BRACKET,
+    '<': TokenType.GT,
+    r'${': TokenType.CLOSE_CURLY_BRACKET,
+  }[begin.lexeme];
+}
+
+class LineStarts extends Object with ListMixin<int> {
+  List<int> array;
+  int arrayLength = 0;
+
+  LineStarts(int numberOfBytesHint) {
+    // Let's assume the average Dart file is 300 bytes.
+    if (numberOfBytesHint == null) numberOfBytesHint = 300;
+
+    // Let's assume we have on average 22 bytes per line.
+    final int expectedNumberOfLines = 1 + (numberOfBytesHint ~/ 22);
+
+    if (numberOfBytesHint > 65535) {
+      array = new Uint32List(expectedNumberOfLines);
+    } else {
+      array = new Uint16List(expectedNumberOfLines);
+    }
+
+    // The first line starts at character offset 0.
+    add(0);
+  }
+
+  // Implement abstract members used by [ListMixin]
+
+  int get length => arrayLength;
+
+  int operator [](int index) {
+    assert(index < arrayLength);
+    return array[index];
+  }
+
+  void set length(int newLength) {
+    if (newLength > array.length) {
+      grow(newLength);
+    }
+    arrayLength = newLength;
+  }
+
+  void operator []=(int index, int value) {
+    if (value > 65535 && array is! Uint32List) {
+      switchToUint32(array.length);
+    }
+    array[index] = value;
+  }
+
+  // Specialize methods from [ListMixin].
+  void add(int value) {
+    if (arrayLength >= array.length) {
+      grow(0);
+    }
+    if (value > 65535 && array is! Uint32List) {
+      switchToUint32(array.length);
+    }
+    array[arrayLength++] = value;
+  }
+
+  // Helper methods.
+
+  void grow(int newLengthMinimum) {
+    int newLength = array.length * 2;
+    if (newLength < newLengthMinimum) newLength = newLengthMinimum;
+
+    if (array is Uint16List) {
+      final newArray = new Uint16List(newLength);
+      newArray.setRange(0, arrayLength, array);
+      array = newArray;
+    } else {
+      switchToUint32(newLength);
+    }
+  }
+
+  void switchToUint32(int newLength) {
+    final newArray = new Uint32List(newLength);
+    newArray.setRange(0, arrayLength, array);
+    array = newArray;
+  }
 }

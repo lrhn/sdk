@@ -76,7 +76,7 @@
  * [JsObject.jsify] constructor, which converts Dart [Map]s and [Iterable]s
  * into JavaScript Objects and Arrays.
  *
- * The following expression creats a new JavaScript object with the properties
+ * The following expression creates a new JavaScript object with the properties
  * `a` and `b` defined:
  *
  *     var jsMap = new JsObject.jsify({'a': 1, 'b': 2});
@@ -111,6 +111,9 @@ final String _DART_RESERVED_NAME_PREFIX = r'JS$';
 // make JSObject implement that interface even though it is in a different
 // library.
 final String escapePrivateClassPrefix = r'$JSImplClass23402893498';
+
+// Exposed to return ArrayBufferView from a TypedArray passed to readPixels.
+toArrayBufferView(TypedData data) native "Dart_TypedArray_ArrayBufferView";
 
 String _stripReservedNamePrefix(String name) =>
     name.startsWith(_DART_RESERVED_NAME_PREFIX)
@@ -248,7 +251,7 @@ String _escapeString(String str) {
 
 /// A collection of methods where all methods have the same name.
 /// This class is intended to optimize whether a specific invocation is
-/// appropritate for at least some of the methods in the collection.
+/// appropriate for at least some of the methods in the collection.
 class _DeclarationSet {
   _DeclarationSet() : _members = <mirrors.DeclarationMirror>[];
 
@@ -306,8 +309,8 @@ class _DeclarationSet {
       }
       startNamed++;
 
-      // TODO(jacobr): we are unneccessarily using an O(n^2) algorithm here.
-      // If we have JS APIs with a lange number of named parameters we should
+      // TODO(jacobr): we are unnecessarily using an O(n^2) algorithm here.
+      // If we have JS APIs with a large number of named parameters we should
       // optimize this. Either use a HashSet or invert this, walking over
       // parameters, querying invocation, and making sure we match
       //invocation.namedArguments.size keys.
@@ -842,7 +845,7 @@ List<String> _generateInteropPatchFiles(
     (isArray ? implementsArray : implements).add(fullName);
     if (!isArray && !isFunction && !isJSObject) {
       // For DOM classes we need to be a bit more conservative at tagging them
-      // as implementing JS inteorp classes risks strange unintended
+      // as implementing JS interop classes risks strange unintended
       // consequences as unrleated code may have instanceof checks.  Checking
       // for isJSObject ensures we do not accidentally pull in existing
       // dart:html classes as they all have JSObject as a base class.
@@ -1683,8 +1686,8 @@ Expando<JSFunction> _interopCaptureThisExpando = new Expando<JSFunction>();
 /// binding and calls [f] with the value of this passed as the first argument.
 /// When called from Dart, [null] will be passed as the first argument.
 ///
-/// See the documention for [allowInterop]. This method should only be used with
-/// package:js Dart-JavaScript interop.
+/// See the documentation for [allowInterop]. This method should only be used
+/// with package:js Dart-JavaScript interop.
 JSFunction allowInteropCaptureThis(Function f) {
   if (f is JSFunction) {
     // Behavior when the function is already a JS function is unspecified.

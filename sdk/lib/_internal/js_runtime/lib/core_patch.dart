@@ -5,25 +5,24 @@
 // Patch file for dart:core classes.
 import "dart:_internal" as _symbol_dev;
 import 'dart:_interceptors';
-import 'dart:_js_helper' show checkInt,
-                              Closure,
-                              ConstantMap,
-                              getRuntimeType,
-                              JsLinkedHashMap,
-                              jsonEncodeNative,
-                              JSSyntaxRegExp,
-                              NoInline,
-                              objectHashCode,
-                              patch,
-                              patch_full,
-                              patch_lazy,
-                              patch_startup,
-                              Primitives,
-                              stringJoinUnchecked,
-                              getTraceFromException,
-                              RuntimeError;
+import 'dart:_js_helper'
+    show
+        checkInt,
+        Closure,
+        ConstantMap,
+        getRuntimeType,
+        JsLinkedHashMap,
+        jsonEncodeNative,
+        JSSyntaxRegExp,
+        NoInline,
+        objectHashCode,
+        patch,
+        Primitives,
+        stringJoinUnchecked,
+        getTraceFromException,
+        RuntimeError;
 
-import 'dart:_foreign_helper' show JS;
+import 'dart:_foreign_helper' show JS, JS_GET_FLAG;
 
 import 'dart:_native_typed_data' show NativeUint8List;
 
@@ -31,7 +30,7 @@ import 'dart:async' show StreamController;
 
 String _symbolToString(Symbol symbol) => _symbol_dev.Symbol.getName(symbol);
 
-_symbolMapToStringMap(Map<Symbol, dynamic> map) {
+Map<String, dynamic> _symbolMapToStringMap(Map<Symbol, dynamic> map) {
   if (map == null) return null;
   var result = new Map<String, dynamic>();
   map.forEach((Symbol key, value) {
@@ -47,22 +46,18 @@ int identityHashCode(Object object) => objectHashCode(object);
 @patch
 class Object {
   @patch
-  bool operator==(other) => identical(this, other);
+  bool operator ==(other) => identical(this, other);
 
   @patch
   int get hashCode => Primitives.objectHashCode(this);
-
 
   @patch
   String toString() => Primitives.objectToHumanReadableString(this);
 
   @patch
   dynamic noSuchMethod(Invocation invocation) {
-    throw new NoSuchMethodError(
-        this,
-        invocation.memberName,
-        invocation.positionalArguments,
-        invocation.namedArguments);
+    throw new NoSuchMethodError(this, invocation.memberName,
+        invocation.positionalArguments, invocation.namedArguments);
   }
 
   @patch
@@ -78,38 +73,32 @@ class Null {
 // Patch for Function implementation.
 @patch
 class Function {
-  @patch_full
-  static apply(Function function,
-               List positionalArguments,
-               [Map<Symbol, dynamic> namedArguments]) {
+  @patch
+  static apply(Function function, List positionalArguments,
+      [Map<Symbol, dynamic> namedArguments]) {
+    // The lazy and startup emitter use a different implementation. To keep the
+    // method small and inlinable, just select the method.
+    return JS_GET_FLAG("IS_FULL_EMITTER")
+        ? _apply1(function, positionalArguments, namedArguments)
+        : _apply2(function, positionalArguments, namedArguments);
+  }
+
+  static _apply1(function, positionalArguments, namedArguments) {
     return Primitives.applyFunction(
-        function, positionalArguments,
-        namedArguments == null ? null : _toMangledNames(namedArguments));
-  }
-
-  @patch_lazy
-  static apply(Function function,
-               List positionalArguments,
-               [Map<Symbol, dynamic> namedArguments]) {
-    return Primitives.applyFunction2(function, positionalArguments,
+        function,
+        positionalArguments,
+        // Use this form so that if namedArguments is always null, we can
+        // tree-shake _symbolMapToStringMap.
         namedArguments == null ? null : _symbolMapToStringMap(namedArguments));
   }
 
-  @patch_startup
-  static apply(Function function,
-               List positionalArguments,
-               [Map<Symbol, dynamic> namedArguments]) {
-    return Primitives.applyFunction2(function, positionalArguments,
+  static _apply2(function, positionalArguments, namedArguments) {
+    return Primitives.applyFunction2(
+        function,
+        positionalArguments,
+        // Use this form so that if namedArguments is always null, we can
+        // tree-shake _symbolMapToStringMap.
         namedArguments == null ? null : _symbolMapToStringMap(namedArguments));
-  }
-
-  static Map<String, dynamic> _toMangledNames(
-      Map<Symbol, dynamic> namedArguments) {
-    Map<String, dynamic> result = {};
-    namedArguments.forEach((symbol, value) {
-      result[_symbolToString(symbol)] = value;
-    });
-    return result;
   }
 }
 
@@ -132,16 +121,16 @@ class Expando<T> {
             : _createKey();
 
   @patch
-  T operator[](Object object) {
+  T operator [](Object object) {
     if (_jsWeakMapOrKey is! String) {
-      _checkType(object);  // WeakMap doesn't check on reading, only writing.
+      _checkType(object); // WeakMap doesn't check on reading, only writing.
       return JS('', '#.get(#)', _jsWeakMapOrKey, object);
     }
     return _getFromObject(_jsWeakMapOrKey, object);
   }
 
   @patch
-  void operator[]=(Object object, T value) {
+  void operator []=(Object object, T value) {
     if (_jsWeakMapOrKey is! String) {
       JS('void', '#.set(#, #)', _jsWeakMapOrKey, object, value);
     } else {
@@ -176,24 +165,15 @@ class Expando<T> {
 @patch
 class int {
   @patch
-  static int parse(String source,
-                         { int radix,
-                           int onError(String source) }) {
+  static int parse(String source, {int radix, int onError(String source)}) {
     return Primitives.parseInt(source, radix, onError);
-  }
-
-  @patch
-  factory int.fromEnvironment(String name, {int defaultValue}) {
-    throw new UnsupportedError(
-        'int.fromEnvironment can only be used as a const constructor');
   }
 }
 
 @patch
 class double {
   @patch
-  static double parse(String source,
-                            [double onError(String source)]) {
+  static double parse(String source, [double onError(String source)]) {
     return Primitives.parseDouble(source, onError);
   }
 }
@@ -219,6 +199,9 @@ class Error {
 @patch
 class FallThroughError {
   @patch
+  FallThroughError._create(String url, int line);
+
+  @patch
   String toString() => super.toString();
 }
 
@@ -233,33 +216,32 @@ class AbstractClassInstantiationError {
 class DateTime {
   @patch
   DateTime.fromMillisecondsSinceEpoch(int millisecondsSinceEpoch,
-                                      {bool isUtc: false})
-      : this._withValue(millisecondsSinceEpoch, isUtc: isUtc);
+      {bool isUtc: false})
+      // `0 + millisecondsSinceEpoch` forces the inferred result to be non-null.
+      : this._withValue(0 + millisecondsSinceEpoch, isUtc: isUtc);
 
   @patch
   DateTime.fromMicrosecondsSinceEpoch(int microsecondsSinceEpoch,
-                                      {bool isUtc: false})
+      {bool isUtc: false})
       : this._withValue(
-          _microsecondInRoundedMilliseconds(microsecondsSinceEpoch),
-          isUtc: isUtc);
+            _microsecondInRoundedMilliseconds(microsecondsSinceEpoch),
+            isUtc: isUtc);
 
   @patch
-  DateTime._internal(int year,
-                     int month,
-                     int day,
-                     int hour,
-                     int minute,
-                     int second,
-                     int millisecond,
-                     int microsecond,
-                     bool isUtc)
-        // checkBool is manually inlined here because dart2js doesn't inline it
-        // and [isUtc] is usually a constant.
+  DateTime._internal(int year, int month, int day, int hour, int minute,
+      int second, int millisecond, int microsecond, bool isUtc)
+      // checkBool is manually inlined here because dart2js doesn't inline it
+      // and [isUtc] is usually a constant.
       : this.isUtc = isUtc is bool
             ? isUtc
             : throw new ArgumentError.value(isUtc, 'isUtc'),
         _value = checkInt(Primitives.valueFromDecomposedDate(
-            year, month, day, hour, minute, second,
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
             millisecond + _microsecondInRoundedMilliseconds(microsecond),
             isUtc));
 
@@ -276,11 +258,15 @@ class DateTime {
   }
 
   @patch
-  static int _brokenDownDateToValue(
-      int year, int month, int day, int hour, int minute, int second,
-      int millisecond, int microsecond, bool isUtc) {
+  static int _brokenDownDateToValue(int year, int month, int day, int hour,
+      int minute, int second, int millisecond, int microsecond, bool isUtc) {
     return Primitives.valueFromDecomposedDate(
-        year, month, day, hour, minute, second,
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
         millisecond + _microsecondInRoundedMilliseconds(microsecond),
         isUtc);
   }
@@ -299,14 +285,14 @@ class DateTime {
 
   @patch
   DateTime add(Duration duration) {
-    return new DateTime._withValue(
-        _value + duration.inMilliseconds, isUtc: isUtc);
+    return new DateTime._withValue(_value + duration.inMilliseconds,
+        isUtc: isUtc);
   }
 
   @patch
   DateTime subtract(Duration duration) {
-    return new DateTime._withValue(
-        _value - duration.inMilliseconds, isUtc: isUtc);
+    return new DateTime._withValue(_value - duration.inMilliseconds,
+        isUtc: isUtc);
   }
 
   @patch
@@ -318,7 +304,7 @@ class DateTime {
   int get millisecondsSinceEpoch => _value;
 
   @patch
-  int get microsecondsSinceEpoch => _value * 1000;
+  int get microsecondsSinceEpoch => 1000 * _value;
 
   @patch
   int get year => Primitives.getYear(this);
@@ -348,7 +334,6 @@ class DateTime {
   int get weekday => Primitives.getWeekday(this);
 }
 
-
 // Patch for Stopwatch implementation.
 @patch
 class Stopwatch {
@@ -370,8 +355,9 @@ class List<E> {
 
   @patch
   factory List.filled(int length, E fill, {bool growable: false}) {
-    List result = growable ? new JSArray<E>.growable(length)
-                           : new JSArray<E>.fixed(length);
+    List result = growable
+        ? new JSArray<E>.growable(length)
+        : new JSArray<E>.fixed(length);
     if (length != 0 && fill != null) {
       for (int i = 0; i < result.length; i++) {
         result[i] = fill;
@@ -381,7 +367,7 @@ class List<E> {
   }
 
   @patch
-  factory List.from(Iterable elements, { bool growable: true }) {
+  factory List.from(Iterable elements, {bool growable: true}) {
     List<E> list = new List<E>();
     for (E e in elements) {
       list.add(e);
@@ -410,8 +396,7 @@ class Map<K, V> {
 class String {
   @patch
   factory String.fromCharCodes(Iterable<int> charCodes,
-                               [int start = 0, int end]) {
-
+      [int start = 0, int end]) {
     if (charCodes is JSArray) {
       return _stringFromJSArray(charCodes, start, end);
     }
@@ -424,12 +409,6 @@ class String {
   @patch
   factory String.fromCharCode(int charCode) {
     return Primitives.stringFromCharCode(charCode);
-  }
-
-  @patch
-  factory String.fromEnvironment(String name, {String defaultValue}) {
-    throw new UnsupportedError(
-        'String.fromEnvironment can only be used as a const constructor');
   }
 
   static String _stringFromJSArray(List list, int start, int endOrNull) {
@@ -448,8 +427,8 @@ class String {
     return Primitives.stringFromNativeUint8List(charCodes, start, end);
   }
 
-  static String _stringFromIterable(Iterable<int> charCodes,
-                                    int start, int end) {
+  static String _stringFromIterable(
+      Iterable<int> charCodes, int start, int end) {
     if (start < 0) throw new RangeError.range(start, 0, charCodes.length);
     if (end != null && end < start) {
       throw new RangeError.range(end, start, charCodes.length);
@@ -478,12 +457,6 @@ class String {
 @patch
 class bool {
   @patch
-  factory bool.fromEnvironment(String name, {bool defaultValue: false}) {
-    throw new UnsupportedError(
-        'bool.fromEnvironment can only be used as a const constructor');
-  }
-
-  @patch
   int get hashCode => super.hashCode;
 }
 
@@ -492,11 +465,9 @@ class RegExp {
   @NoInline()
   @patch
   factory RegExp(String source,
-                       {bool multiLine: false,
-                        bool caseSensitive: true})
-    => new JSSyntaxRegExp(source,
-                          multiLine: multiLine,
-                          caseSensitive: caseSensitive);
+          {bool multiLine: false, bool caseSensitive: true}) =>
+      new JSSyntaxRegExp(source,
+          multiLine: multiLine, caseSensitive: caseSensitive);
 }
 
 // Patch for 'identical' function.
@@ -573,11 +544,9 @@ class StringBuffer {
 @patch
 class NoSuchMethodError {
   @patch
-  NoSuchMethodError(Object receiver,
-                    Symbol memberName,
-                    List positionalArguments,
-                    Map<Symbol, dynamic> namedArguments,
-                    [List existingArgumentNames = null])
+  NoSuchMethodError(Object receiver, Symbol memberName,
+      List positionalArguments, Map<Symbol, dynamic> namedArguments,
+      [List existingArgumentNames = null])
       : _receiver = receiver,
         _memberName = memberName,
         _arguments = positionalArguments,
@@ -622,6 +591,13 @@ class NoSuchMethodError {
   }
 }
 
+class _CompileTimeError extends Error {
+  final String _errorMsg;
+  // TODO(sigmund): consider calling `JS('', 'debugger')`.
+  _CompileTimeError(this._errorMsg);
+  String toString() => _errorMsg;
+}
+
 @patch
 class Uri {
   @patch
@@ -635,7 +611,13 @@ class Uri {
 @patch
 class _Uri {
   @patch
-  static bool get _isWindows => false;
+  static bool get _isWindows => _isWindowsCached;
+
+  static final bool _isWindowsCached = JS(
+      'bool',
+      'typeof process != "undefined" && '
+      'Object.prototype.toString.call(process) == "[object process]" && '
+      'process.platform == "win32"');
 
   // Matches a String that _uriEncodes to itself regardless of the kind of
   // component.  This corresponds to [_unreservedTable], i.e. characters that
@@ -648,10 +630,8 @@ class _Uri {
    * that appear in [canonicalTable], and returns the escaped string.
    */
   @patch
-  static String _uriEncode(List<int> canonicalTable,
-                           String text,
-                           Encoding encoding,
-                           bool spaceToPlus) {
+  static String _uriEncode(List<int> canonicalTable, String text,
+      Encoding encoding, bool spaceToPlus) {
     if (identical(encoding, UTF8) && _needsNoEncoding.hasMatch(text)) {
       return text;
     }
@@ -714,10 +694,7 @@ _malformedTypeError(message) => new RuntimeError(message);
 _genericNoSuchMethod(receiver, memberName, positionalArguments, namedArguments,
     existingArguments) {
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -728,10 +705,7 @@ _unresolvedConstructorError(receiver, memberName, positionalArguments,
   //     No constructor '$memberName' declared in class '$receiver'.
 
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -739,10 +713,7 @@ _unresolvedStaticGetterError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -750,10 +721,7 @@ _unresolvedStaticSetterError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -761,10 +729,7 @@ _unresolvedStaticMethodError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -772,10 +737,7 @@ _unresolvedTopLevelGetterError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -783,10 +745,7 @@ _unresolvedTopLevelSetterError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
 }
 
 // Called from kernel generated code.
@@ -794,8 +753,11 @@ _unresolvedTopLevelMethodError(receiver, memberName, positionalArguments,
     namedArguments, existingArguments) {
   // TODO(sra): Generate customized message.
   return new NoSuchMethodError(
-      receiver,
-      memberName,
-      positionalArguments,
-      namedArguments);
+      receiver, memberName, positionalArguments, namedArguments);
+}
+
+@patch
+class _ConstantExpressionError {
+  @patch
+  _throw(error) => throw error;
 }

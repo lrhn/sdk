@@ -4,17 +4,16 @@
 
 library fasta.constructor_reference_builder;
 
-import 'builder.dart' show
-    PrefixBuilder,
-    ClassBuilder,
-    Builder,
-    TypeBuilder;
+import 'builder.dart'
+    show
+        Builder,
+        ClassBuilder,
+        LibraryBuilder,
+        PrefixBuilder,
+        Scope,
+        TypeBuilder;
 
-import '../messages.dart' show
-    warning;
-
-import 'scope.dart' show
-    Scope;
+import '../messages.dart' show templateConstructorNotFound, warning;
 
 class ConstructorReferenceBuilder extends Builder {
   final String name;
@@ -32,7 +31,7 @@ class ConstructorReferenceBuilder extends Builder {
 
   String get fullNameForErrors => "$name${suffix == null ? '' : '.$suffix'}";
 
-  void resolveIn(Scope scope) {
+  void resolveIn(Scope scope, LibraryBuilder accessingLibrary) {
     int index = name.indexOf(".");
     Builder builder;
     if (index == -1) {
@@ -43,10 +42,11 @@ class ConstructorReferenceBuilder extends Builder {
       builder = scope.lookup(prefix, charOffset, fileUri);
       if (builder is PrefixBuilder) {
         PrefixBuilder prefix = builder;
-        builder = prefix.exports[middle];
+        builder = prefix.lookup(middle, charOffset, fileUri);
       } else if (builder is ClassBuilder) {
         ClassBuilder cls = builder;
-        builder = cls.constructors[middle];
+        builder = cls.findConstructorOrFactory(
+            middle, charOffset, fileUri, accessingLibrary);
         if (suffix == null) {
           target = builder;
           return;
@@ -54,10 +54,12 @@ class ConstructorReferenceBuilder extends Builder {
       }
     }
     if (builder is ClassBuilder) {
-      target = builder.constructors[suffix ?? ""];
+      target = builder.findConstructorOrFactory(
+          suffix ?? "", charOffset, fileUri, accessingLibrary);
     }
     if (target == null) {
-      warning(null, -1, "Couldn't find constructor '$fullNameForErrors'.");
+      warning(templateConstructorNotFound.withArguments(fullNameForErrors),
+          charOffset, fileUri);
     }
   }
 }

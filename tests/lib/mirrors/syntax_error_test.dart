@@ -5,6 +5,9 @@
 // Regression test for Issue 15744
 // Also, tests that syntax errors in reflected classes are reported correctly.
 
+library lib;
+
+@MirrorsUsed(targets: "lib")
 import 'dart:mirrors';
 
 class MD {
@@ -12,12 +15,12 @@ class MD {
   const MD({this.name});
 }
 
-@MD(name:'A')
+@MD(name: 'A')
 class A {}
 
-@MD(name:'B')
+@MD(name: 'B')
 class B {
-  static x = { 0: 0; };  /// 01: compile-time error
+  static x = { 0: 0; }; // //# 01: compile-time error
 }
 
 main() {

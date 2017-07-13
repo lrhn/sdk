@@ -5,7 +5,7 @@
 import 'dart:convert';
 import 'dart:io' as io;
 
-import '../lib/shared_messages.dart';
+import 'package:dart_messages/shared_messages.dart';
 
 const String jsonPath = '../lib/generated/shared_messages.json';
 const String dart2jsPath =
@@ -121,6 +121,7 @@ void emitDart2js() {
         }
         return '"$content"';
       }
+
       for (var example in message.examples) {
         if (example is String) {
           out.write("      ");

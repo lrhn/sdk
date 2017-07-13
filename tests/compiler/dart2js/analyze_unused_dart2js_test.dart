@@ -8,6 +8,7 @@ import 'package:async_helper/async_helper.dart';
 
 import 'package:compiler/src/compiler.dart';
 import 'package:compiler/src/diagnostics/messages.dart';
+import 'package:compiler/src/elements/elements.dart' show LibraryElement;
 import 'package:compiler/src/filenames.dart';
 
 import 'analyze_helper.dart';
@@ -61,7 +62,7 @@ bool checkResults(Compiler compiler, CollectingDiagnosticHandler handler) {
       currentDirectory.resolve('pkg/compiler/lib/src/helpers/helpers.dart');
   void checkLive(member) {
     if (member.isFunction) {
-      if (compiler.enqueuer.resolution.hasBeenProcessed(member)) {
+      if (compiler.resolutionWorldBuilder.isMemberUsed(member)) {
         compiler.reporter.reportHintMessage(member, MessageKind.GENERIC,
             {'text': "Helper function in production code '$member'."});
       }
@@ -80,6 +81,7 @@ bool checkResults(Compiler compiler, CollectingDiagnosticHandler handler) {
     }
   }
 
-  compiler.libraryLoader.lookupLibrary(helperUri).forEachLocalMember(checkLive);
+  (compiler.libraryLoader.lookupLibrary(helperUri) as LibraryElement)
+      .forEachLocalMember(checkLive);
   return handler.checkResults();
 }

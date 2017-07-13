@@ -17,6 +17,7 @@ import 'package:test/test.dart';
 
 import 'integration_tests.dart';
 import 'protocol_matchers.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 
 /**
  * Convenience methods for running integration tests
@@ -30,48 +31,55 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * byteStorePath (String)
+   * byteStorePath: FilePath
    *
    *   The path to the directory containing the on-disk byte store that is to
    *   be used by any analysis drivers that are created.
    *
-   * version (String)
+   * sdkPath: FilePath
+   *
+   *   The path to the directory containing the SDK that is to be used by any
+   *   analysis drivers that are created.
+   *
+   * version: String
    *
    *   The version number of the plugin spec supported by the analysis server
    *   that is executing the plugin.
    *
    * Returns
    *
-   * isCompatible (bool)
+   * isCompatible: bool
    *
    *   A flag indicating whether the plugin supports the same version of the
    *   plugin spec as the analysis server. If the value is false, then the
    *   plugin is expected to shutdown after returning the response.
    *
-   * name (String)
+   * name: String
    *
    *   The name of the plugin. This value is only used when the server needs to
    *   identify the plugin, either to the user or for debugging purposes.
    *
-   * version (String)
+   * version: String
    *
    *   The version of the plugin. This value is only used when the server needs
    *   to identify the plugin, either to the user or for debugging purposes.
    *
-   * contactInfo (optional String)
+   * contactInfo: String (optional)
    *
    *   Information that the user can use to use to contact the maintainers of
    *   the plugin when there is a problem.
    *
-   * interestingFiles (List<String>)
+   * interestingFiles: List<String>
    *
    *   The glob patterns of the files for which the plugin will provide
    *   information. This value is ignored if the isCompatible field is false.
    *   Otherwise, it will be used to identify the files for which the plugin
    *   should be notified of changes.
    */
-  Future<PluginVersionCheckResult> sendPluginVersionCheck(String byteStorePath, String version) async {
-    var params = new PluginVersionCheckParams(byteStorePath, version).toJson();
+  Future<PluginVersionCheckResult> sendPluginVersionCheck(
+      String byteStorePath, String sdkPath, String version) async {
+    var params =
+        new PluginVersionCheckParams(byteStorePath, sdkPath, version).toJson();
     var result = await server.send("plugin.versionCheck", params);
     ResponseDecoder decoder = new ResponseDecoder(null);
     return new PluginVersionCheckResult.fromJson(decoder, 'result', result);
@@ -97,18 +105,18 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * isFatal (bool)
+   * isFatal: bool
    *
    *   A flag indicating whether the error is a fatal error, meaning that the
    *   plugin will shutdown automatically after sending this notification. If
    *   true, the server will not expect any other responses or notifications
    *   from the plugin.
    *
-   * message (String)
+   * message: String
    *
    *   The error message indicating what kind of error was encountered.
    *
-   * stackTrace (String)
+   * stackTrace: String
    *
    *   The stack trace associated with the generation of the error, used for
    *   debugging the plugin.
@@ -121,13 +129,70 @@ abstract class IntegrationTestMixin {
   StreamController<PluginErrorParams> _onPluginError;
 
   /**
+   * Return the navigation information associated with the given region of the
+   * given file. If the navigation information for the given file has not yet
+   * been computed, or the most recently computed navigation information for
+   * the given file is out of date, then the response for this request will be
+   * delayed until it has been computed. If the content of the file changes
+   * after this request was received but before a response could be sent, then
+   * an error of type CONTENT_MODIFIED will be generated.
+   *
+   * If a navigation region overlaps (but extends either before or after) the
+   * given region of the file it will be included in the result. This means
+   * that it is theoretically possible to get the same navigation region in
+   * response to multiple requests. Clients can avoid this by always choosing a
+   * region that starts at the beginning of a line and ends at the end of a
+   * (possibly different) line in the file.
+   *
+   * Parameters
+   *
+   * file: FilePath
+   *
+   *   The file in which navigation information is being requested.
+   *
+   * offset: int
+   *
+   *   The offset of the region for which navigation information is being
+   *   requested.
+   *
+   * length: int
+   *
+   *   The length of the region for which navigation information is being
+   *   requested.
+   *
+   * Returns
+   *
+   * files: List<FilePath>
+   *
+   *   A list of the paths of files that are referenced by the navigation
+   *   targets.
+   *
+   * targets: List<NavigationTarget>
+   *
+   *   A list of the navigation targets that are referenced by the navigation
+   *   regions.
+   *
+   * regions: List<NavigationRegion>
+   *
+   *   A list of the navigation regions within the requested region of the
+   *   file.
+   */
+  Future<AnalysisGetNavigationResult> sendAnalysisGetNavigation(
+      String file, int offset, int length) async {
+    var params = new AnalysisGetNavigationParams(file, offset, length).toJson();
+    var result = await server.send("analysis.getNavigation", params);
+    ResponseDecoder decoder = new ResponseDecoder(null);
+    return new AnalysisGetNavigationResult.fromJson(decoder, 'result', result);
+  }
+
+  /**
    * Used to inform the plugin of changes to files in the file system. Only
    * events associated with files that match the interestingFiles glob patterns
    * will be forwarded to the plugin.
    *
    * Parameters
    *
-   * events (List<WatchEvent>)
+   * events: List<WatchEvent>
    *
    *   The watch events that the plugin should handle.
    */
@@ -146,7 +211,7 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * roots (optional List<FilePath>)
+   * roots: List<FilePath> (optional)
    *
    *   A list of the context roots that are to be re-analyzed.
    *
@@ -161,28 +226,11 @@ abstract class IntegrationTestMixin {
   }
 
   /**
-   * Used to set the options used to build analysis contexts. This request will
-   * be sent exactly once before any context roots have been specified.
-   *
-   * Parameters
-   *
-   * options (ContextBuilderOptions)
-   *
-   *   The options used to build the analysis contexts.
-   */
-  Future sendAnalysisSetContextBuilderOptions(ContextBuilderOptions options) async {
-    var params = new AnalysisSetContextBuilderOptionsParams(options).toJson();
-    var result = await server.send("analysis.setContextBuilderOptions", params);
-    outOfTestExpect(result, isNull);
-    return null;
-  }
-
-  /**
    * Set the list of context roots that should be analyzed.
    *
    * Parameters
    *
-   * roots (List<ContextRoot>)
+   * roots: List<ContextRoot>
    *
    *   A list of the context roots that should be analyzed.
    */
@@ -204,7 +252,7 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * files (List<FilePath>)
+   * files: List<FilePath>
    *
    *   The files that are to be a priority for analysis.
    */
@@ -224,12 +272,13 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * subscriptions (Map<AnalysisService, List<FilePath>>)
+   * subscriptions: Map<AnalysisService, List<FilePath>>
    *
    *   A table mapping services to a list of the files being subscribed to the
    *   service.
    */
-  Future sendAnalysisSetSubscriptions(Map<AnalysisService, List<String>> subscriptions) async {
+  Future sendAnalysisSetSubscriptions(
+      Map<AnalysisService, List<String>> subscriptions) async {
     var params = new AnalysisSetSubscriptionsParams(subscriptions).toJson();
     var result = await server.send("analysis.setSubscriptions", params);
     outOfTestExpect(result, isNull);
@@ -246,8 +295,8 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * files (Map<FilePath, AddContentOverlay | ChangeContentOverlay |
-   * RemoveContentOverlay>)
+   * files: Map<FilePath, AddContentOverlay | ChangeContentOverlay |
+   * RemoveContentOverlay>
    *
    *   A table mapping the files whose content has changed to a description of
    *   the content change.
@@ -266,11 +315,11 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the errors.
    *
-   * errors (List<AnalysisError>)
+   * errors: List<AnalysisError>
    *
    *   The errors contained in the file.
    */
@@ -297,11 +346,11 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the folding regions.
    *
-   * regions (List<FoldingRegion>)
+   * regions: List<FoldingRegion>
    *
    *   The folding regions contained in the file.
    */
@@ -325,11 +374,11 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the highlight regions.
    *
-   * regions (List<HighlightRegion>)
+   * regions: List<HighlightRegion>
    *
    *   The highlight regions contained in the file.
    */
@@ -360,20 +409,20 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the navigation regions.
    *
-   * regions (List<NavigationRegion>)
+   * regions: List<NavigationRegion>
    *
    *   The navigation regions contained in the file.
    *
-   * targets (List<NavigationTarget>)
+   * targets: List<NavigationTarget>
    *
    *   The navigation targets referenced in the file. They are referenced by
    *   NavigationRegions by their index in this array.
    *
-   * files (List<FilePath>)
+   * files: List<FilePath>
    *
    *   The files containing navigation targets referenced in the file. They are
    *   referenced by NavigationTargets by their index in this array.
@@ -400,11 +449,11 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file in which the references occur.
    *
-   * occurrences (List<Occurrences>)
+   * occurrences: List<Occurrences>
    *
    *   The occurrences of references to elements within the file.
    */
@@ -428,11 +477,11 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file with which the outline is associated.
    *
-   * outline (List<Outline>)
+   * outline: List<Outline>
    *
    *   The outline fragments associated with the file.
    */
@@ -449,17 +498,17 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the point at which suggestions are to be made.
    *
-   * offset (int)
+   * offset: int
    *
    *   The offset within the file at which suggestions are to be made.
    *
    * Returns
    *
-   * replacementOffset (int)
+   * replacementOffset: int
    *
    *   The offset of the start of the text to be replaced. This will be
    *   different than the offset used to request the completion suggestions if
@@ -467,13 +516,13 @@ abstract class IntegrationTestMixin {
    *   particular, the replacementOffset will be the offset of the beginning of
    *   said identifier.
    *
-   * replacementLength (int)
+   * replacementLength: int
    *
    *   The length of the text to be replaced if the remainder of the identifier
    *   containing the cursor is to be replaced when the suggestion is applied
    *   (that is, the number of characters in the existing identifier).
    *
-   * results (List<CompletionSuggestion>)
+   * results: List<CompletionSuggestion>
    *
    *   The completion suggestions being reported. The notification contains all
    *   possible completions at the requested cursor position, even those that
@@ -481,11 +530,13 @@ abstract class IntegrationTestMixin {
    *   client to respond to further keystrokes from the user without having to
    *   make additional requests.
    */
-  Future<CompletionGetSuggestionsResult> sendCompletionGetSuggestions(String file, int offset) async {
+  Future<CompletionGetSuggestionsResult> sendCompletionGetSuggestions(
+      String file, int offset) async {
     var params = new CompletionGetSuggestionsParams(file, offset).toJson();
     var result = await server.send("completion.getSuggestions", params);
     ResponseDecoder decoder = new ResponseDecoder(null);
-    return new CompletionGetSuggestionsResult.fromJson(decoder, 'result', result);
+    return new CompletionGetSuggestionsResult.fromJson(
+        decoder, 'result', result);
   }
 
   /**
@@ -496,25 +547,26 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the code for which assists are being requested.
    *
-   * offset (int)
+   * offset: int
    *
    *   The offset of the code for which assists are being requested.
    *
-   * length (int)
+   * length: int
    *
    *   The length of the code for which assists are being requested.
    *
    * Returns
    *
-   * assists (List<PrioritizedSourceChange>)
+   * assists: List<PrioritizedSourceChange>
    *
    *   The assists that are available at the given location.
    */
-  Future<EditGetAssistsResult> sendEditGetAssists(String file, int offset, int length) async {
+  Future<EditGetAssistsResult> sendEditGetAssists(
+      String file, int offset, int length) async {
     var params = new EditGetAssistsParams(file, offset, length).toJson();
     var result = await server.send("edit.getAssists", params);
     ResponseDecoder decoder = new ResponseDecoder(null);
@@ -527,21 +579,21 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the code on which the refactoring would be based.
    *
-   * offset (int)
+   * offset: int
    *
    *   The offset of the code on which the refactoring would be based.
    *
-   * length (int)
+   * length: int
    *
    *   The length of the code on which the refactoring would be based.
    *
    * Returns
    *
-   * kinds (List<RefactoringKind>)
+   * kinds: List<RefactoringKind>
    *
    *   The kinds of refactorings that are valid for the given selection.
    *
@@ -550,11 +602,14 @@ abstract class IntegrationTestMixin {
    *   However, plugins can support pre-defined refactorings, such as a rename
    *   refactoring, at locations not supported by server.
    */
-  Future<EditGetAvailableRefactoringsResult> sendEditGetAvailableRefactorings(String file, int offset, int length) async {
-    var params = new EditGetAvailableRefactoringsParams(file, offset, length).toJson();
+  Future<EditGetAvailableRefactoringsResult> sendEditGetAvailableRefactorings(
+      String file, int offset, int length) async {
+    var params =
+        new EditGetAvailableRefactoringsParams(file, offset, length).toJson();
     var result = await server.send("edit.getAvailableRefactorings", params);
     ResponseDecoder decoder = new ResponseDecoder(null);
-    return new EditGetAvailableRefactoringsResult.fromJson(decoder, 'result', result);
+    return new EditGetAvailableRefactoringsResult.fromJson(
+        decoder, 'result', result);
   }
 
   /**
@@ -563,17 +618,17 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the errors for which fixes are being requested.
    *
-   * offset (int)
+   * offset: int
    *
    *   The offset used to select the errors for which fixes will be returned.
    *
    * Returns
    *
-   * fixes (List<AnalysisErrorFixes>)
+   * fixes: List<AnalysisErrorFixes>
    *
    *   The fixes that are available for the errors at the given offset.
    */
@@ -589,28 +644,28 @@ abstract class IntegrationTestMixin {
    *
    * Parameters
    *
-   * kind (RefactoringKind)
+   * kind: RefactoringKind
    *
    *   The kind of refactoring to be performed.
    *
-   * file (FilePath)
+   * file: FilePath
    *
    *   The file containing the code involved in the refactoring.
    *
-   * offset (int)
+   * offset: int
    *
    *   The offset of the region involved in the refactoring.
    *
-   * length (int)
+   * length: int
    *
    *   The length of the region involved in the refactoring.
    *
-   * validateOnly (bool)
+   * validateOnly: bool
    *
    *   True if the client is only requesting that the values of the options be
    *   validated and no change be generated.
    *
-   * options (optional RefactoringOptions)
+   * options: RefactoringOptions (optional)
    *
    *   Data used to provide values provided by the user. The structure of the
    *   data is dependent on the kind of refactoring being performed. The data
@@ -620,39 +675,39 @@ abstract class IntegrationTestMixin {
    *
    * Returns
    *
-   * initialProblems (List<RefactoringProblem>)
+   * initialProblems: List<RefactoringProblem>
    *
    *   The initial status of the refactoring, that is, problems related to the
    *   context in which the refactoring is requested. The list should be empty
    *   if there are no known problems.
    *
-   * optionsProblems (List<RefactoringProblem>)
+   * optionsProblems: List<RefactoringProblem>
    *
    *   The options validation status, that is, problems in the given options,
    *   such as light-weight validation of a new name, flags compatibility, etc.
    *   The list should be empty if there are no known problems.
    *
-   * finalProblems (List<RefactoringProblem>)
+   * finalProblems: List<RefactoringProblem>
    *
    *   The final status of the refactoring, that is, problems identified in the
    *   result of a full, potentially expensive validation and / or change
    *   creation. The list should be empty if there are no known problems.
    *
-   * feedback (optional RefactoringFeedback)
+   * feedback: RefactoringFeedback (optional)
    *
    *   Data used to provide feedback to the user. The structure of the data is
    *   dependent on the kind of refactoring being created. The data that is
    *   returned is documented in the section titled Refactorings, labeled as
    *   "Feedback".
    *
-   * change (optional SourceChange)
+   * change: SourceChange (optional)
    *
    *   The changes that are to be applied to affect the refactoring. This field
    *   can be omitted if there are problems that prevent a set of changes from
    *   being computed, such as having no options specified for a refactoring
    *   that requires them, or if only validation was requested.
    *
-   * potentialEdits (optional List<String>)
+   * potentialEdits: List<String> (optional)
    *
    *   The ids of source edits that are not known to be valid. An edit is not
    *   known to be valid if there was insufficient type information for the
@@ -662,8 +717,13 @@ abstract class IntegrationTestMixin {
    *   the change field is omitted or if there are no potential edits for the
    *   refactoring.
    */
-  Future<EditGetRefactoringResult> sendEditGetRefactoring(RefactoringKind kind, String file, int offset, int length, bool validateOnly, {RefactoringOptions options}) async {
-    var params = new EditGetRefactoringParams(kind, file, offset, length, validateOnly, options: options).toJson();
+  Future<EditGetRefactoringResult> sendEditGetRefactoring(RefactoringKind kind,
+      String file, int offset, int length, bool validateOnly,
+      {RefactoringOptions options}) async {
+    var params = new EditGetRefactoringParams(
+            kind, file, offset, length, validateOnly,
+            options: options)
+        .toJson();
     var result = await server.send("edit.getRefactoring", params);
     ResponseDecoder decoder = new ResponseDecoder(kind);
     return new EditGetRefactoringResult.fromJson(decoder, 'result', result);
@@ -678,15 +738,20 @@ abstract class IntegrationTestMixin {
     onPluginError = _onPluginError.stream.asBroadcastStream();
     _onAnalysisErrors = new StreamController<AnalysisErrorsParams>(sync: true);
     onAnalysisErrors = _onAnalysisErrors.stream.asBroadcastStream();
-    _onAnalysisFolding = new StreamController<AnalysisFoldingParams>(sync: true);
+    _onAnalysisFolding =
+        new StreamController<AnalysisFoldingParams>(sync: true);
     onAnalysisFolding = _onAnalysisFolding.stream.asBroadcastStream();
-    _onAnalysisHighlights = new StreamController<AnalysisHighlightsParams>(sync: true);
+    _onAnalysisHighlights =
+        new StreamController<AnalysisHighlightsParams>(sync: true);
     onAnalysisHighlights = _onAnalysisHighlights.stream.asBroadcastStream();
-    _onAnalysisNavigation = new StreamController<AnalysisNavigationParams>(sync: true);
+    _onAnalysisNavigation =
+        new StreamController<AnalysisNavigationParams>(sync: true);
     onAnalysisNavigation = _onAnalysisNavigation.stream.asBroadcastStream();
-    _onAnalysisOccurrences = new StreamController<AnalysisOccurrencesParams>(sync: true);
+    _onAnalysisOccurrences =
+        new StreamController<AnalysisOccurrencesParams>(sync: true);
     onAnalysisOccurrences = _onAnalysisOccurrences.stream.asBroadcastStream();
-    _onAnalysisOutline = new StreamController<AnalysisOutlineParams>(sync: true);
+    _onAnalysisOutline =
+        new StreamController<AnalysisOutlineParams>(sync: true);
     onAnalysisOutline = _onAnalysisOutline.stream.asBroadcastStream();
   }
 
@@ -699,31 +764,38 @@ abstract class IntegrationTestMixin {
     switch (event) {
       case "plugin.error":
         outOfTestExpect(params, isPluginErrorParams);
-        _onPluginError.add(new PluginErrorParams.fromJson(decoder, 'params', params));
+        _onPluginError
+            .add(new PluginErrorParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.errors":
         outOfTestExpect(params, isAnalysisErrorsParams);
-        _onAnalysisErrors.add(new AnalysisErrorsParams.fromJson(decoder, 'params', params));
+        _onAnalysisErrors
+            .add(new AnalysisErrorsParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.folding":
         outOfTestExpect(params, isAnalysisFoldingParams);
-        _onAnalysisFolding.add(new AnalysisFoldingParams.fromJson(decoder, 'params', params));
+        _onAnalysisFolding
+            .add(new AnalysisFoldingParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.highlights":
         outOfTestExpect(params, isAnalysisHighlightsParams);
-        _onAnalysisHighlights.add(new AnalysisHighlightsParams.fromJson(decoder, 'params', params));
+        _onAnalysisHighlights.add(
+            new AnalysisHighlightsParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.navigation":
         outOfTestExpect(params, isAnalysisNavigationParams);
-        _onAnalysisNavigation.add(new AnalysisNavigationParams.fromJson(decoder, 'params', params));
+        _onAnalysisNavigation.add(
+            new AnalysisNavigationParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.occurrences":
         outOfTestExpect(params, isAnalysisOccurrencesParams);
-        _onAnalysisOccurrences.add(new AnalysisOccurrencesParams.fromJson(decoder, 'params', params));
+        _onAnalysisOccurrences.add(
+            new AnalysisOccurrencesParams.fromJson(decoder, 'params', params));
         break;
       case "analysis.outline":
         outOfTestExpect(params, isAnalysisOutlineParams);
-        _onAnalysisOutline.add(new AnalysisOutlineParams.fromJson(decoder, 'params', params));
+        _onAnalysisOutline
+            .add(new AnalysisOutlineParams.fromJson(decoder, 'params', params));
         break;
       default:
         fail('Unexpected notification: $event');

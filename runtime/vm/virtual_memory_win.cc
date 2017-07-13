@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_WINDOWS)
+#if defined(HOST_OS_WINDOWS)
 
 #include "vm/virtual_memory.h"
 
@@ -54,7 +54,10 @@ bool VirtualMemory::FreeSubSegment(int32_t handle,
 }
 
 
-bool VirtualMemory::Commit(uword addr, intptr_t size, bool executable) {
+bool VirtualMemory::Commit(uword addr,
+                           intptr_t size,
+                           bool executable,
+                           const char* name) {
   ASSERT(Contains(addr));
   ASSERT(Contains(addr + size) || (addr + size == end()));
   int prot = executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
@@ -98,4 +101,4 @@ bool VirtualMemory::Protect(void* address, intptr_t size, Protection mode) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_WINDOWS)
+#endif  // defined(HOST_OS_WINDOWS)

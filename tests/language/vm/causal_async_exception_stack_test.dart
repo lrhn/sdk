@@ -27,15 +27,16 @@ main() async {
   // Test async and async*.
   try {
     await foo();
+    fail("Did not throw");
   } catch (e, st) {
     expect(st.toString(), stringContainsInOrder([
-        'thrower', '.dart:8',
-        '<asynchronous suspension>',
-        'generator', '.dart:17',
-        '<asynchronous suspension>',
-        'foo', '.dart:21',
-        '<asynchronous suspension>',
-        'main',
+        'thrower', '.dart:8',         //
+        '<asynchronous suspension>',  //
+        'generator', '.dart:17',      //
+        '<asynchronous suspension>',  //
+        'foo', '.dart:21',            //
+        '<asynchronous suspension>',  //
+        'main',                       //
         ]));
   }
 
@@ -67,9 +68,9 @@ main() async {
     await thrower();
   } catch(e, st) {
     expect(st.toString(), stringContainsInOrder([
-           'thrower', '.dart:8',
-           '<asynchronous suspension>',
-           'main', '.dart:67',
+           'thrower', '.dart:8',         //
+           '<asynchronous suspension>',  //
+           'main', '.dart:68',           //
            ]));
   }
 }

@@ -60,6 +60,12 @@ class LibraryAnalyzer {
    * Compute analysis results for all units of the library.
    */
   Map<FileState, UnitAnalysisResult> analyze() {
+    return PerformanceStatistics.analysis.makeCurrentWhile(() {
+      return _analyze();
+    });
+  }
+
+  Map<FileState, UnitAnalysisResult> _analyze() {
     Map<FileState, CompilationUnit> units = {};
 
     // Parse all files.
@@ -92,32 +98,38 @@ class LibraryAnalyzer {
 
       _computeConstants();
 
-      units.forEach((file, unit) {
-        _computeVerifyErrors(file, unit);
+      PerformanceStatistics.errors.makeCurrentWhile(() {
+        units.forEach((file, unit) {
+          _computeVerifyErrors(file, unit);
+        });
       });
 
       if (_analysisOptions.hint) {
-        units.forEach((file, unit) {
-          {
-            var visitor = new GatherUsedLocalElementsVisitor(_libraryElement);
-            unit.accept(visitor);
-            _usedLocalElementsList.add(visitor.usedElements);
-          }
-          {
-            var visitor =
-                new GatherUsedImportedElementsVisitor(_libraryElement);
-            unit.accept(visitor);
-            _usedImportedElementsList.add(visitor.usedElements);
-          }
-        });
-        units.forEach((file, unit) {
-          _computeHints(file, unit);
+        PerformanceStatistics.hints.makeCurrentWhile(() {
+          units.forEach((file, unit) {
+            {
+              var visitor = new GatherUsedLocalElementsVisitor(_libraryElement);
+              unit.accept(visitor);
+              _usedLocalElementsList.add(visitor.usedElements);
+            }
+            {
+              var visitor =
+                  new GatherUsedImportedElementsVisitor(_libraryElement);
+              unit.accept(visitor);
+              _usedImportedElementsList.add(visitor.usedElements);
+            }
+          });
+          units.forEach((file, unit) {
+            _computeHints(file, unit);
+          });
         });
       }
 
       if (_analysisOptions.lint) {
-        units.forEach((file, unit) {
-          _computeLints(file, unit);
+        PerformanceStatistics.lints.makeCurrentWhile(() {
+          units.forEach((file, unit) {
+            _computeLints(file, unit);
+          });
         });
       }
     } finally {
@@ -158,6 +170,10 @@ class LibraryAnalyzer {
   }
 
   void _computeHints(FileState file, CompilationUnit unit) {
+    if (file.source == null) {
+      return;
+    }
+
     AnalysisErrorListener errorListener = _getErrorListener(file);
     ErrorReporter errorReporter = _getErrorReporter(file);
 
@@ -204,11 +220,15 @@ class LibraryAnalyzer {
           new UsedLocalElements.merge(_usedLocalElementsList);
       UnusedLocalElementsVerifier visitor =
           new UnusedLocalElementsVerifier(errorListener, usedElements);
-      unit.element.accept(visitor);
+      unit.accept(visitor);
     }
   }
 
   void _computeLints(FileState file, CompilationUnit unit) {
+    if (file.source == null) {
+      return;
+    }
+
     ErrorReporter errorReporter = _getErrorReporter(file);
 
     List<AstVisitor> visitors = <AstVisitor>[];
@@ -239,6 +259,10 @@ class LibraryAnalyzer {
   }
 
   void _computeVerifyErrors(FileState file, CompilationUnit unit) {
+    if (file.source == null) {
+      return;
+    }
+
     RecordingErrorListener errorListener = _getErrorListener(file);
 
     if (_analysisOptions.strongMode) {
@@ -377,24 +401,14 @@ class LibraryAnalyzer {
 
   void _resolveDirectives(Map<FileState, CompilationUnit> units) {
     CompilationUnit definingCompilationUnit = units[_library];
-
-    var uriToElement = <Uri, CompilationUnitElement>{};
-    for (CompilationUnitElement partElement in _libraryElement.units) {
-      uriToElement[partElement.source.uri] = partElement;
-    }
-
-    var sourceToUnit = <Source, CompilationUnit>{};
-    units.forEach((file, unit) {
-      Source source = file.source;
-      unit.element = uriToElement[source.uri];
-      sourceToUnit[source] = unit;
-    });
+    definingCompilationUnit.element = _libraryElement.definingCompilationUnit;
 
     ErrorReporter libraryErrorReporter = _getErrorReporter(_library);
     LibraryIdentifier libraryNameNode = null;
     bool hasPartDirective = false;
     var seenPartSources = new Set<Source>();
     var directivesToResolve = <Directive>[];
+    int partIndex = 0;
     for (Directive directive in definingCompilationUnit.directives) {
       if (directive is LibraryDirective) {
         libraryNameNode = directive.name;
@@ -403,7 +417,8 @@ class LibraryAnalyzer {
         for (ImportElement importElement in _libraryElement.imports) {
           if (importElement.nameOffset == directive.offset) {
             directive.element = importElement;
-            if (!_isLibrarySource(importElement.importedLibrary.source)) {
+            Source source = importElement.importedLibrary?.source;
+            if (source != null && !_isLibrarySource(source)) {
               ErrorCode errorCode = importElement.isDeferred
                   ? StaticWarningCode.IMPORT_OF_NON_LIBRARY
                   : CompileTimeErrorCode.IMPORT_OF_NON_LIBRARY;
@@ -416,7 +431,8 @@ class LibraryAnalyzer {
         for (ExportElement exportElement in _libraryElement.exports) {
           if (exportElement.nameOffset == directive.offset) {
             directive.element = exportElement;
-            if (!_isLibrarySource(exportElement.exportedLibrary.source)) {
+            Source source = exportElement.exportedLibrary?.source;
+            if (source != null && !_isLibrarySource(source)) {
               libraryErrorReporter.reportErrorForNode(
                   CompileTimeErrorCode.EXPORT_OF_NON_LIBRARY,
                   directive.uri,
@@ -427,46 +443,58 @@ class LibraryAnalyzer {
       } else if (directive is PartDirective) {
         hasPartDirective = true;
         StringLiteral partUri = directive.uri;
+
+        FileState partFile = _library.partedFiles[partIndex];
+        CompilationUnit partUnit = units[partFile];
+        CompilationUnitElement partElement = _libraryElement.parts[partIndex];
+        partUnit.element = partElement;
+        directive.element = partElement;
+        partIndex++;
+
         Source partSource = directive.uriSource;
-        CompilationUnit partUnit = sourceToUnit[partSource];
-        if (partUnit != null) {
-          directive.element = partUnit.element;
-          //
-          // Validate that the part source is unique in the library.
-          //
-          if (!seenPartSources.add(partSource)) {
+        if (partSource == null) {
+          continue;
+        }
+
+        //
+        // Validate that the part source is unique in the library.
+        //
+        if (!seenPartSources.add(partSource)) {
+          libraryErrorReporter.reportErrorForNode(
+              CompileTimeErrorCode.DUPLICATE_PART, partUri, [partSource.uri]);
+        }
+
+        //
+        // Validate that the part contains a part-of directive with the same
+        // name or uri as the library.
+        //
+        if (_context.exists(partSource)) {
+          _NameOrSource nameOrSource = _getPartLibraryNameOrUri(
+              partSource, partUnit, directivesToResolve);
+          if (nameOrSource == null) {
             libraryErrorReporter.reportErrorForNode(
-                CompileTimeErrorCode.DUPLICATE_PART, partUri, [partSource.uri]);
-          }
-          //
-          // Validate that the part contains a part-of directive with the same
-          // name as the library.
-          //
-          if (_context.exists(partSource)) {
-            _NameOrSource nameOrSource = _getPartLibraryNameOrUri(
-                partSource, partUnit, directivesToResolve);
-            if (nameOrSource == null) {
-              libraryErrorReporter.reportErrorForNode(
-                  CompileTimeErrorCode.PART_OF_NON_PART,
-                  partUri,
-                  [partUri.toSource()]);
+                CompileTimeErrorCode.PART_OF_NON_PART,
+                partUri,
+                [partUri.toSource()]);
+          } else {
+            String name = nameOrSource.name;
+            if (name != null) {
+              if (libraryNameNode == null) {
+                libraryErrorReporter.reportErrorForNode(
+                    ResolverErrorCode.PART_OF_UNNAMED_LIBRARY, partUri, [name]);
+              } else if (libraryNameNode.name != name) {
+                libraryErrorReporter.reportErrorForNode(
+                    StaticWarningCode.PART_OF_DIFFERENT_LIBRARY,
+                    partUri,
+                    [libraryNameNode.name, name]);
+              }
             } else {
-              String name = nameOrSource.name;
-              if (name != null) {
-                if (libraryNameNode != null && libraryNameNode.name != name) {
-                  libraryErrorReporter.reportErrorForNode(
-                      StaticWarningCode.PART_OF_DIFFERENT_LIBRARY,
-                      partUri,
-                      [libraryNameNode.name, name]);
-                }
-              } else {
-                Source source = nameOrSource.source;
-                if (source != _library.source) {
-                  libraryErrorReporter.reportErrorForNode(
-                      StaticWarningCode.PART_OF_DIFFERENT_LIBRARY,
-                      partUri,
-                      [_library.uriStr, source.uri]);
-                }
+              Source source = nameOrSource.source;
+              if (source != _library.source) {
+                libraryErrorReporter.reportErrorForNode(
+                    StaticWarningCode.PART_OF_DIFFERENT_LIBRARY,
+                    partUri,
+                    [_library.uriStr, source.uri]);
               }
             }
           }
@@ -474,7 +502,9 @@ class LibraryAnalyzer {
       }
     }
 
-    if (hasPartDirective && libraryNameNode == null) {
+    if (hasPartDirective &&
+        libraryNameNode == null &&
+        !_context.analysisOptions.enableUriInPartOf) {
       libraryErrorReporter.reportErrorForOffset(
           ResolverErrorCode.MISSING_LIBRARY_DIRECTIVE_WITH_PART, 0, 0);
     }
@@ -490,10 +520,14 @@ class LibraryAnalyzer {
   }
 
   void _resolveFile(FileState file, CompilationUnit unit) {
+    Source source = file.source;
+    if (source == null) {
+      return;
+    }
+
     RecordingErrorListener errorListener = _getErrorListener(file);
 
     CompilationUnitElement unitElement = unit.element;
-    Source source = file.source;
 
     // TODO(scheglov) Hack: set types for top-level variables
     // Otherwise TypeResolverVisitor will set declared types, and because we
@@ -739,6 +773,12 @@ class _ContentCacheWrapper implements ContentCache {
 
   @override
   bool getExists(Source source) {
+    if (fsState.externalSummaries != null) {
+      String uriStr = source.uri.toString();
+      if (fsState.externalSummaries.hasUnlinkedUnit(uriStr)) {
+        return true;
+      }
+    }
     return _getFileForSource(source).exists;
   }
 

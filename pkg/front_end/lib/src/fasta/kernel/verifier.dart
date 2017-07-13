@@ -4,23 +4,53 @@
 
 library fasta.verifier;
 
-import 'package:kernel/ast.dart' show
-    ExpressionStatement,
-    Program;
+import 'package:front_end/src/fasta/type_inference/type_schema.dart'
+    show TypeSchemaVisitor, UnknownType;
 
-import 'package:kernel/verifier.dart' show
-    VerifyingVisitor;
+import 'package:kernel/ast.dart'
+    show
+        InvalidExpression,
+        InvalidStatement,
+        InvalidInitializer,
+        Class,
+        ExpressionStatement,
+        Field,
+        Library,
+        Procedure,
+        Program,
+        TreeNode;
 
-import 'redirecting_factory_body.dart' show
-    RedirectingFactoryBody;
+import 'package:kernel/verifier.dart' show VerificationError, VerifyingVisitor;
 
-void verifyProgram(Program program, {bool isOutline: false}) {
-  program.accept(new FastaVerifyingVisitor(isOutline));
+import '../deprecated_problems.dart' show deprecated_printUnexpected;
+
+import '../fasta_codes.dart';
+
+import 'redirecting_factory_body.dart' show RedirectingFactoryBody;
+
+List<LocatedMessage> verifyProgram(Program program, {bool isOutline: false}) {
+  FastaVerifyingVisitor verifier = new FastaVerifyingVisitor(isOutline);
+  program.accept(verifier);
+  return verifier.errors.map(convertError).toList();
 }
 
-class FastaVerifyingVisitor extends VerifyingVisitor {
+class FastaVerifyingVisitor extends VerifyingVisitor
+    implements TypeSchemaVisitor {
+  final List<VerificationError> errors = <VerificationError>[];
+
+  String fileUri;
+
   FastaVerifyingVisitor(bool isOutline) {
     this.isOutline = isOutline;
+  }
+
+  @override
+  problem(TreeNode node, String details, {TreeNode context}) {
+    context ??= this.context;
+    VerificationError error = new VerificationError(context, node, details);
+    deprecated_printUnexpected(
+        Uri.parse(fileUri), node?.fileOffset ?? -1, "$error");
+    errors.add(error);
   }
 
   @override
@@ -31,4 +61,59 @@ class FastaVerifyingVisitor extends VerifyingVisitor {
       super.visitExpressionStatement(node);
     }
   }
+
+  @override
+  visitLibrary(Library node) {
+    fileUri = node.fileUri;
+    super.visitLibrary(node);
+  }
+
+  @override
+  visitClass(Class node) {
+    fileUri = node.fileUri;
+    super.visitClass(node);
+  }
+
+  @override
+  visitField(Field node) {
+    fileUri = node.fileUri;
+    super.visitField(node);
+  }
+
+  @override
+  visitProcedure(Procedure node) {
+    fileUri = node.fileUri;
+    super.visitProcedure(node);
+  }
+
+  @override
+  visitInvalidExpression(InvalidExpression node) {
+    problem(node, "Invalid expression.");
+  }
+
+  @override
+  visitInvalidStatement(InvalidStatement node) {
+    problem(node, "Invalid statement.");
+  }
+
+  @override
+  visitInvalidInitializer(InvalidInitializer node) {
+    problem(node, "Invalid initializer.");
+  }
+
+  @override
+  visitUnknownType(UnknownType node) {
+    // Note: we can't pass [node] to [problem] because it's not a [TreeNode].
+    problem(null, "Unexpected appearance of the unknown type.");
+  }
+}
+
+LocatedMessage convertError(VerificationError error) {
+  var node = error.node ?? error.context;
+  int offset = node?.fileOffset ?? -1;
+  var file = node?.location?.file;
+  Uri uri = file == null ? null : Uri.parse(file);
+  return templateInternalVerificationError
+      .withArguments(error.details)
+      .withLocation(uri, offset);
 }

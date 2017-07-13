@@ -4,21 +4,19 @@
 
 import 'dart:collection' show IterableMixin;
 
-import '../common.dart';
-import '../elements/elements.dart' show MetadataAnnotation;
-import '../resolution/secret_tree_element.dart'
-    show NullTreeElementMixin, StoredTreeElementMixin;
-import 'package:front_end/src/fasta/scanner/precedence.dart' as Precedence
-    show FUNCTION_INFO;
-import 'package:front_end/src/fasta/scanner.dart' show BeginGroupToken, Token;
+import 'package:front_end/src/fasta/fasta_codes.dart' show Message;
+import 'package:front_end/src/fasta/scanner.dart' show Token;
 import 'package:front_end/src/fasta/scanner/token_constants.dart' as Tokens
     show PLUS_TOKEN;
 import 'package:front_end/src/fasta/scanner/characters.dart';
+import 'package:front_end/src/scanner/token.dart' show BeginToken, TokenType;
+
+import '../common.dart';
+import '../elements/elements.dart' show MetadataAnnotation;
 import '../util/util.dart';
 import 'dartstring.dart';
 import 'prettyprint.dart';
 import 'unparser.dart';
-import 'package:front_end/src/fasta/parser.dart' show ErrorKind;
 
 abstract class Visitor<R> {
   const Visitor();
@@ -241,7 +239,7 @@ abstract class Visitor1<R, A> {
   R visitNewExpression(NewExpression node, A arg) => visitExpression(node, arg);
   R visitNodeList(NodeList node, A arg) => visitNode(node, arg);
   R visitNominalTypeAnnotation(NominalTypeAnnotation node, A arg) {
-    visitTypeAnnotation(node, arg);
+    return visitTypeAnnotation(node, arg);
   }
 
   R visitOperator(Operator node, A arg) => visitIdentifier(node, arg);
@@ -1091,7 +1089,7 @@ class AsyncModifier extends Node {
   Token getEndToken() => starToken != null ? starToken : asyncToken;
 
   /// Is `true` if this modifier is either `async` or `async*`.
-  bool get isAsynchronous => asyncToken.value == 'async';
+  bool get isAsynchronous => asyncToken.lexeme == 'async';
 
   /// Is `true` if this modifier is either `sync*` or `async*`.
   bool get isYielding => starToken != null;
@@ -1218,9 +1216,9 @@ class LiteralInt extends Literal<int> {
       if (identical(valueToken.kind, Tokens.PLUS_TOKEN)) {
         valueToken = valueToken.next;
       }
-      return int.parse(valueToken.value);
+      return int.parse(valueToken.lexeme);
     } on FormatException catch (ex) {
-      (this.handler)(token, ex);
+      throw handler(token, ex);
     }
   }
 
@@ -1241,9 +1239,9 @@ class LiteralDouble extends Literal<double> {
       if (identical(valueToken.kind, Tokens.PLUS_TOKEN)) {
         valueToken = valueToken.next;
       }
-      return double.parse(valueToken.value);
+      return double.parse(valueToken.lexeme);
     } on FormatException catch (ex) {
-      (this.handler)(token, ex);
+      throw handler(token, ex);
     }
   }
 
@@ -1260,7 +1258,7 @@ class LiteralBool extends Literal<bool> {
   bool get value {
     if (identical(token.stringValue, 'true')) return true;
     if (identical(token.stringValue, 'false')) return false;
-    (this.handler)(token, "not a bool ${token.value}");
+    (this.handler)(token, "not a bool ${token.lexeme}");
     throw false;
   }
 
@@ -1286,7 +1284,7 @@ class StringQuoting {
     const StringQuoting($SQ, raw: true, leftQuoteLength: 3),
     const StringQuoting($DQ, raw: false, leftQuoteLength: 3),
     const StringQuoting($DQ, raw: true, leftQuoteLength: 3),
-    // Leading single whitespace or espaped newline.
+    // Leading single whitespace or escaped newline.
     const StringQuoting($SQ, raw: false, leftQuoteLength: 4),
     const StringQuoting($SQ, raw: true, leftQuoteLength: 4),
     const StringQuoting($DQ, raw: false, leftQuoteLength: 4),
@@ -1433,7 +1431,7 @@ class LiteralSymbol extends Expression {
 class Identifier extends Expression with StoredTreeElementMixin {
   final Token token;
 
-  String get source => token.value;
+  String get source => token.lexeme;
 
   Identifier(Token this.token);
 
@@ -1529,7 +1527,7 @@ class Return extends Statement {
   bool get hasExpression => expression != null;
 
   /// `true` if this return is of the form `=> e;`.
-  bool get isArrowBody => beginToken.info == Precedence.FUNCTION_INFO;
+  bool get isArrowBody => beginToken.type == TokenType.FUNCTION;
 
   accept(Visitor visitor) => visitor.visitReturn(this);
 
@@ -1738,8 +1736,7 @@ class Rethrow extends Statement {
   Token getEndToken() => endToken;
 }
 
-abstract class TypeAnnotation extends Node {
-}
+abstract class TypeAnnotation extends Node {}
 
 class NominalTypeAnnotation extends TypeAnnotation {
   final Expression typeName;
@@ -1929,10 +1926,10 @@ class While extends Loop {
 
 class ParenthesizedExpression extends Expression {
   final Expression expression;
-  final BeginGroupToken beginToken;
+  final BeginToken beginToken;
 
   ParenthesizedExpression(
-      Expression this.expression, BeginGroupToken this.beginToken);
+      Expression this.expression, BeginToken this.beginToken);
 
   ParenthesizedExpression asParenthesizedExpression() => this;
 
@@ -1980,6 +1977,7 @@ class Modifiers extends Node {
   static const int FLAG_CONST = FLAG_VAR << 1;
   static const int FLAG_FACTORY = FLAG_CONST << 1;
   static const int FLAG_EXTERNAL = FLAG_FACTORY << 1;
+  static const int FLAG_COVARIANT = FLAG_EXTERNAL << 1;
 
   Modifiers(NodeList nodes) : this.withFlags(nodes, computeFlags(nodes.nodes));
 
@@ -2003,6 +2001,8 @@ class Modifiers extends Node {
         flags |= FLAG_FACTORY;
       else if (identical(value, 'external'))
         flags |= FLAG_EXTERNAL;
+      else if (identical(value, 'covariant'))
+        flags |= FLAG_COVARIANT;
       else
         throw 'internal error: ${nodes.head}';
     }
@@ -2039,6 +2039,7 @@ class Modifiers extends Node {
   bool get isConst => (flags & FLAG_CONST) != 0;
   bool get isFactory => (flags & FLAG_FACTORY) != 0;
   bool get isExternal => (flags & FLAG_EXTERNAL) != 0;
+  bool get isCovariant => (flags & FLAG_COVARIANT) != 0;
 
   Node getStatic() => findModifier('static');
 
@@ -2056,7 +2057,8 @@ class Modifiers extends Node {
         isVar: isVar,
         isConst: isConst,
         isFactory: isFactory,
-        isExternal: isExternal);
+        isExternal: isExternal,
+        isCovariant: isCovariant);
   }
 }
 
@@ -2894,6 +2896,7 @@ class Typedef extends Node {
 
   final TypeAnnotation returnType;
   final Identifier name;
+
   /// The generic type parameters to the function type.
   ///
   /// For example `A` and `B` (but not `T`) are type parameters in
@@ -2904,8 +2907,14 @@ class Typedef extends Node {
   final Token typedefKeyword;
   final Token endToken;
 
-  Typedef(this.isGeneralizedTypeAlias, this.templateParameters, this.returnType,
-      this.name, this.typeParameters, this.formals, this.typedefKeyword,
+  Typedef(
+      this.isGeneralizedTypeAlias,
+      this.templateParameters,
+      this.returnType,
+      this.name,
+      this.typeParameters,
+      this.formals,
+      this.typedefKeyword,
       this.endToken);
 
   Typedef asTypedef() => this;
@@ -3168,19 +3177,17 @@ class IsInterpolationVisitor extends Visitor<bool> {
 class ErrorNode extends Node
     implements FunctionExpression, VariableDefinitions, Typedef {
   final Token token;
-  final ErrorKind kind;
-  final Map arguments;
+  final Message message;
   final Identifier name;
   final NodeList definitions;
 
-  ErrorNode.internal(
-      this.token, this.kind, this.arguments, this.name, this.definitions);
+  ErrorNode.internal(this.token, this.message, this.name, this.definitions);
 
-  factory ErrorNode(Token token, ErrorKind kind, Map arguments) {
+  factory ErrorNode(Token token, Message message) {
     Identifier name = new Identifier(token);
     NodeList definitions =
         new NodeList(null, const Link<Node>().prepend(name), null, null);
-    return new ErrorNode.internal(token, kind, arguments, name, definitions);
+    return new ErrorNode.internal(token, message, name, definitions);
   }
 
   Token get beginToken => token;
@@ -3223,4 +3230,63 @@ class ErrorNode extends Node
   get typeParameters => null;
   get formals => null;
   get typedefKeyword => null;
+}
+
+/**
+ * Encapsulates the field [TreeElementMixin._element].
+ *
+ * This library is an implementation detail of dart2js, and should not
+ * be imported except by resolution and tree node libraries, or for
+ * testing.
+ *
+ * We have taken great care to ensure AST nodes can be cached between
+ * compiler instances.  Part of this requires that we always access
+ * resolution results through TreeElements.
+ *
+ * So please, do not add additional elements to this library, and do
+ * not import it.
+ */
+/// Interface for associating
+abstract class TreeElementMixin {
+  Object get _element;
+  void set _element(Object value);
+}
+
+/// Null implementation of [TreeElementMixin] which does not allow association
+/// of elements.
+///
+/// This class is the superclass of all AST nodes.
+abstract class NullTreeElementMixin implements TreeElementMixin, Spannable {
+  // Deliberately using [Object] here to thwart code completion.
+  // You're not really supposed to access this field anyways.
+  Object get _element => null;
+  set _element(_) {
+    assert(false,
+        failedAt(this, "Elements cannot be associated with ${runtimeType}."));
+  }
+}
+
+/// Actual implementation of [TreeElementMixin] which stores the associated
+/// element in the private field [_element].
+///
+/// This class is mixed into the node classes that are actually associated with
+/// elements.
+abstract class StoredTreeElementMixin implements TreeElementMixin {
+  Object _element;
+}
+
+/**
+ * Do not call this method directly.  Instead, use an instance of
+ * TreeElements.
+ *
+ * Using [Object] as return type to thwart code completion.
+ */
+Object getTreeElement(TreeElementMixin node) => node._element;
+
+/**
+ * Do not call this method directly.  Instead, use an instance of
+ * TreeElements.
+ */
+void setTreeElement(TreeElementMixin node, Object value) {
+  node._element = value;
 }

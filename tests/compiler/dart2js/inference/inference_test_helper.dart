@@ -5,102 +5,64 @@
 import 'package:compiler/src/common.dart';
 import 'package:compiler/src/compiler.dart';
 import 'package:compiler/src/elements/elements.dart';
-import 'package:compiler/src/resolution/tree_elements.dart';
+import 'package:compiler/src/elements/entities.dart';
 import 'package:compiler/src/tree/nodes.dart';
 import 'package:compiler/src/types/types.dart';
-import 'package:expect/expect.dart';
 
-import '../annotated_code_helper.dart';
-import '../memory_compiler.dart';
-import 'enumerator.dart';
+import '../equivalence/id_equivalence.dart';
+import '../equivalence/id_equivalence_helper.dart';
 
-checkCode(String annotatedCode) async {
-  AnnotatedCode code = new AnnotatedCode.fromText(annotatedCode);
-  Map<Id, String> expectedMap = computeExpectedMap(code);
-  Compiler compiler =
-      compilerFor(memorySourceFiles: {'main.dart': code.sourceCode});
-  compiler.stopAfterTypeInference = true;
-  Uri mainUri = Uri.parse('memory:main.dart');
-  await compiler.run(mainUri);
-  compiler.mainApp.forEachLocalMember((member) {
-    if (member.isFunction) {
-      checkMember(compiler, expectedMap, member);
-    } else if (member.isClass) {
-      member.forEachLocalMember((member) {
-        checkMember(compiler, expectedMap, member);
-      });
-    }
-  });
-  expectedMap.forEach((Id id, String expected) {
-    reportHere(
-        compiler.reporter,
-        new SourceSpan(mainUri, id.value, id.value + 1),
-        'expected:${expected},actual:null');
-  });
-}
-
-void checkMember(
-    Compiler compiler, Map<Id, String> expectedMap, MemberElement member) {
+/// Compute type inference data for [_member] as a [MemberElement].
+///
+/// Fills [actualMap] with the data and [sourceSpanMap] with the source spans
+/// for the data origin.
+void computeMemberAstTypeMasks(Compiler compiler, MemberEntity _member,
+    Map<Id, String> actualMap, Map<Id, Spannable> spannableMap) {
+  MemberElement member = _member;
   ResolvedAst resolvedAst = member.resolvedAst;
   if (resolvedAst.kind != ResolvedAstKind.PARSED) return;
   compiler.reporter.withCurrentElement(member.implementation, () {
-    resolvedAst.node.accept(new TypeMaskChecker(
-        compiler.reporter,
-        expectedMap,
-        resolvedAst.elements,
-        compiler.globalInference.results.resultOf(member)));
+    new TypeMaskComputer(compiler.reporter, actualMap, spannableMap,
+            resolvedAst, compiler.globalInference.results)
+        .run();
   });
 }
 
-Map<Id, String> computeExpectedMap(AnnotatedCode code) {
-  Map<Id, String> map = <Id, String>{};
-  for (Annotation annotation in code.annotations) {
-    map[new Id(annotation.offset)] = annotation.text;
-  }
-  return map;
-}
-
-class TypeMaskChecker extends Visitor with AstEnumeratorMixin {
-  final DiagnosticReporter reporter;
-  final Map<Id, String> expectedMap;
-  final TreeElements elements;
+/// AST visitor for computing inference data for a member.
+class TypeMaskComputer extends AbstractResolvedAstComputer {
+  final GlobalTypeInferenceResults results;
   final GlobalTypeInferenceElementResult result;
 
-  TypeMaskChecker(this.reporter, this.expectedMap, this.elements, this.result);
+  TypeMaskComputer(DiagnosticReporter reporter, Map<Id, String> actualMap,
+      Map<Id, Spannable> spannableMap, ResolvedAst resolvedAst, this.results)
+      : result = results.resultOfMember(resolvedAst.element as MemberElement),
+        super(reporter, actualMap, spannableMap, resolvedAst);
 
-  visitNode(Node node) {
-    node.visitChildren(this);
-  }
-
-  String annotationForId(Id id) {
-    if (id == null) return null;
-    return expectedMap.remove(id);
-  }
-
-  void checkValue(Node node, String expected, TypeMask value) {
-    if (value != null || expected != null) {
-      String valueText = '$value';
-      if (valueText != expected) {
-        reportHere(reporter, node, 'expected:${expected},actual:${value}');
-      }
-      Expect.equals(expected, valueText);
+  @override
+  String computeElementValue(AstElement element) {
+    GlobalTypeInferenceElementResult elementResult;
+    if (element.isParameter) {
+      elementResult = results.resultOfParameter(element);
+    } else if (element.isLocal) {
+      LocalFunctionElement localFunction = element;
+      elementResult = results.resultOfMember(localFunction.callMethod);
+    } else {
+      elementResult = results.resultOfMember(element);
     }
+
+    TypeMask value =
+        element.isFunction ? elementResult.returnType : elementResult.type;
+    return value != null ? '$value' : null;
   }
 
-  void checkSend(Send node) {
-    Id id = computeId(node);
-    TypeMask value = result.typeOfSend(node);
-    String expected = annotationForId(id);
-    checkValue(node, expected, value);
-  }
-
-  visitSend(Send node) {
-    checkSend(node);
-    visitNode(node);
-  }
-
-  visitSendSet(SendSet node) {
-    checkSend(node);
-    visitNode(node);
+  @override
+  String computeNodeValue(Node node, [AstElement element]) {
+    if (node is Send) {
+      TypeMask value = result.typeOfSend(node);
+      return value != null ? '$value' : null;
+    } else if (element != null && element.isLocal) {
+      return computeElementValue(element);
+    }
+    return null;
   }
 }

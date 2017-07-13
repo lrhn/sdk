@@ -102,16 +102,24 @@ class VariableScope {
   }
 }
 
+/// Tracks initializers via initializations and assignments.
 class FieldInitializationScope {
   final TypeSystem types;
   Map<Element, TypeInformation> fields;
   bool isThisExposed;
 
-  FieldInitializationScope(this.types) : isThisExposed = false;
+  /// `true` when control flow prevents accumulating definite assignments,
+  /// e.g. an early return or caught exception.
+  bool isIndefinite;
+
+  FieldInitializationScope(this.types)
+      : isThisExposed = false,
+        isIndefinite = false;
 
   FieldInitializationScope.internalFrom(FieldInitializationScope other)
       : types = other.types,
-        isThisExposed = other.isThisExposed;
+        isThisExposed = other.isThisExposed,
+        isIndefinite = other.isIndefinite;
 
   factory FieldInitializationScope.from(FieldInitializationScope other) {
     if (other == null) return null;
@@ -120,7 +128,8 @@ class FieldInitializationScope {
 
   void updateField(Element field, TypeInformation type) {
     if (isThisExposed) return;
-    if (fields == null) fields = new Map<Element, TypeInformation>();
+    if (isIndefinite) return;
+    fields ??= new Map<Element, TypeInformation>();
     fields[field] = type;
   }
 
@@ -129,25 +138,27 @@ class FieldInitializationScope {
   }
 
   void forEach(void f(Element element, TypeInformation type)) {
-    if (fields == null) return;
-    fields.forEach(f);
+    fields?.forEach(f);
   }
 
   void mergeDiamondFlow(
       FieldInitializationScope thenScope, FieldInitializationScope elseScope) {
-    // Quick bailout check. If [isThisExposed] is true, we know the
-    // code following won'TypeInformation do anything.
+    // Quick bailout check. If [isThisExposed] or [isIndefinite] is true, we
+    // know the code following won'TypeInformation do anything.
     if (isThisExposed) return;
-    if (elseScope == null || elseScope.fields == null) {
-      elseScope = this;
-    }
+    if (isIndefinite) return;
+
+    FieldInitializationScope otherScope =
+        (elseScope == null || elseScope.fields == null) ? this : elseScope;
 
     thenScope.forEach((Element field, TypeInformation type) {
-      TypeInformation otherType = elseScope.readField(field);
+      TypeInformation otherType = otherScope.readField(field);
       if (otherType == null) return;
       updateField(field, types.allocateDiamondPhi(type, otherType));
     });
+
     isThisExposed = thenScope.isThisExposed || elseScope.isThisExposed;
+    isIndefinite = thenScope.isIndefinite || elseScope.isIndefinite;
   }
 }
 
@@ -179,10 +190,11 @@ class ArgumentsTypes extends IterableMixin<TypeInformation> {
     for (int i = 0; i < positional.length; i++) {
       if (positional[i] != other.positional[i]) return false;
     }
+    var result = true;
     named.forEach((name, type) {
-      if (other.named[name] != type) return false;
+      if (other.named[name] != type) result = false;
     });
-    return true;
+    return result;
   }
 
   int get hashCode => throw new UnsupportedError('ArgumentsTypes.hashCode');
@@ -198,7 +210,7 @@ class ArgumentsTypes extends IterableMixin<TypeInformation> {
     return positional.every(f) && named.values.every(f);
   }
 
-  bool contains(TypeInformation type) {
+  bool contains(Object type) {
     return positional.contains(type) || named.containsValue(type);
   }
 }
@@ -234,8 +246,8 @@ class LocalsHandler {
   final TypeSystem types;
   final InferrerEngine inferrer;
   final VariableScope locals;
-  final Map<Local, Element> captured;
-  final Map<Local, Element> capturedAndBoxed;
+  final Map<Local, FieldEntity> captured;
+  final Map<Local, FieldEntity> capturedAndBoxed;
   final FieldInitializationScope fieldScope;
   LocalsHandler tryBlock;
   bool seenReturnOrThrow = false;
@@ -250,8 +262,8 @@ class LocalsHandler {
   LocalsHandler(this.inferrer, this.types, this.options, Node block,
       [this.fieldScope])
       : locals = new VariableScope(block),
-        captured = new Map<Local, Element>(),
-        capturedAndBoxed = new Map<Local, Element>(),
+        captured = new Map<Local, FieldEntity>(),
+        capturedAndBoxed = new Map<Local, FieldEntity>(),
         tryBlock = null;
 
   LocalsHandler.from(LocalsHandler other, Node block,
@@ -287,8 +299,10 @@ class LocalsHandler {
         options = other.options;
 
   TypeInformation use(Local local) {
+    assert(!(local is LocalElement && !local.isImplementation));
     if (capturedAndBoxed.containsKey(local)) {
-      return inferrer.typeOfElement(capturedAndBoxed[local]);
+      FieldElement field = capturedAndBoxed[local];
+      return inferrer.typeOfMember(field);
     } else {
       if (captured.containsKey(local)) {
         inferrer.recordCapturedLocalRead(local);
@@ -322,10 +336,10 @@ class LocalsHandler {
     }
 
     if (capturedAndBoxed.containsKey(local)) {
-      inferrer.recordTypeOfNonFinalField(node, capturedAndBoxed[local], type);
+      inferrer.recordTypeOfNonFinalField(capturedAndBoxed[local], type);
     } else if (inTryBlock) {
       // We don'TypeInformation know if an assignment in a try block
-      // will be executed, so all assigments in that block are
+      // will be executed, so all assignments in that block are
       // potential types after we have left it. We update the parent
       // of the try block so that, at exit of the try block, we get
       // the right phi for it.
@@ -344,11 +358,11 @@ class LocalsHandler {
     }
   }
 
-  void setCaptured(Local local, Element field) {
+  void setCaptured(Local local, FieldEntity field) {
     captured[local] = field;
   }
 
-  void setCapturedAndBoxed(Local local, Element field) {
+  void setCapturedAndBoxed(Local local, FieldEntity field) {
     capturedAndBoxed[local] = field;
   }
 
@@ -419,7 +433,7 @@ class LocalsHandler {
    * If [keepOwnLocals] is true, the types of locals in this
    * [LocalsHandler] are being used in the merge. [keepOwnLocals]
    * should be true if this [LocalsHandler], the dominator of
-   * all [handlers], also direclty flows into the join point,
+   * all [handlers], also directly flows into the join point,
    * that is the code after all [handlers]. For example, consider:
    *
    * [: switch (...) {

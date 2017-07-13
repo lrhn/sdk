@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
 
 #include "bin/file.h"
 
@@ -133,11 +133,6 @@ bool File::SetPosition(int64_t position) {
 }
 
 
-// There is no difference between binary and text translation modes on this
-// platform, so this operation is a no-op.
-void File::SetTranslation(DartFileTranslation translation) {}
-
-
 bool File::Truncate(int64_t length) {
   ASSERT(handle_->fd() >= 0);
   return NO_RETRY_EXPECTED(ftruncate(handle_->fd(), length) != -1);
@@ -201,8 +196,8 @@ File* File::Open(const char* name, FileOpenMode mode) {
   // Report errors for non-regular files.
   struct stat st;
   if (NO_RETRY_EXPECTED(stat(name, &st)) == 0) {
-    if (!S_ISREG(st.st_mode)) {
-      errno = (S_ISDIR(st.st_mode)) ? EISDIR : ENOENT;
+    if (S_ISDIR(st.st_mode)) {
+      errno = EISDIR;
       return NULL;
     }
   }
@@ -512,22 +507,15 @@ bool File::IsAbsolutePath(const char* pathname) {
 
 
 const char* File::GetCanonicalPath(const char* pathname) {
-  // TODO(MG-425): realpath() is not implemented.
-#if 0
   char* abs_path = NULL;
   if (pathname != NULL) {
     char* resolved_path = DartUtils::ScopedCString(PATH_MAX + 1);
     ASSERT(resolved_path != NULL);
-    do {
-      abs_path = realpath(pathname, resolved_path);
-    } while ((abs_path == NULL) && (errno == EINTR));
+    abs_path = realpath(pathname, resolved_path);
     ASSERT((abs_path == NULL) || IsAbsolutePath(abs_path));
     ASSERT((abs_path == NULL) || (abs_path == resolved_path));
   }
   return abs_path;
-#else
-  return pathname;
-#endif
 }
 
 
@@ -546,10 +534,7 @@ File::StdioHandleType File::GetStdioHandleType(int fd) {
   struct stat buf;
   int result = fstat(fd, &buf);
   if (result == -1) {
-    const int kBufferSize = 1024;
-    char error_message[kBufferSize];
-    Utils::StrError(errno, error_message, kBufferSize);
-    FATAL2("Failed stat on file descriptor %d: %s", fd, error_message);
+    return kOther;
   }
   if (S_ISCHR(buf.st_mode)) {
     return kTerminal;
@@ -583,4 +568,4 @@ File::Identical File::AreIdentical(const char* file_1, const char* file_2) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)

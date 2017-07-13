@@ -4,31 +4,32 @@
 
 library fasta.quote;
 
-import 'errors.dart' show
-    inputError,
-    internalError;
+import 'deprecated_problems.dart' show deprecated_inputError;
 
-import 'package:front_end/src/fasta/scanner/characters.dart' show
-    $BACKSLASH,
-    $BS,
-    $CLOSE_CURLY_BRACKET,
-    $CR,
-    $FF,
-    $LF,
-    $OPEN_CURLY_BRACKET,
-    $SPACE,
-    $TAB,
-    $VTAB,
-    $b,
-    $f,
-    $n,
-    $r,
-    $t,
-    $u,
-    $v,
-    $x,
-    hexDigitValue,
-    isHexDigit;
+import 'problems.dart' show unhandled;
+
+import 'scanner/characters.dart'
+    show
+        $BACKSLASH,
+        $BS,
+        $CLOSE_CURLY_BRACKET,
+        $CR,
+        $FF,
+        $LF,
+        $OPEN_CURLY_BRACKET,
+        $SPACE,
+        $TAB,
+        $VTAB,
+        $b,
+        $f,
+        $n,
+        $r,
+        $t,
+        $u,
+        $v,
+        $x,
+        hexDigitValue,
+        isHexDigit;
 
 enum Quote {
   Single,
@@ -50,7 +51,7 @@ Quote analyzeQuote(String first) {
   if (first.startsWith('r"')) return Quote.RawDouble;
   if (first.startsWith("'")) return Quote.Single;
   if (first.startsWith("r'")) return Quote.RawSingle;
-  return internalError("Unexpected string literal: $first");
+  return unhandled(first, "analyzeQuote", -1, null);
 }
 
 // Note: based on [StringValidator.quotingFromString]
@@ -69,7 +70,7 @@ int lengthOfOptionalWhitespacePrefix(String first, int start) {
     }
     if (code == $TAB || code == $SPACE) continue;
     if (code == $CR) {
-      if (i + 1 < codeUnits.length && codeUnits[i] == $LF) {
+      if (i + 1 < codeUnits.length && codeUnits[i + 1] == $LF) {
         i++;
       }
       return i + 1;
@@ -100,7 +101,7 @@ int firstQuoteLength(String first, Quote quote) {
     case Quote.RawMultiLineDouble:
       return lengthOfOptionalWhitespacePrefix(first, 4);
   }
-  return internalError("Unhandled string quote: $quote");
+  return unhandled("$quote", "firstQuoteLength", -1, null);
 }
 
 int lastQuoteLength(Quote quote) {
@@ -117,7 +118,7 @@ int lastQuoteLength(Quote quote) {
     case Quote.RawMultiLineDouble:
       return 3;
   }
-  return internalError("Unhandled string quote: $quote");
+  return unhandled("$quote", "lastQuoteLength", -1, null);
 }
 
 String unescapeFirstStringPart(String first, Quote quote) {
@@ -125,14 +126,15 @@ String unescapeFirstStringPart(String first, Quote quote) {
 }
 
 String unescapeLastStringPart(String last, Quote quote) {
-  return unescape(last.substring(0, last.length - lastQuoteLength(quote)),
-      quote);
+  return unescape(
+      last.substring(0, last.length - lastQuoteLength(quote)), quote);
 }
 
 String unescapeString(String string) {
   Quote quote = analyzeQuote(string);
-  return unescape(string.substring(
-      firstQuoteLength(string, quote), string.length - lastQuoteLength(quote)),
+  return unescape(
+      string.substring(firstQuoteLength(string, quote),
+          string.length - lastQuoteLength(quote)),
       quote);
 }
 
@@ -140,17 +142,27 @@ String unescape(String string, Quote quote) {
   switch (quote) {
     case Quote.Single:
     case Quote.Double:
+      return !string.contains("\\")
+          ? string
+          : unescapeCodeUnits(string.codeUnits, false);
+
     case Quote.MultiLineSingle:
     case Quote.MultiLineDouble:
-      break;
+      return !string.contains("\\") && !string.contains("\r")
+          ? string
+          : unescapeCodeUnits(string.codeUnits, false);
 
     case Quote.RawSingle:
     case Quote.RawDouble:
+      return string;
+
     case Quote.RawMultiLineSingle:
     case Quote.RawMultiLineDouble:
-      return string;
+      return !string.contains("\r")
+          ? string
+          : unescapeCodeUnits(string.codeUnits, true);
   }
-  return !string.contains("\\") ? string : unescapeCodeUnits(string.codeUnits);
+  return unhandled("$quote", "unescape", -1, null);
 }
 
 const String incompleteSequence = "Incomplete escape sequence.";
@@ -161,18 +173,25 @@ const String invalidCodePoint = "Invalid code point.";
 
 // Note: based on
 // [StringValidator.validateString](pkg/compiler/lib/src/string_validator.dart).
-String unescapeCodeUnits(List<int> codeUnits) {
+String unescapeCodeUnits(List<int> codeUnits, bool isRaw) {
   // Can't use Uint8List or Uint16List here, the code units may be larger.
   List<int> result = new List<int>(codeUnits.length);
   int resultOffset = 0;
   error(int offset, String message) {
-    inputError(null, null, message);
+    deprecated_inputError(null, null, message);
   }
+
   for (int i = 0; i < codeUnits.length; i++) {
     int code = codeUnits[i];
-    if (code == $BACKSLASH) {
+    if (code == $CR) {
+      if (i + 1 < codeUnits.length && codeUnits[i + 1] == $LF) {
+        i++;
+      }
+      code = $LF;
+    } else if (!isRaw && code == $BACKSLASH) {
       if (codeUnits.length == ++i) return error(i, incompleteSequence);
       code = codeUnits[i];
+
       /// `\n` for newline, equivalent to `\x0A`.
       /// `\r` for carriage return, equivalent to `\x0D`.
       /// `\f` for form feed, equivalent to `\x0C`.

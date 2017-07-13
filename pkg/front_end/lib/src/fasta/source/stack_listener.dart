@@ -4,20 +4,26 @@
 
 library fasta.stack_listener;
 
-import 'package:front_end/src/fasta/parser.dart' show ErrorKind, Listener;
+import 'package:kernel/ast.dart' show AsyncMarker, Expression;
 
-import 'package:front_end/src/fasta/parser/identifier_context.dart'
-    show IdentifierContext;
+import '../../scanner/token.dart' show BeginToken;
 
-import 'package:front_end/src/fasta/scanner.dart' show BeginGroupToken, Token;
+import '../deprecated_problems.dart' show deprecated_inputError;
 
-import 'package:kernel/ast.dart' show AsyncMarker;
+import '../fasta_codes.dart' show Message, templateInternalProblemStackNotEmpty;
 
-import '../errors.dart' show inputError, internalError;
+import '../messages.dart' as messages;
+
+import '../parser.dart' show Listener, MemberKind;
+
+import '../parser/identifier_context.dart' show IdentifierContext;
+
+import '../problems.dart'
+    show internalProblem, unhandled, unimplemented, unsupported;
 
 import '../quote.dart' show unescapeString;
 
-import '../messages.dart' as messages;
+import '../scanner.dart' show Token;
 
 enum NullValue {
   Arguments,
@@ -25,12 +31,19 @@ enum NullValue {
   BreakTarget,
   CascadeReceiver,
   Combinators,
+  Comments,
   ConditionalUris,
+  ConstructorInitializerSeparator,
+  ConstructorInitializers,
+  ConstructorReferenceContinuationAfterTypeArguments,
   ContinueTarget,
   Expression,
   FieldInitializer,
   FormalParameters,
   FunctionBody,
+  FunctionBodyAsyncToken,
+  FunctionBodyStarToken,
+  Identifier,
   IdentifierList,
   Initializers,
   Metadata,
@@ -47,25 +60,28 @@ enum NullValue {
 abstract class StackListener extends Listener {
   final Stack stack = new Stack();
 
+  @override
   Uri get uri;
 
   // TODO(ahe): This doesn't belong here. Only implemented by body_builder.dart
   // and ast_builder.dart.
-  void finishFunction(
-      covariant formals, AsyncMarker asyncModifier, covariant body) {
-    return internalError("Unsupported operation");
+  void finishFunction(List annotations, covariant formals,
+      AsyncMarker asyncModifier, covariant body) {
+    return unsupported("finishFunction", -1, uri);
   }
 
   // TODO(ahe): This doesn't belong here. Only implemented by body_builder.dart
   // and ast_builder.dart.
-  void exitLocalScope() => internalError("Unsupported operation");
+  List<Expression> finishMetadata() {
+    return unsupported("finishMetadata", -1, uri);
+  }
 
   // TODO(ahe): This doesn't belong here. Only implemented by body_builder.dart
   // and ast_builder.dart.
-  void prepareInitializers() => internalError("Unsupported operation");
+  void exitLocalScope() => unsupported("exitLocalScope", -1, uri);
 
   void push(Object node) {
-    if (node == null) internalError("null not allowed.");
+    if (node == null) unhandled("null", "push", -1, uri);
     stack.push(node);
   }
 
@@ -77,9 +93,9 @@ abstract class StackListener extends Listener {
     return value == null ? null : pop();
   }
 
-  List popList(int n) {
+  List popList(int n, [List list]) {
     if (n == 0) return null;
-    return stack.popList(n);
+    return stack.popList(n, list);
   }
 
   void debugEvent(String name) {
@@ -100,14 +116,20 @@ abstract class StackListener extends Listener {
 
   @override
   void logEvent(String name) {
-    internalError("Unhandled event: $name in $runtimeType $uri:\n"
-        "  ${stack.values.join('\n  ')}");
+    printEvent(name);
+    unhandled(name, "$runtimeType", -1, uri);
   }
 
   @override
   void handleIdentifier(Token token, IdentifierContext context) {
     debugEvent("handleIdentifier");
-    push(token.value);
+    push(token.lexeme);
+  }
+
+  @override
+  void handleNoName(Token token) {
+    debugEvent("NoName");
+    push(NullValue.Identifier);
   }
 
   @override
@@ -117,12 +139,16 @@ abstract class StackListener extends Listener {
 
   void checkEmpty(int charOffset) {
     if (stack.isNotEmpty) {
-      internalError("${runtimeType}: Stack not empty:\n"
-          "  ${stack.values.join('\n  ')}", uri, charOffset);
+      internalProblem(
+          templateInternalProblemStackNotEmpty.withArguments(
+              "${runtimeType}", stack.values.join("\n  ")),
+          charOffset,
+          uri);
     }
     if (recoverableErrors.isNotEmpty) {
       // TODO(ahe): Handle recoverable errors better.
-      inputError(uri, recoverableErrors.first.beginOffset, recoverableErrors);
+      deprecated_inputError(
+          uri, recoverableErrors.first.beginOffset, recoverableErrors);
     }
   }
 
@@ -151,13 +177,18 @@ abstract class StackListener extends Listener {
   }
 
   @override
+  void handleNoConstructorReferenceContinuationAfterTypeArguments(Token token) {
+    debugEvent("NoConstructorReferenceContinuationAfterTypeArguments");
+  }
+
+  @override
   void handleNoType(Token token) {
     debugEvent("NoType");
     push(NullValue.Type);
   }
 
   @override
-  void handleNoFormalParameters(Token token) {
+  void handleNoFormalParameters(Token token, MemberKind kind) {
     debugEvent("NoFormalParameters");
     push(NullValue.FormalParameters);
   }
@@ -181,7 +212,7 @@ abstract class StackListener extends Listener {
   }
 
   @override
-  void handleParenthesizedExpression(BeginGroupToken token) {
+  void handleParenthesizedExpression(BeginToken token) {
     debugEvent("ParenthesizedExpression");
   }
 
@@ -192,13 +223,13 @@ abstract class StackListener extends Listener {
   }
 
   @override
-  void endLiteralString(int interpolationCount) {
+  void endLiteralString(int interpolationCount, Token endToken) {
     debugEvent("endLiteralString");
     if (interpolationCount == 0) {
       Token token = pop();
-      push(unescapeString(token.value));
+      push(unescapeString(token.lexeme));
     } else {
-      internalError("String interpolation not implemented.");
+      unimplemented("string interpolation", endToken.charOffset, uri);
     }
   }
 
@@ -209,27 +240,48 @@ abstract class StackListener extends Listener {
   }
 
   @override
+  void handleRecoverExpression(Token token, Message message) {
+    debugEvent("RecoverExpression");
+  }
+
+  void handleExtraneousExpression(Token token, Message message) {
+    debugEvent("ExtraneousExpression");
+    pop(); // Discard the extraneous expression.
+  }
+
+  @override
+  void endCaseExpression(Token colon) {
+    debugEvent("CaseExpression");
+  }
+
+  @override
   void endCatchClause(Token token) {
     debugEvent("CatchClause");
   }
 
   @override
-  void handleRecoverableError(Token token, ErrorKind kind, Map arguments) {
-    super.handleRecoverableError(token, kind, arguments);
-    debugEvent("Error: ${recoverableErrors.last}");
+  void handleRecoverableError(Token token, Message message) {
+    debugEvent("Error: ${message.message}");
+    addCompileTimeError(message, token.offset);
   }
+
+  void addCompileTimeError(Message message, int charOffset);
 
   @override
-  Token handleUnrecoverableError(Token token, ErrorKind kind, Map arguments) {
-    throw inputError(uri, token.charOffset, "$kind $arguments");
+  Token handleUnrecoverableError(Token token, Message message) {
+    throw deprecated_inputError(uri, token.charOffset, message.message);
   }
 
-  void nit(String message, [int charOffset = -1]) {
-    messages.nit(uri, charOffset, message);
+  void nit(Message message, int charOffset) {
+    messages.nit(message, charOffset, uri);
   }
 
-  void warning(String message, [int charOffset = -1]) {
-    messages.warning(uri, charOffset, message);
+  void deprecated_warning(String message, [int charOffset = -1]) {
+    messages.deprecated_warning(uri, charOffset, message);
+  }
+
+  void warning(Message message, int charOffset) {
+    messages.warning(message, charOffset, uri);
   }
 }
 
@@ -260,13 +312,13 @@ class Stack {
     return value is NullValue ? null : value;
   }
 
-  List popList(int count) {
+  List popList(int count, List list) {
     assert(arrayLength >= count);
 
     final table = array;
     final length = arrayLength;
 
-    final tailList = new List.filled(count, null, growable: true);
+    final tailList = list ?? new List.filled(count, null, growable: true);
     final startIndex = length - count;
     for (int i = 0; i < count; i++) {
       final value = table[startIndex + i];

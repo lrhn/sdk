@@ -31,13 +31,10 @@ import '../constants/expressions.dart'
         IntFromEnvironmentConstantExpression,
         StringFromEnvironmentConstantExpression,
         TypeConstantExpression;
-import '../elements/resolution_types.dart'
-    show ResolutionDartType, ResolutionInterfaceType;
 import '../diagnostics/spannable.dart' show Spannable;
 import '../elements/elements.dart'
     show
         AstElement,
-        AsyncMarker,
         ClassElement,
         ConstructorElement,
         Element,
@@ -46,18 +43,21 @@ import '../elements/elements.dart'
         FunctionSignature,
         GetterElement,
         InitializingFormalElement,
-        JumpTarget,
         LibraryElement,
         LocalElement,
         LocalFunctionElement,
         LocalVariableElement,
         MethodElement,
-        Name,
         ParameterElement,
         PrefixElement,
         TypeVariableElement;
-import '../resolution/operators.dart'
+import '../elements/entities.dart' show AsyncMarker;
+import '../elements/jumps.dart';
+import '../elements/names.dart' show Name;
+import '../elements/operators.dart'
     show AssignmentOperator, BinaryOperator, IncDecOperator, UnaryOperator;
+import '../elements/resolution_types.dart'
+    show ResolutionDartType, ResolutionInterfaceType;
 import '../resolution/semantic_visitor.dart'
     show
         BaseImplementationOfCompoundsMixin,
@@ -209,15 +209,15 @@ class KernelVisitor extends Object
   // object, via the prefix name (aka "bar" in
   // "import foo.dart deferred as bar"). LibraryElement corresponds to the
   // imported library element.
-  final Map<LibraryElement, Map<String, ir.DeferredImport>> deferredImports =
-      <LibraryElement, Map<String, ir.DeferredImport>>{};
+  final Map<LibraryElement, Map<String, ir.LibraryDependency>> deferredImports =
+      <LibraryElement, Map<String, ir.LibraryDependency>>{};
 
   ir.Node associateElement(ir.Node node, Element element) {
     kernel.nodeToElement[node] = element;
     return node;
   }
 
-  ir.Node associateNode(ir.Node node, Node ast) {
+  N associateNode<N extends ir.Node>(N node, Node ast) {
     kernel.nodeToAst[node] = ast;
     return node;
   }
@@ -226,7 +226,7 @@ class KernelVisitor extends Object
 
   /// If non-null, reference to a deferred library that a subsequent getter is
   /// using.
-  ir.DeferredImport _deferredLibrary;
+  ir.LibraryDependency _deferredLibrary;
 
   KernelVisitor(this.currentElement, this.elements, this.kernel);
 
@@ -257,7 +257,8 @@ class KernelVisitor extends Object
   ir.TreeNode visitWithCurrentContext(Expression node) => node?.accept(this);
 
   withCurrentElement(AstElement element, f()) {
-    assert(element.library == kernel.compiler.currentElement.library);
+    assert(
+        element.library == (kernel.compiler.currentElement as Element).library);
     Element previousElement = currentElement;
     currentElement = element;
     try {
@@ -353,6 +354,7 @@ class KernelVisitor extends Object
   }
 
   @override
+  // ignore: INVALID_METHOD_OVERRIDE_RETURN_TYPE
   ir.Expression visitIdentifier(Identifier node) {
     // TODO(ahe): Shouldn't have to override this method, but
     // [SemanticSendResolvedMixin.visitIdentifier] may return `null` on errors.
@@ -404,8 +406,8 @@ class KernelVisitor extends Object
 
   @override
   ir.AssertStatement visitAssert(Assert node) {
-    return new ir.AssertStatement(
-        visitForValue(node.condition), visitForValue(node.message));
+    return new ir.AssertStatement(visitForValue(node.condition),
+        message: visitForValue(node.message));
   }
 
   ir.LabeledStatement getBreakTarget(JumpTarget target) {
@@ -494,7 +496,8 @@ class KernelVisitor extends Object
     }
     return new StaticAccessor(
         (getter == null) ? null : kernel.elementToIr(getter),
-        (setter == null) ? null : kernel.elementToIr(setter));
+        (setter == null) ? null : kernel.elementToIr(setter),
+        ir.TreeNode.noOffset);
   }
 
   Accessor computeAccessor(ForIn node, Element element) {
@@ -514,15 +517,16 @@ class KernelVisitor extends Object
       return buildStaticAccessor(null);
     } else if (element.isGetter) {
       if (element.isInstanceMember) {
-        return new ThisPropertyAccessor(
-            kernel.irName(element.name, element), null, null);
+        return new ThisPropertyAccessor(kernel.irName(element.name, element),
+            null, null, ir.TreeNode.noOffset);
       } else {
         GetterElement getter = element;
         Element setter = getter.setter;
         return buildStaticAccessor(getter, setter);
       }
     } else if (element.isLocal) {
-      return new VariableAccessor(getLocal(element));
+      return new VariableAccessor(
+          getLocal(element), null, ir.TreeNode.noOffset);
     } else if (element.isField) {
       return buildStaticAccessor(element);
     } else {
@@ -1011,10 +1015,13 @@ class KernelVisitor extends Object
   @override
   ir.SwitchCase visitSwitchCase(SwitchCase node) {
     List<ir.Expression> expressions = <ir.Expression>[];
+    List<int> expressionOffsets = <int>[];
     for (var labelOrCase in node.labelsAndCases.nodes) {
       CaseMatch match = labelOrCase.asCaseMatch();
       if (match != null) {
-        expressions.add(visitForValue(match.expression));
+        ir.TreeNode expression = visitForValue(match.expression);
+        expressions.add(expression);
+        expressionOffsets.add(expression.fileOffset);
       } else {
         // Assert that labelOrCase is one of two known types: [CaseMatch] or
         // [Label]. We ignore cases, as any users have been resolved to use the
@@ -1025,7 +1032,8 @@ class KernelVisitor extends Object
     // We ignore the node's statements here, they're generated below in
     // [visitSwitchStatement] once we've set up all the jump targets.
     return associateNode(
-        new ir.SwitchCase(expressions, null, isDefault: node.isDefaultCase),
+        new ir.SwitchCase(expressions, expressionOffsets, null,
+            isDefault: node.isDefaultCase),
         node);
   }
 
@@ -1232,7 +1240,7 @@ class KernelVisitor extends Object
   @override
   ir.InvocationExpression visitBoolFromEnvironmentConstructorInvoke(
       NewExpression node, BoolFromEnvironmentConstantExpression constant, _) {
-    return buildConstructorInvoke(node, isConst: true);
+    return associateNode(buildConstructorInvoke(node, isConst: true), node);
   }
 
   ir.TypeLiteral buildTypeLiteral(TypeConstantExpression constant) {
@@ -1260,13 +1268,14 @@ class KernelVisitor extends Object
   }
 
   ir.Expression buildTypeLiteralSet(TypeConstantExpression constant, Node rhs) {
-    return new ReadOnlyAccessor(buildTypeLiteral(constant))
+    return new ReadOnlyAccessor(
+            buildTypeLiteral(constant), ir.TreeNode.noOffset)
         .buildAssignment(visitForValue(rhs), voidContext: isVoidContext);
   }
 
   @override
   ir.Expression visitClassTypeLiteralSet(
-      SendSet node, ConstantExpression constant, Node rhs, _) {
+      SendSet node, TypeConstantExpression constant, Node rhs, _) {
     return buildTypeLiteralSet(constant, rhs);
   }
 
@@ -1325,7 +1334,9 @@ class KernelVisitor extends Object
   ir.PropertyGet visitDynamicPropertyGet(
       Send node, Node receiver, Name name, _) {
     return associateNode(
-        new ir.PropertyGet(visitForValue(receiver), nameToIrName(name)), node);
+        new ir.PropertyGet(visitForValue(receiver), nameToIrName(name))
+          ..fileOffset = node.selector.getBeginToken().charOffset,
+        node);
   }
 
   @override
@@ -1333,7 +1344,8 @@ class KernelVisitor extends Object
       Send node, Node receiver, NodeList arguments, Selector selector, _) {
     return associateNode(
         buildInvokeSelector(
-            visitForValue(receiver), selector, buildArguments(arguments)),
+            visitForValue(receiver), selector, buildArguments(arguments))
+          ..fileOffset = node.selector.getBeginToken().charOffset,
         node);
   }
 
@@ -1367,7 +1379,7 @@ class KernelVisitor extends Object
       Send node, Node receiver, Name name, Node rhs, _) {
     ir.Name irName = nameToIrName(name);
     Accessor accessor = (receiver == null)
-        ? new ThisPropertyAccessor(irName, null, null)
+        ? new ThisPropertyAccessor(irName, null, null, ir.TreeNode.noOffset)
         : PropertyAccessor.make(visitForValue(receiver), irName, null, null);
     return _finishSetIfNull(node, accessor, rhs);
   }
@@ -1400,7 +1412,7 @@ class KernelVisitor extends Object
 
   @override
   ir.Expression visitDynamicTypeLiteralSet(
-      SendSet node, ConstantExpression constant, Node rhs, _) {
+      SendSet node, TypeConstantExpression constant, Node rhs, _) {
     return buildTypeLiteralSet(constant, rhs);
   }
 
@@ -1481,7 +1493,8 @@ class KernelVisitor extends Object
         // Mixin application implicit super call.
         arguments = <ir.Expression>[];
         named = <ir.NamedExpression>[];
-        signature.orderedForEachParameter((ParameterElement parameter) {
+        signature.orderedForEachParameter((_parameter) {
+          ParameterElement parameter = _parameter;
           ir.VariableGet argument = buildLocalGet(parameter);
           if (parameter.isNamed) {
             named.add(new ir.NamedExpression(parameter.name, argument));
@@ -1569,8 +1582,8 @@ class KernelVisitor extends Object
   }
 
   Accessor buildNullAwarePropertyAccessor(Node receiver, Name name) {
-    return new NullAwarePropertyAccessor(
-        visitForValue(receiver), nameToIrName(name), null, null, null);
+    return new NullAwarePropertyAccessor(visitForValue(receiver),
+        nameToIrName(name), null, null, null, ir.TreeNode.noOffset);
   }
 
   @override
@@ -1725,7 +1738,7 @@ class KernelVisitor extends Object
   @override
   ir.InvocationExpression visitIntFromEnvironmentConstructorInvoke(
       NewExpression node, IntFromEnvironmentConstantExpression constant, _) {
-    return buildConstructorInvoke(node, isConst: true);
+    return associateNode(buildConstructorInvoke(node, isConst: true), node);
   }
 
   ir.IsExpression buildIs(Node expression, ResolutionDartType type) {
@@ -1796,6 +1809,7 @@ class KernelVisitor extends Object
     return buildLocalGet(element);
   }
 
+  // ignore: MISSING_RETURN
   ir.Expression buildCompound(
       Accessor accessor, CompoundRhs rhs, SendSet node) {
     ir.Name name = kernel.irName(rhs.operator.selectorName, currentElement);
@@ -1848,8 +1862,10 @@ class KernelVisitor extends Object
   ir.Expression handleLocalCompounds(
       SendSet node, LocalElement local, CompoundRhs rhs, _,
       {bool isSetterValid}) {
-    ir.Expression compound =
-        buildCompound(new VariableAccessor(getLocal(local)), rhs, node);
+    ir.Expression compound = buildCompound(
+        new VariableAccessor(getLocal(local), null, ir.TreeNode.noOffset),
+        rhs,
+        node);
     if (compound is ir.VariableSet) {
       associateNode(compound.value, node);
     } else {
@@ -1951,7 +1967,8 @@ class KernelVisitor extends Object
   ir.Expression handleLocalSetIfNulls(
       SendSet node, LocalElement local, Node rhs, _,
       {bool isSetterValid}) {
-    return _finishSetIfNull(node, new VariableAccessor(getLocal(local)), rhs);
+    return _finishSetIfNull(node,
+        new VariableAccessor(getLocal(local), null, ir.TreeNode.noOffset), rhs);
   }
 
   @override
@@ -2096,7 +2113,8 @@ class KernelVisitor extends Object
     if (function.hasFunctionSignature) {
       FunctionSignature signature = function.functionSignature;
       requiredParameterCount = signature.requiredParameterCount;
-      signature.forEachParameter((ParameterElement parameter) {
+      signature.forEachParameter((_parameter) {
+        ParameterElement parameter = _parameter;
         ir.VariableDeclaration variable = getLocal(parameter);
         if (parameter.isNamed) {
           namedParameters.add(variable);
@@ -2104,7 +2122,8 @@ class KernelVisitor extends Object
           positionalParameters.add(variable);
         }
       });
-      signature.forEachParameter((ParameterElement parameter) {
+      signature.forEachParameter((_parameter) {
+        ParameterElement parameter = _parameter;
         if (!parameter.isOptional) return;
         ir.Expression initializer = visitForValue(parameter.initializer);
         ir.VariableDeclaration variable = getLocal(parameter);
@@ -2270,11 +2289,11 @@ class KernelVisitor extends Object
     return buildIrFunction(ir.ProcedureKind.Getter, getter, body);
   }
 
-  ir.DeferredImport getDeferredImport(PrefixElement prefix) {
+  ir.LibraryDependency getDeferredImport(PrefixElement prefix) {
     var map = deferredImports[prefix.deferredImport.importedLibrary] ??=
-        <String, ir.DeferredImport>{};
+        <String, ir.LibraryDependency>{};
     return map[prefix.name] ??= associateElement(
-        new ir.DeferredImport(
+        new ir.LibraryDependency.deferredImport(
             kernel.libraries[prefix.deferredImport.importedLibrary],
             prefix.name),
         prefix);
@@ -2304,7 +2323,7 @@ class KernelVisitor extends Object
 
   @override
   ir.Expression handleStaticGetterSet(
-      SendSet node, FunctionElement getter, Node rhs, _) {
+      SendSet node, GetterElement getter, Node rhs, _) {
     return buildStaticAccessor(getter)
         .buildAssignment(visitForValue(rhs), voidContext: isVoidContext);
   }
@@ -2336,11 +2355,11 @@ class KernelVisitor extends Object
   @override
   ir.InvocationExpression visitStringFromEnvironmentConstructorInvoke(
       NewExpression node, StringFromEnvironmentConstantExpression constant, _) {
-    return buildConstructorInvoke(node, isConst: true);
+    return associateNode(buildConstructorInvoke(node, isConst: true), node);
   }
 
   @override
-  ir.SuperMethodInvocation visitSuperBinary(Send node, FunctionElement function,
+  ir.SuperMethodInvocation visitSuperBinary(Send node, MethodElement function,
       BinaryOperator operator, Node argument, _) {
     transformerFlags |= TransformerFlag.superCalls;
     return new ir.SuperMethodInvocation(
@@ -2393,7 +2412,7 @@ class KernelVisitor extends Object
 
   @override
   ir.SuperMethodInvocation visitSuperEquals(
-      Send node, FunctionElement function, Node argument, _) {
+      Send node, MethodElement function, Node argument, _) {
     return buildSuperEquals(function, argument);
   }
 
@@ -2431,7 +2450,9 @@ class KernelVisitor extends Object
   ir.Expression handleTypeLiteralConstantCompounds(
       SendSet node, ConstantExpression constant, CompoundRhs rhs, _) {
     return buildCompound(
-        new ReadOnlyAccessor(buildTypeLiteral(constant)), rhs, node);
+        new ReadOnlyAccessor(buildTypeLiteral(constant), ir.TreeNode.noOffset),
+        rhs,
+        node);
   }
 
   ir.TypeLiteral buildTypeVariable(TypeVariableElement element) {
@@ -2442,7 +2463,9 @@ class KernelVisitor extends Object
   ir.Expression handleTypeVariableTypeLiteralCompounds(
       SendSet node, TypeVariableElement element, CompoundRhs rhs, _) {
     return buildCompound(
-        new ReadOnlyAccessor(buildTypeVariable(element)), rhs, node);
+        new ReadOnlyAccessor(buildTypeVariable(element), ir.TreeNode.noOffset),
+        rhs,
+        node);
   }
 
   @override
@@ -2476,7 +2499,8 @@ class KernelVisitor extends Object
     return new SuperPropertyAccessor(
         kernel.irName(element.name, element),
         (getter == null) ? null : kernel.elementToIr(getter),
-        (setter == null) ? null : kernel.elementToIr(setter));
+        (setter == null) ? null : kernel.elementToIr(setter),
+        ir.TreeNode.noOffset);
   }
 
   Accessor buildSuperIndexAccessor(Expression index, Element getter,
@@ -2490,12 +2514,12 @@ class KernelVisitor extends Object
     return new SuperIndexAccessor(
         visitForValue(index),
         (getter == null) ? null : kernel.elementToIr(getter),
-        (setter == null) ? null : kernel.elementToIr(setter));
+        (setter == null) ? null : kernel.elementToIr(setter),
+        ir.TreeNode.noOffset);
   }
 
   @override
-  ir.SuperPropertyGet visitSuperGetterGet(
-      Send node, FunctionElement getter, _) {
+  ir.SuperPropertyGet visitSuperGetterGet(Send node, MethodElement getter, _) {
     return buildSuperPropertyAccessor(getter).buildSimpleRead();
   }
 
@@ -2531,7 +2555,7 @@ class KernelVisitor extends Object
 
   @override
   ir.SuperMethodInvocation visitSuperIndex(
-      Send node, FunctionElement function, Node index, _) {
+      Send node, MethodElement function, Node index, _) {
     return buildSuperIndexAccessor(index, function).buildSimpleRead();
   }
 
@@ -2592,14 +2616,14 @@ class KernelVisitor extends Object
 
   @override
   ir.Expression visitSuperMethodSet(
-      Send node, MethodElement method, Node rhs, _) {
+      SendSet node, MethodElement method, Node rhs, _) {
     return buildSuperPropertyAccessor(method)
         .buildAssignment(visitForValue(rhs), voidContext: isVoidContext);
   }
 
   @override
   ir.Not visitSuperNotEquals(
-      Send node, FunctionElement function, Node argument, _) {
+      Send node, MethodElement function, Node argument, _) {
     return new ir.Not(buildSuperEquals(function, argument));
   }
 
@@ -2624,7 +2648,7 @@ class KernelVisitor extends Object
 
   @override
   ir.SuperMethodInvocation visitSuperUnary(
-      Send node, UnaryOperator operator, FunctionElement function, _) {
+      Send node, UnaryOperator operator, MethodElement function, _) {
     transformerFlags |= TransformerFlag.superCalls;
     return new ir.SuperMethodInvocation(kernel.irName(function.name, function),
         new ir.Arguments.empty(), kernel.functionToIr(function));
@@ -2658,7 +2682,8 @@ class KernelVisitor extends Object
   }
 
   Accessor buildThisPropertyAccessor(Name name) {
-    return new ThisPropertyAccessor(nameToIrName(name), null, null);
+    return new ThisPropertyAccessor(
+        nameToIrName(name), null, null, ir.TreeNode.noOffset);
   }
 
   @override
@@ -2732,7 +2757,7 @@ class KernelVisitor extends Object
   /// deferredImport is null, then the function returned is the identity
   /// expression. Otherwise, it inserts a CheckLibraryIsLoaded call before
   /// evaluating the expression.
-  _createCheckLibraryLoadedFuncIfNeeded(ir.DeferredImport deferredImport) {
+  _createCheckLibraryLoadedFuncIfNeeded(ir.LibraryDependency deferredImport) {
     if (deferredImport != null) {
       return (ir.Expression inputExpression) => new ir.Let(
           makeOrReuseVariable(new ir.CheckLibraryIsLoaded(deferredImport)),
@@ -2765,7 +2790,8 @@ class KernelVisitor extends Object
   @override
   ir.Expression visitTypeVariableTypeLiteralSet(
       SendSet node, TypeVariableElement element, Node rhs, _) {
-    return new ReadOnlyAccessor(buildTypeVariable(element))
+    return new ReadOnlyAccessor(
+            buildTypeVariable(element), ir.TreeNode.noOffset)
         .buildAssignment(visitForValue(rhs), voidContext: isVoidContext);
   }
 
@@ -2773,7 +2799,9 @@ class KernelVisitor extends Object
   ir.Expression visitTypeVariableTypeLiteralSetIfNull(
       Send node, TypeVariableElement element, Node rhs, _) {
     return _finishSetIfNull(
-        node, new ReadOnlyAccessor(buildTypeVariable(element)), rhs);
+        node,
+        new ReadOnlyAccessor(buildTypeVariable(element), ir.TreeNode.noOffset),
+        rhs);
   }
 
   @override
@@ -2798,7 +2826,7 @@ class KernelVisitor extends Object
 
   @override
   ir.Expression visitTypedefTypeLiteralSet(
-      SendSet node, ConstantExpression constant, Node rhs, _) {
+      SendSet node, TypeConstantExpression constant, Node rhs, _) {
     return buildTypeLiteralSet(constant, rhs);
   }
 
@@ -2852,6 +2880,8 @@ class KernelVisitor extends Object
   }
 
   @override
+  // TODO(ahe): Remove this ignore when strong-mode only.
+  // ignore: INVALID_METHOD_OVERRIDE_RETURN_TYPE
   ir.Node visitVariableDefinitions(VariableDefinitions definitions) {
     // TODO(ahe): This method is copied from [SemanticDeclarationResolvedMixin]
     // and modified. Perhaps we can find a way to avoid code duplication.
@@ -2859,12 +2889,11 @@ class KernelVisitor extends Object
     computeVariableStructures(definitions,
         (Node node, VariableStructure structure) {
       if (structure == null) {
-        return internalError(node, 'No structure for $node');
+        internalError(node, 'No structure for $node');
       } else {
         ir.VariableDeclaration variable =
             structure.dispatch(declVisitor, node, null);
         variables.add(variable);
-        return variable;
       }
     });
     if (variables.length == 1) return variables.single;

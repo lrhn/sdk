@@ -4,13 +4,12 @@
 
 library fasta.invalid_type_builder;
 
-import 'builder.dart' show
-    Builder,
-    TypeBuilder,
-    TypeDeclarationBuilder;
+import 'builder.dart' show TypeBuilder, TypeDeclarationBuilder;
 
 abstract class InvalidTypeBuilder<T extends TypeBuilder, R>
     extends TypeDeclarationBuilder<T, R> {
-  InvalidTypeBuilder(String name, Builder parent, int charOffset, [Uri fileUri])
-      : super(null, 0, name, parent, charOffset, fileUri);
+  InvalidTypeBuilder(String name, int charOffset, [Uri fileUri])
+      : super(null, 0, name, null, charOffset, fileUri);
+
+  String get debugName => "InvalidTypeBuilder";
 }

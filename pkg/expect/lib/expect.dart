@@ -26,7 +26,7 @@ class Expect {
    * [start] and increasing [end], up to at most length characters.
    * If the start or end of the slice are not matching the start or end of
    * the string, ellipses are added before or after the slice.
-   * Control characters may be encoded as "\xhh" codes.
+   * Characters other than printable ASCII are escaped.
    */
   static String _truncateString(String string, int start, int end, int length) {
     if (end - start > length) {
@@ -40,21 +40,41 @@ class Expect {
       if (start < 0) start = 0;
       if (end > string.length) end = string.length;
     }
-    if (start == 0 && end == string.length) return string;
     StringBuffer buf = new StringBuffer();
     if (start > 0) buf.write("...");
-    for (int i = start; i < end; i++) {
-      int code = string.codeUnitAt(i);
-      if (code < 0x20) {
-        buf.write(r"\x");
-        buf.write("0123456789abcdef"[code ~/ 16]);
-        buf.write("0123456789abcdef"[code % 16]);
-      } else {
-        buf.writeCharCode(string.codeUnitAt(i));
-      }
-    }
+    _escapeSubstring(buf, string, 0, string.length);
     if (end < string.length) buf.write("...");
     return buf.toString();
+  }
+
+  /// Return the string with characters that are not printable ASCII characters
+  /// escaped as either "\xXX" codes or "\uXXXX" codes.
+  static String _escapeString(String string) {
+    StringBuffer buf = new StringBuffer();
+    _escapeSubstring(buf, string, 0, string.length);
+    return buf.toString();
+  }
+
+  static _escapeSubstring(StringBuffer buf, String string, int start, int end) {
+    const hexDigits = "0123456789ABCDEF";
+    for (int i = start; i < end; i++) {
+      int code = string.codeUnitAt(i);
+      if (0x20 <= code && code < 0x7F) {
+        if (code == 0x5C) {
+          buf.write(r"\\");
+        } else {
+          buf.writeCharCode(code);
+        }
+      } else if (code < 0x100) {
+        buf.write(r"\x");
+        buf.write(hexDigits[code >> 4]);
+        buf.write(hexDigits[code & 15]);
+      } else {
+        buf.write(r"\u{");
+        buf.write(code.toRadixString(16).toUpperCase());
+        buf.write(r"}");
+      }
+    }
   }
 
   /**
@@ -98,6 +118,8 @@ class Expect {
       if (stringDifference != null) {
         _fail("Expect.equals($stringDifference$msg) fails.");
       }
+      _fail("Expect.equals(expected: <${_escapeString(expected)}>"
+          ", actual: <${_escapeString(actual)}>$msg) fails.");
     }
     _fail("Expect.equals(expected: <$expected>, actual: <$actual>$msg) fails.");
   }
@@ -145,6 +167,13 @@ class Expect {
   static void identical(var expected, var actual, [String reason = null]) {
     if (_identical(expected, actual)) return;
     String msg = _getMessage(reason);
+    if (expected is String && actual is String) {
+      String note =
+          (expected == actual) ? ' Strings equal but not identical.' : '';
+      _fail("Expect.identical(expected: <${_escapeString(expected)}>"
+          ", actual: <${_escapeString(actual)}>$msg) "
+          "fails.$note");
+    }
     _fail("Expect.identical(expected: <$expected>, actual: <$actual>$msg) "
         "fails.");
   }
@@ -411,7 +440,7 @@ class Expect {
       [_CheckExceptionFn check = null, String reason = null]) {
     String msg = reason == null ? "" : "($reason)";
     if (f is! _Nullary) {
-      // Only throws from executing the funtion body should count as throwing.
+      // Only throws from executing the function body should count as throwing.
       // The failure to even call `f` should throw outside the try/catch.
       _fail("Expect.throws$msg: Function f not callable with zero arguments");
     }
@@ -474,3 +503,28 @@ class TrustTypeAnnotations {
 class AssumeDynamic {
   const AssumeDynamic();
 }
+
+/// Is true iff type assertions are enabled.
+final bool typeAssertionsEnabled = (() {
+  try {
+    dynamic i = 42;
+    String s = i;
+  } on TypeError catch (e) {
+    return true;
+  }
+  return false;
+})();
+
+/// Is true iff `assert` statements are enabled.
+final bool assertStatementsEnabled = (() {
+  try {
+    assert(false);
+  } on AssertionError catch (e) {
+    return true;
+  }
+  return false;
+})();
+
+/// Is true iff checked mode is enabled.
+final bool checkedModeEnabled =
+    typeAssertionsEnabled && assertStatementsEnabled;

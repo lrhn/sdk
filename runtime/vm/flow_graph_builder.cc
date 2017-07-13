@@ -165,6 +165,17 @@ void NestedStatement::AdjustContextLevel(intptr_t context_level) {
 }
 
 
+intptr_t FlowGraphBuilder::GetNextDeoptId() const {
+  intptr_t deopt_id = thread()->GetNextDeoptId();
+  if (context_level_array_ != NULL) {
+    intptr_t level = context_level();
+    context_level_array_->Add(deopt_id);
+    context_level_array_->Add(level);
+  }
+  return deopt_id;
+}
+
+
 intptr_t FlowGraphBuilder::context_level() const {
   return (nesting_stack() == NULL) ? 0 : nesting_stack()->ContextLevel();
 }
@@ -173,8 +184,8 @@ intptr_t FlowGraphBuilder::context_level() const {
 JoinEntryInstr* NestedStatement::BreakTargetFor(SourceLabel* label) {
   if (label != label_) return NULL;
   if (break_target_ == NULL) {
-    break_target_ = new (owner()->zone())
-        JoinEntryInstr(owner()->AllocateBlockId(), try_index());
+    break_target_ = new (owner()->zone()) JoinEntryInstr(
+        owner()->AllocateBlockId(), try_index(), owner()->GetNextDeoptId());
   }
   return break_target_;
 }
@@ -246,8 +257,8 @@ class NestedLoop : public NestedStatement {
 JoinEntryInstr* NestedLoop::ContinueTargetFor(SourceLabel* label) {
   if (label != this->label()) return NULL;
   if (continue_target_ == NULL) {
-    continue_target_ = new (owner()->zone())
-        JoinEntryInstr(owner()->AllocateBlockId(), try_index());
+    continue_target_ = new (owner()->zone()) JoinEntryInstr(
+        owner()->AllocateBlockId(), try_index(), owner()->GetNextDeoptId());
   }
   return continue_target_;
 }
@@ -289,8 +300,8 @@ JoinEntryInstr* NestedSwitch::ContinueTargetFor(SourceLabel* label) {
   for (intptr_t i = 0; i < case_labels_.length(); ++i) {
     if (label != case_labels_[i]) continue;
     if (case_targets_[i] == NULL) {
-      case_targets_[i] = new (owner()->zone())
-          JoinEntryInstr(owner()->AllocateBlockId(), try_index());
+      case_targets_[i] = new (owner()->zone()) JoinEntryInstr(
+          owner()->AllocateBlockId(), try_index(), owner()->GetNextDeoptId());
     }
     return case_targets_[i];
   }
@@ -301,10 +312,12 @@ JoinEntryInstr* NestedSwitch::ContinueTargetFor(SourceLabel* label) {
 FlowGraphBuilder::FlowGraphBuilder(
     const ParsedFunction& parsed_function,
     const ZoneGrowableArray<const ICData*>& ic_data_array,
+    ZoneGrowableArray<intptr_t>* context_level_array,
     InlineExitCollector* exit_collector,
     intptr_t osr_id)
     : parsed_function_(parsed_function),
       ic_data_array_(ic_data_array),
+      context_level_array_(context_level_array),
       num_copied_params_(parsed_function.num_copied_params()),
       // All parameters are copied if any parameter is.
       num_non_copied_params_(
@@ -323,7 +336,8 @@ FlowGraphBuilder::FlowGraphBuilder(
       nesting_stack_(NULL),
       osr_id_(osr_id),
       jump_count_(0),
-      await_joins_(new (Z) ZoneGrowableArray<JoinEntryInstr*>()) {}
+      await_joins_(new (Z) ZoneGrowableArray<JoinEntryInstr*>()),
+      await_token_positions_(new (Z) ZoneGrowableArray<TokenPosition>()) {}
 
 
 void FlowGraphBuilder::AddCatchEntry(CatchBlockEntryInstr* entry) {
@@ -441,7 +455,8 @@ Definition* InlineExitCollector::JoinReturns(BlockEntryInstr** exit_block,
     // Create a join of the returns.
     intptr_t join_id = caller_graph_->max_block_id() + 1;
     caller_graph_->set_max_block_id(join_id);
-    JoinEntryInstr* join = new (Z) JoinEntryInstr(join_id, try_index);
+    JoinEntryInstr* join = new (Z)
+        JoinEntryInstr(join_id, try_index, Thread::Current()->GetNextDeoptId());
 
     // The dominator set of the join is the intersection of the dominator
     // sets of all the predecessors.  If we keep the dominator sets ordered
@@ -459,7 +474,8 @@ Definition* InlineExitCollector::JoinReturns(BlockEntryInstr** exit_block,
     GrowableArray<BlockEntryInstr*> join_dominators;
     for (intptr_t i = 0; i < num_exits; ++i) {
       // Add the control-flow edge.
-      GotoInstr* goto_instr = new (Z) GotoInstr(join);
+      GotoInstr* goto_instr =
+          new (Z) GotoInstr(join, Thread::Current()->GetNextDeoptId());
       goto_instr->InheritDeoptTarget(zone(), ReturnAt(i));
       LastInstructionAt(i)->LinkTo(goto_instr);
       ExitBlockAt(i)->set_last_instruction(LastInstructionAt(i)->next());
@@ -545,16 +561,19 @@ void InlineExitCollector::ReplaceCall(TargetEntryInstr* callee_entry) {
     // goes to the rest of the caller graph. It is removed as unreachable code
     // by the constant propagation.
     TargetEntryInstr* false_block = new (Z) TargetEntryInstr(
-        caller_graph_->allocate_block_id(), call_block->try_index());
+        caller_graph_->allocate_block_id(), call_block->try_index(),
+        Thread::Current()->GetNextDeoptId());
     false_block->InheritDeoptTargetAfter(caller_graph_, call_, NULL);
     false_block->LinkTo(call_->next());
     call_block->ReplaceAsPredecessorWith(false_block);
 
     ConstantInstr* true_const = caller_graph_->GetConstant(Bool::True());
-    BranchInstr* branch = new (Z) BranchInstr(new (Z) StrictCompareInstr(
-        TokenPosition::kNoSource, Token::kEQ_STRICT, new (Z) Value(true_const),
-        new (Z) Value(true_const),
-        false));  // No number check.
+    BranchInstr* branch = new (Z)
+        BranchInstr(new (Z) StrictCompareInstr(
+                        TokenPosition::kNoSource, Token::kEQ_STRICT,
+                        new (Z) Value(true_const), new (Z) Value(true_const),
+                        false, Thread::Current()->GetNextDeoptId()),
+                    Thread::Current()->GetNextDeoptId());  // No number check.
     branch->InheritDeoptTarget(zone(), call_);
     *branch->true_successor_address() = callee_entry;
     *branch->false_successor_address() = false_block;
@@ -698,7 +717,8 @@ void EffectGraphVisitor::AddInstruction(Instruction* instruction) {
 
 void EffectGraphVisitor::AddReturnExit(TokenPosition token_pos, Value* value) {
   ASSERT(is_open());
-  ReturnInstr* return_instr = new (Z) ReturnInstr(token_pos, value);
+  ReturnInstr* return_instr =
+      new (Z) ReturnInstr(token_pos, value, owner()->GetNextDeoptId());
   AddInstruction(return_instr);
   InlineExitCollector* exit_collector = owner()->exit_collector();
   if (exit_collector != NULL) {
@@ -711,7 +731,7 @@ void EffectGraphVisitor::AddReturnExit(TokenPosition token_pos, Value* value) {
 void EffectGraphVisitor::Goto(JoinEntryInstr* join) {
   ASSERT(is_open());
   if (is_empty()) {
-    entry_ = new (Z) GotoInstr(join);
+    entry_ = new (Z) GotoInstr(join, owner()->GetNextDeoptId());
   } else {
     exit()->Goto(join);
   }
@@ -760,8 +780,9 @@ void EffectGraphVisitor::Join(const TestGraphVisitor& test_fragment,
   } else if (false_exit == NULL) {
     exit_ = true_exit;
   } else {
-    JoinEntryInstr* join = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    JoinEntryInstr* join =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
     true_exit->Goto(join);
     false_exit->Goto(join);
     exit_ = join;
@@ -791,10 +812,11 @@ void EffectGraphVisitor::TieLoop(
     Append(test_preamble_fragment);
     Append(test_fragment);
   } else {
-    JoinEntryInstr* join = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
-    CheckStackOverflowInstr* check =
-        new (Z) CheckStackOverflowInstr(token_pos, owner()->loop_depth());
+    JoinEntryInstr* join =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
+    CheckStackOverflowInstr* check = new (Z) CheckStackOverflowInstr(
+        token_pos, owner()->loop_depth(), owner()->GetNextDeoptId());
     join->LinkTo(check);
     if (!test_preamble_fragment.is_empty()) {
       check->LinkTo(test_preamble_fragment.entry());
@@ -928,7 +950,8 @@ void TestGraphVisitor::ConnectBranchesTo(
   ASSERT(!branches.is_empty());
   for (intptr_t i = 0; i < branches.length(); i++) {
     TargetEntryInstr* target = new (Z)
-        TargetEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+        TargetEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                         owner()->GetNextDeoptId());
     *(branches[i]) = target;
     target->Goto(join);
   }
@@ -951,13 +974,15 @@ BlockEntryInstr* TestGraphVisitor::CreateSuccessorFor(
 
   if (branches.length() == 1) {
     TargetEntryInstr* target = new (Z)
-        TargetEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+        TargetEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                         owner()->GetNextDeoptId());
     *(branches[0]) = target;
     return target;
   }
 
   JoinEntryInstr* join =
-      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                             owner()->GetNextDeoptId());
   ConnectBranchesTo(branches, join);
   return join;
 }
@@ -976,13 +1001,14 @@ BlockEntryInstr* TestGraphVisitor::CreateFalseSuccessor() const {
 void TestGraphVisitor::ReturnValue(Value* value) {
   Isolate* isolate = Isolate::Current();
   if (isolate->type_checks() || isolate->asserts()) {
-    value = Bind(new (Z) AssertBooleanInstr(condition_token_pos(), value));
+    value = Bind(new (Z) AssertBooleanInstr(condition_token_pos(), value,
+                                            owner()->GetNextDeoptId()));
   }
   Value* constant_true = Bind(new (Z) ConstantInstr(Bool::True()));
   StrictCompareInstr* comp = new (Z) StrictCompareInstr(
-      condition_token_pos(), Token::kEQ_STRICT, value, constant_true,
-      false);  // No number check.
-  BranchInstr* branch = new (Z) BranchInstr(comp);
+      condition_token_pos(), Token::kEQ_STRICT, value, constant_true, false,
+      owner()->GetNextDeoptId());  // No number check.
+  BranchInstr* branch = new (Z) BranchInstr(comp, owner()->GetNextDeoptId());
   AddInstruction(branch);
   CloseFragment();
 
@@ -992,7 +1018,7 @@ void TestGraphVisitor::ReturnValue(Value* value) {
 
 
 void TestGraphVisitor::MergeBranchWithStrictCompare(StrictCompareInstr* comp) {
-  BranchInstr* branch = new (Z) BranchInstr(comp);
+  BranchInstr* branch = new (Z) BranchInstr(comp, owner()->GetNextDeoptId());
   AddInstruction(branch);
   CloseFragment();
   true_successor_addresses_.Add(branch->true_successor_address());
@@ -1005,8 +1031,8 @@ void TestGraphVisitor::MergeBranchWithNegate(BooleanNegateInstr* neg) {
   Value* constant_true = Bind(new (Z) ConstantInstr(Bool::True()));
   StrictCompareInstr* comp = new (Z) StrictCompareInstr(
       condition_token_pos(), Token::kNE_STRICT, neg->value(), constant_true,
-      false);  // No number check.
-  BranchInstr* branch = new (Z) BranchInstr(comp);
+      false, owner()->GetNextDeoptId());  // No number check.
+  BranchInstr* branch = new (Z) BranchInstr(comp, owner()->GetNextDeoptId());
   AddInstruction(branch);
   CloseFragment();
   true_successor_addresses_.Add(branch->true_successor_address());
@@ -1091,7 +1117,8 @@ void EffectGraphVisitor::VisitReturnNode(ReturnNode* node) {
   if (FLAG_support_debugger && node->token_pos().IsDebugPause() &&
       !function.is_native()) {
     AddInstruction(new (Z) DebugStepCheckInstr(node->token_pos(),
-                                               RawPcDescriptors::kRuntimeCall));
+                                               RawPcDescriptors::kRuntimeCall,
+                                               owner()->GetNextDeoptId()));
   }
 
   NestedContextAdjustment context_adjustment(owner(), owner()->context_level());
@@ -1139,10 +1166,12 @@ void EffectGraphVisitor::VisitReturnNode(ReturnNode* node) {
         Z, isolate()->object_store()->async_clear_thread_stack_trace());
     ZoneGrowableArray<PushArgumentInstr*>* no_arguments =
         new (Z) ZoneGrowableArray<PushArgumentInstr*>(0);
+    const int kTypeArgsLen = 0;
     StaticCallInstr* call_async_clear_thread_stack_trace = new (Z)
         StaticCallInstr(node->token_pos().ToSynthetic(),
-                        async_clear_thread_stack_trace, Object::null_array(),
-                        no_arguments, owner()->ic_data_array());
+                        async_clear_thread_stack_trace, kTypeArgsLen,
+                        Object::null_array(), no_arguments,
+                        owner()->ic_data_array(), owner()->GetNextDeoptId());
     Do(call_async_clear_thread_stack_trace);
   }
 
@@ -1169,9 +1198,16 @@ void EffectGraphVisitor::VisitReturnNode(ReturnNode* node) {
     arguments->Add(PushArgument(rcv_value));
     Value* returned_value = Bind(BuildLoadExprTemp(node->token_pos()));
     arguments->Add(PushArgument(returned_value));
-    InstanceCallInstr* call = new (Z) InstanceCallInstr(
-        node->token_pos(), Symbols::CompleterComplete(), Token::kILLEGAL,
-        arguments, Object::null_array(), 1, owner()->ic_data_array());
+    // Call a helper function to complete the completer. The debugger
+    // uses the helper function to know when to step-out.
+    const Function& complete_on_async_return = Function::ZoneHandle(
+        Z, isolate()->object_store()->complete_on_async_return());
+    ASSERT(!complete_on_async_return.IsNull());
+    const int kTypeArgsLen = 0;
+    StaticCallInstr* call = new (Z) StaticCallInstr(
+        node->token_pos().ToSynthetic(), complete_on_async_return, kTypeArgsLen,
+        Object::null_array(), arguments, owner()->ic_data_array(),
+        owner()->GetNextDeoptId());
     Do(call);
 
     // Rebind the return value for the actual return call to be null.
@@ -1189,8 +1225,9 @@ void EffectGraphVisitor::VisitReturnNode(ReturnNode* node) {
   if ((function.IsAsyncClosure() || function.IsSyncGenClosure() ||
        function.IsAsyncGenClosure()) &&
       (node->return_type() == ReturnNode::kContinuationTarget)) {
-    JoinEntryInstr* const join = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    JoinEntryInstr* const join =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
     owner()->await_joins()->Add(join);
     exit_ = join;
   }
@@ -1217,14 +1254,24 @@ void ValueGraphVisitor::VisitTypeNode(TypeNode* node) {
   ASSERT(type.IsFinalized() && !type.IsMalformed());
   if (type.IsInstantiated()) {
     ReturnDefinition(new (Z) ConstantInstr(type));
-  } else {
-    const Class& instantiator_class =
-        Class::ZoneHandle(Z, owner()->function().Owner());
-    Value* instantiator_value = BuildInstantiatorTypeArguments(
-        node->token_pos(), instantiator_class, NULL);
-    ReturnDefinition(new (Z) InstantiateTypeInstr(
-        node->token_pos(), type, instantiator_class, instantiator_value));
+    return;
   }
+  const TokenPosition token_pos = node->token_pos();
+  Value* instantiator_type_arguments = NULL;
+  if (type.IsInstantiated(kCurrentClass)) {
+    instantiator_type_arguments = BuildNullValue(token_pos);
+  } else {
+    instantiator_type_arguments = BuildInstantiatorTypeArguments(token_pos);
+  }
+  Value* function_type_arguments = NULL;
+  if (type.IsInstantiated(kFunctions)) {
+    function_type_arguments = BuildNullValue(token_pos);
+  } else {
+    function_type_arguments = BuildFunctionTypeArguments(token_pos);
+  }
+  ReturnDefinition(new (Z) InstantiateTypeInstr(
+      token_pos, type, instantiator_type_arguments, function_type_arguments,
+      owner()->GetNextDeoptId()));
 }
 
 
@@ -1244,8 +1291,9 @@ bool EffectGraphVisitor::CanSkipTypeCheck(TokenPosition token_pos,
     return false;
   }
 
-  // Any type is more specific than the dynamic type and than the Object type.
-  if (dst_type.IsDynamicType() || dst_type.IsObjectType()) {
+  // Any type is more specific than the dynamic type, the Object type, or void.
+  if (dst_type.IsDynamicType() || dst_type.IsObjectType() ||
+      dst_type.IsVoidType()) {
     return true;
   }
 
@@ -1313,8 +1361,8 @@ void EffectGraphVisitor::VisitBinaryOpNode(BinaryOpNode* node) {
       ValueGraphVisitor for_right(owner());
       node->right()->Visit(&for_right);
       Value* right_value = for_right.value();
-      for_right.Do(
-          new (Z) AssertBooleanInstr(node->right()->token_pos(), right_value));
+      for_right.Do(new (Z) AssertBooleanInstr(
+          node->right()->token_pos(), right_value, owner()->GetNextDeoptId()));
       if (node->kind() == Token::kAND) {
         Join(for_left, for_right, empty);
       } else {
@@ -1347,10 +1395,12 @@ void EffectGraphVisitor::VisitBinaryOpNode(BinaryOpNode* node) {
   arguments->Add(push_left);
   arguments->Add(push_right);
   const String& name = Symbols::Token(node->kind());
+  const intptr_t kTypeArgsLen = 0;
   const intptr_t kNumArgsChecked = 2;
-  InstanceCallInstr* call = new (Z) InstanceCallInstr(
-      node->token_pos(), name, node->kind(), arguments, Object::null_array(),
-      kNumArgsChecked, owner()->ic_data_array());
+  InstanceCallInstr* call = new (Z)
+      InstanceCallInstr(node->token_pos(), name, node->kind(), arguments,
+                        kTypeArgsLen, Object::null_array(), kNumArgsChecked,
+                        owner()->ic_data_array(), owner()->GetNextDeoptId());
   ReturnDefinition(call);
 }
 
@@ -1373,13 +1423,13 @@ void ValueGraphVisitor::VisitBinaryOpNode(BinaryOpNode* node) {
     Value* right_value = for_right.value();
     Isolate* isolate = Isolate::Current();
     if (isolate->type_checks() || isolate->asserts()) {
-      right_value = for_right.Bind(
-          new (Z) AssertBooleanInstr(node->right()->token_pos(), right_value));
+      right_value = for_right.Bind(new (Z) AssertBooleanInstr(
+          node->right()->token_pos(), right_value, owner()->GetNextDeoptId()));
     }
     Value* constant_true = for_right.Bind(new (Z) ConstantInstr(Bool::True()));
     Value* compare = for_right.Bind(new (Z) StrictCompareInstr(
-        node->token_pos(), Token::kEQ_STRICT, right_value, constant_true,
-        false));  // No number check.
+        node->token_pos(), Token::kEQ_STRICT, right_value, constant_true, false,
+        owner()->GetNextDeoptId()));  // No number check.
     for_right.Do(BuildStoreExprTemp(compare, node->token_pos()));
 
     if (node->kind() == Token::kAND) {
@@ -1403,53 +1453,40 @@ void ValueGraphVisitor::VisitBinaryOpNode(BinaryOpNode* node) {
 }
 
 
-void EffectGraphVisitor::BuildTypecheckPushArguments(
-    TokenPosition token_pos,
-    PushArgumentInstr** push_instantiator_type_arguments_result) {
-  const Class& instantiator_class =
-      Class::Handle(Z, owner()->function().Owner());
-  // Since called only when type tested against is not instantiated.
-  ASSERT(instantiator_class.IsGeneric());
-  Value* instantiator_type_arguments = NULL;
-  Value* instantiator = BuildInstantiator(token_pos);
-  if (instantiator == NULL) {
-    // No instantiator when inside factory.
-    instantiator_type_arguments =
-        BuildInstantiatorTypeArguments(token_pos, instantiator_class, NULL);
+PushArgumentInstr* EffectGraphVisitor::PushInstantiatorTypeArguments(
+    const AbstractType& type,
+    TokenPosition token_pos) {
+  if (type.IsInstantiated(kCurrentClass)) {
+    return PushArgument(BuildNullValue(token_pos));
   } else {
-    instantiator_type_arguments = BuildInstantiatorTypeArguments(
-        token_pos, instantiator_class, instantiator);
+    Value* instantiator_type_args = BuildInstantiatorTypeArguments(token_pos);
+    return PushArgument(instantiator_type_args);
   }
-  *push_instantiator_type_arguments_result =
-      PushArgument(instantiator_type_arguments);
 }
 
 
-void EffectGraphVisitor::BuildTypecheckArguments(
-    TokenPosition token_pos,
-    Value** instantiator_type_arguments_result) {
-  Value* instantiator = NULL;
-  Value* instantiator_type_arguments = NULL;
-  const Class& instantiator_class =
-      Class::Handle(Z, owner()->function().Owner());
-  // Since called only when type tested against is not instantiated.
-  ASSERT(instantiator_class.IsGeneric());
-  instantiator = BuildInstantiator(token_pos);
-  if (instantiator == NULL) {
-    // No instantiator when inside factory.
-    instantiator_type_arguments =
-        BuildInstantiatorTypeArguments(token_pos, instantiator_class, NULL);
+PushArgumentInstr* EffectGraphVisitor::PushFunctionTypeArguments(
+    const AbstractType& type,
+    TokenPosition token_pos) {
+  if (type.IsInstantiated(kFunctions)) {
+    return PushArgument(BuildNullValue(token_pos));
   } else {
-    instantiator_type_arguments = BuildInstantiatorTypeArguments(
-        token_pos, instantiator_class, instantiator);
+    Value* function_type_args = BuildFunctionTypeArguments(token_pos);
+    return PushArgument(function_type_args);
   }
-  *instantiator_type_arguments_result = instantiator_type_arguments;
 }
 
 
 Value* EffectGraphVisitor::BuildNullValue(TokenPosition token_pos) {
   return Bind(
       new (Z) ConstantInstr(Object::ZoneHandle(Z, Object::null()), token_pos));
+}
+
+
+Value* EffectGraphVisitor::BuildEmptyTypeArguments(TokenPosition token_pos) {
+  return Bind(new (Z) ConstantInstr(
+      TypeArguments::ZoneHandle(Z, Object::empty_type_arguments().raw()),
+      token_pos));
 }
 
 
@@ -1461,16 +1498,22 @@ AssertAssignableInstr* EffectGraphVisitor::BuildAssertAssignable(
     const String& dst_name) {
   // Build the type check computation.
   Value* instantiator_type_arguments = NULL;
-  if (dst_type.IsInstantiated()) {
+  Value* function_type_arguments = NULL;
+  if (dst_type.IsInstantiated(kCurrentClass)) {
     instantiator_type_arguments = BuildNullValue(token_pos);
   } else {
-    BuildTypecheckArguments(token_pos, &instantiator_type_arguments);
+    instantiator_type_arguments = BuildInstantiatorTypeArguments(token_pos);
+  }
+  if (dst_type.IsInstantiated(kFunctions)) {
+    function_type_arguments = BuildNullValue(token_pos);
+  } else {
+    function_type_arguments = BuildFunctionTypeArguments(token_pos);
   }
 
-  const intptr_t deopt_id = Thread::Current()->GetNextDeoptId();
-  return new (Z)
-      AssertAssignableInstr(token_pos, value, instantiator_type_arguments,
-                            dst_type, dst_name, deopt_id);
+  const intptr_t deopt_id = owner()->GetNextDeoptId();
+  return new (Z) AssertAssignableInstr(
+      token_pos, value, instantiator_type_arguments, function_type_arguments,
+      dst_type, dst_name, deopt_id);
 }
 
 
@@ -1483,23 +1526,6 @@ Value* EffectGraphVisitor::BuildAssignableValue(TokenPosition token_pos,
     return value;
   }
   return Bind(BuildAssertAssignable(token_pos, value, dst_type, dst_name));
-}
-
-
-static bool simpleInstanceOfType(const AbstractType& type) {
-  // Bail if the type is still uninstantiated at compile time.
-  if (!type.IsInstantiated()) return false;
-
-  // Bail if the type is a function or a Dart Function type.
-  if (type.IsFunctionType() || type.IsDartFunctionType()) return false;
-
-  ASSERT(type.HasResolvedTypeClass());
-  const Class& type_class = Class::Handle(type.type_class());
-  // Bail if the type has any type parameters.
-  if (type_class.IsGeneric()) return false;
-
-  // Finally a simple class for instance of checking.
-  return true;
 }
 
 
@@ -1523,55 +1549,23 @@ void EffectGraphVisitor::BuildTypeTest(ComparisonNode* node) {
   node->left()->Visit(&for_left_value);
   Append(for_left_value);
 
-  if (type.IsNumberType() || type.IsIntType() || type.IsDoubleType() ||
-      type.IsSmiType() || type.IsStringType()) {
-    String& method_name = String::ZoneHandle(Z);
-    if (type.IsNumberType()) {
-      method_name = Symbols::_instanceOfNum().raw();
-    } else if (type.IsIntType()) {
-      method_name = Symbols::_instanceOfInt().raw();
-    } else if (type.IsDoubleType()) {
-      method_name = Symbols::_instanceOfDouble().raw();
-    } else if (type.IsSmiType()) {
-      method_name = Symbols::_instanceOfSmi().raw();
-    } else if (type.IsStringType()) {
-      method_name = Symbols::_instanceOfString().raw();
-    }
-    ASSERT(!method_name.IsNull());
-    PushArgumentInstr* push_left = PushArgument(for_left_value.value());
-    ZoneGrowableArray<PushArgumentInstr*>* arguments =
-        new (Z) ZoneGrowableArray<PushArgumentInstr*>(2);
-    arguments->Add(push_left);
-    const Bool& negate = Bool::Get(node->kind() == Token::kISNOT);
-    Value* negate_arg = Bind(new (Z) ConstantInstr(negate));
-    arguments->Add(PushArgument(negate_arg));
-    const intptr_t kNumArgsChecked = 1;
-    InstanceCallInstr* call = new (Z) InstanceCallInstr(
-        node->token_pos(), Library::PrivateCoreLibName(method_name),
-        node->kind(), arguments,
-        Object::null_array(),  // No argument names.
-        kNumArgsChecked, owner()->ic_data_array());
-    ReturnDefinition(call);
-    return;
-  }
-
   // We now know type is a real class (!num, !int, !smi, !string)
   // and the type check could NOT be removed at compile time.
   PushArgumentInstr* push_left = PushArgument(for_left_value.value());
-  if (simpleInstanceOfType(type)) {
-    ASSERT(!node->right()->AsTypeNode()->type().IsNull());
+  if (FlowGraphBuilder::SimpleInstanceOfType(type)) {
     ZoneGrowableArray<PushArgumentInstr*>* arguments =
         new (Z) ZoneGrowableArray<PushArgumentInstr*>(2);
     arguments->Add(push_left);
     Value* type_const = Bind(new (Z) ConstantInstr(type));
     arguments->Add(PushArgument(type_const));
+    const intptr_t kTypeArgsLen = 0;
     const intptr_t kNumArgsChecked = 2;
     Definition* result = new (Z) InstanceCallInstr(
         node->token_pos(),
         Library::PrivateCoreLibName(Symbols::_simpleInstanceOf()), node->kind(),
-        arguments,
+        arguments, kTypeArgsLen,
         Object::null_array(),  // No argument names.
-        kNumArgsChecked, owner()->ic_data_array());
+        kNumArgsChecked, owner()->ic_data_array(), owner()->GetNextDeoptId());
     if (negate_result) {
       result = new (Z) BooleanNegateInstr(Bind(result));
     }
@@ -1579,29 +1573,28 @@ void EffectGraphVisitor::BuildTypeTest(ComparisonNode* node) {
     return;
   }
 
-  PushArgumentInstr* push_type_args = NULL;
-  if (type.IsInstantiated()) {
-    push_type_args = PushArgument(BuildNullValue(node->token_pos()));
-  } else {
-    BuildTypecheckPushArguments(node->token_pos(), &push_type_args);
-  }
+  PushArgumentInstr* push_instantiator_type_args =
+      PushInstantiatorTypeArguments(type, node->token_pos());
+  PushArgumentInstr* push_function_type_args =
+      PushFunctionTypeArguments(type, node->token_pos());
   ZoneGrowableArray<PushArgumentInstr*>* arguments =
       new (Z) ZoneGrowableArray<PushArgumentInstr*>(4);
   arguments->Add(push_left);
-  arguments->Add(push_type_args);
-  ASSERT(!node->right()->AsTypeNode()->type().IsNull());
+  arguments->Add(push_instantiator_type_args);
+  arguments->Add(push_function_type_args);
   Value* type_const = Bind(new (Z) ConstantInstr(type));
   arguments->Add(PushArgument(type_const));
-  const Bool& negate = Bool::Get(node->kind() == Token::kISNOT);
-  Value* negate_arg = Bind(new (Z) ConstantInstr(negate));
-  arguments->Add(PushArgument(negate_arg));
+  const intptr_t kTypeArgsLen = 0;
   const intptr_t kNumArgsChecked = 1;
-  InstanceCallInstr* call = new (Z) InstanceCallInstr(
+  Definition* result = new (Z) InstanceCallInstr(
       node->token_pos(), Library::PrivateCoreLibName(Symbols::_instanceOf()),
-      node->kind(), arguments,
+      node->kind(), arguments, kTypeArgsLen,
       Object::null_array(),  // No argument names.
-      kNumArgsChecked, owner()->ic_data_array());
-  ReturnDefinition(call);
+      kNumArgsChecked, owner()->ic_data_array(), owner()->GetNextDeoptId());
+  if (negate_result) {
+    result = new (Z) BooleanNegateInstr(Bind(result));
+  }
+  ReturnDefinition(result);
 }
 
 
@@ -1619,24 +1612,24 @@ void EffectGraphVisitor::BuildTypeCast(ComparisonNode* node) {
     return;
   }
   PushArgumentInstr* push_left = PushArgument(for_value.value());
-  PushArgumentInstr* push_type_args = NULL;
-  if (type.IsInstantiated()) {
-    push_type_args = PushArgument(BuildNullValue(node->token_pos()));
-  } else {
-    BuildTypecheckPushArguments(node->token_pos(), &push_type_args);
-  }
+  PushArgumentInstr* push_instantiator_type_args =
+      PushInstantiatorTypeArguments(type, node->token_pos());
+  PushArgumentInstr* push_function_type_args =
+      PushFunctionTypeArguments(type, node->token_pos());
   ZoneGrowableArray<PushArgumentInstr*>* arguments =
-      new (Z) ZoneGrowableArray<PushArgumentInstr*>(3);
+      new (Z) ZoneGrowableArray<PushArgumentInstr*>(4);
   arguments->Add(push_left);
-  arguments->Add(push_type_args);
+  arguments->Add(push_instantiator_type_args);
+  arguments->Add(push_function_type_args);
   Value* type_arg = Bind(new (Z) ConstantInstr(type));
   arguments->Add(PushArgument(type_arg));
+  const int kTypeArgsLen = 0;
   const intptr_t kNumArgsChecked = 1;
   InstanceCallInstr* call = new (Z) InstanceCallInstr(
       node->token_pos(), Library::PrivateCoreLibName(Symbols::_as()),
-      node->kind(), arguments,
+      node->kind(), arguments, kTypeArgsLen,
       Object::null_array(),  // No argument names.
-      kNumArgsChecked, owner()->ic_data_array());
+      kNumArgsChecked, owner()->ic_data_array(), owner()->GetNextDeoptId());
   ReturnDefinition(call);
 }
 
@@ -1653,8 +1646,8 @@ StrictCompareInstr* EffectGraphVisitor::BuildStrictCompare(
   right->Visit(&for_right_value);
   Append(for_right_value);
   StrictCompareInstr* comp = new (Z) StrictCompareInstr(
-      token_pos, kind, for_left_value.value(), for_right_value.value(),
-      true);  // Number check.
+      token_pos, kind, for_left_value.value(), for_right_value.value(), true,
+      owner()->GetNextDeoptId());  // Number check.
   return comp;
 }
 
@@ -1708,17 +1701,19 @@ void EffectGraphVisitor::VisitComparisonNode(ComparisonNode* node) {
     PushArgumentInstr* push_right = PushArgument(for_right_value.value());
     arguments->Add(push_right);
 
+    const intptr_t kTypeArgsLen = 0;
     const intptr_t kNumArgsChecked = 2;
-    Definition* result = new (Z)
-        InstanceCallInstr(node->token_pos(), Symbols::EqualOperator(),
-                          Token::kEQ,  // Result is negated later for kNE.
-                          arguments, Object::null_array(), kNumArgsChecked,
-                          owner()->ic_data_array());
+    Definition* result = new (Z) InstanceCallInstr(
+        node->token_pos(), Symbols::EqualOperator(),
+        Token::kEQ,  // Result is negated later for kNE.
+        arguments, kTypeArgsLen, Object::null_array(), kNumArgsChecked,
+        owner()->ic_data_array(), owner()->GetNextDeoptId());
     if (node->kind() == Token::kNE) {
       Isolate* isolate = Isolate::Current();
       if (isolate->type_checks() || isolate->asserts()) {
         Value* value = Bind(result);
-        result = new (Z) AssertBooleanInstr(node->token_pos(), value);
+        result = new (Z) AssertBooleanInstr(node->token_pos(), value,
+                                            owner()->GetNextDeoptId());
       }
       Value* value = Bind(result);
       result = new (Z) BooleanNegateInstr(value);
@@ -1743,9 +1738,11 @@ void EffectGraphVisitor::VisitComparisonNode(ComparisonNode* node) {
   arguments->Add(push_right);
 
   ASSERT(Token::IsRelationalOperator(node->kind()));
+  const intptr_t kTypeArgsLen = 0;
   InstanceCallInstr* comp = new (Z) InstanceCallInstr(
       node->token_pos(), Symbols::Token(node->kind()), node->kind(), arguments,
-      Object::null_array(), 2, owner()->ic_data_array());
+      kTypeArgsLen, Object::null_array(), 2, owner()->ic_data_array(),
+      owner()->GetNextDeoptId());
   ReturnDefinition(comp);
 }
 
@@ -1759,8 +1756,8 @@ void EffectGraphVisitor::VisitUnaryOpNode(UnaryOpNode* node) {
     Value* value = for_value.value();
     Isolate* isolate = Isolate::Current();
     if (isolate->type_checks() || isolate->asserts()) {
-      value =
-          Bind(new (Z) AssertBooleanInstr(node->operand()->token_pos(), value));
+      value = Bind(new (Z) AssertBooleanInstr(
+          node->operand()->token_pos(), value, owner()->GetNextDeoptId()));
     }
     BooleanNegateInstr* negate = new (Z) BooleanNegateInstr(value);
     ReturnDefinition(negate);
@@ -1774,9 +1771,11 @@ void EffectGraphVisitor::VisitUnaryOpNode(UnaryOpNode* node) {
   ZoneGrowableArray<PushArgumentInstr*>* arguments =
       new (Z) ZoneGrowableArray<PushArgumentInstr*>(1);
   arguments->Add(push_value);
+  const intptr_t kTypeArgsLen = 0;
   InstanceCallInstr* call = new (Z) InstanceCallInstr(
       node->token_pos(), Symbols::Token(node->kind()), node->kind(), arguments,
-      Object::null_array(), 1, owner()->ic_data_array());
+      kTypeArgsLen, Object::null_array(), 1, owner()->ic_data_array(),
+      owner()->GetNextDeoptId());
   ReturnDefinition(call);
 }
 
@@ -1874,8 +1873,9 @@ void EffectGraphVisitor::VisitCaseNode(CaseNode* node) {
   // Compute the start of the statements fragment.
   JoinEntryInstr* statement_start = NULL;
   if (node->label() == NULL) {
-    statement_start = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    statement_start =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
   } else {
     // The case nodes are nested inside a SequenceNode that is the body of a
     // SwitchNode.  The SwitchNode on the nesting stack contains the
@@ -1927,7 +1927,8 @@ void EffectGraphVisitor::VisitCaseNode(CaseNode* node) {
     } else {
       if (statement_exit != NULL) {
         JoinEntryInstr* join = new (Z)
-            JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+            JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                           owner()->GetNextDeoptId());
         statement_exit->Goto(join);
         next_target->Goto(join);
         exit_instruction = join;
@@ -2010,7 +2011,8 @@ void EffectGraphVisitor::VisitDoWhileNode(DoWhileNode* node) {
 
   // Tie do-while loop (test is after the body).
   JoinEntryInstr* body_entry_join =
-      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                             owner()->GetNextDeoptId());
   Goto(body_entry_join);
   Instruction* body_exit = AppendFragment(body_entry_join, for_body);
 
@@ -2018,10 +2020,11 @@ void EffectGraphVisitor::VisitDoWhileNode(DoWhileNode* node) {
   if ((body_exit != NULL) || (join != NULL)) {
     if (join == NULL) {
       join = new (Z)
-          JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+          JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                         owner()->GetNextDeoptId());
     }
-    CheckStackOverflowInstr* check = new (Z)
-        CheckStackOverflowInstr(node->token_pos(), owner()->loop_depth());
+    CheckStackOverflowInstr* check = new (Z) CheckStackOverflowInstr(
+        node->token_pos(), owner()->loop_depth(), owner()->GetNextDeoptId());
     join->LinkTo(check);
     check->LinkTo(for_test.entry());
     if (body_exit != NULL) {
@@ -2069,8 +2072,9 @@ void EffectGraphVisitor::VisitForNode(ForNode* node) {
   // Join the loop body and increment and then tie the loop.
   JoinEntryInstr* continue_join = nested_loop.continue_target();
   if ((continue_join != NULL) || for_body.is_open()) {
-    JoinEntryInstr* loop_entry = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    JoinEntryInstr* loop_entry =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
     if (continue_join != NULL) {
       if (for_body.is_open()) for_body.Goto(continue_join);
       Instruction* current = AppendFragment(continue_join, for_increment);
@@ -2087,7 +2091,8 @@ void EffectGraphVisitor::VisitForNode(ForNode* node) {
     // the context level (if any) matches the that of the increment
     // expression.
     AddInstruction(new (Z) CheckStackOverflowInstr(
-        node->increment()->token_pos(), owner()->loop_depth()));
+        node->increment()->token_pos(), owner()->loop_depth(),
+        owner()->GetNextDeoptId()));
   }
 
   if (node->condition() == NULL) {
@@ -2121,7 +2126,8 @@ void EffectGraphVisitor::VisitForNode(ForNode* node) {
 void EffectGraphVisitor::VisitJumpNode(JumpNode* node) {
   if (FLAG_support_debugger && owner()->function().is_debuggable()) {
     AddInstruction(new (Z) DebugStepCheckInstr(node->token_pos(),
-                                               RawPcDescriptors::kRuntimeCall));
+                                               RawPcDescriptors::kRuntimeCall,
+                                               owner()->GetNextDeoptId()));
   }
 
   NestedContextAdjustment context_adjustment(owner(), owner()->context_level());
@@ -2186,6 +2192,8 @@ void EffectGraphVisitor::VisitAwaitMarkerNode(AwaitMarkerNode* node) {
   Value* jump_val = Bind(new (Z) ConstantInstr(
       Smi::ZoneHandle(Z, Smi::New(jump_count)), node->token_pos()));
   Do(BuildStoreLocal(*jump_var, jump_val, node->token_pos()));
+  // Add a mapping from jump_count -> token_position.
+  owner()->AppendAwaitTokenPosition(node->token_pos());
   // Save the current context for resuming.
   BuildSaveContext(*ctx_var, node->token_pos());
 }
@@ -2280,8 +2288,8 @@ void EffectGraphVisitor::VisitArrayNode(ArrayNode* node) {
       BuildInstantiatedTypeArguments(node->token_pos(), type_args);
   Value* num_elements =
       Bind(new (Z) ConstantInstr(Smi::ZoneHandle(Z, Smi::New(node->length()))));
-  CreateArrayInstr* create =
-      new (Z) CreateArrayInstr(node->token_pos(), element_type, num_elements);
+  CreateArrayInstr* create = new (Z) CreateArrayInstr(
+      node->token_pos(), element_type, num_elements, owner()->GetNextDeoptId());
   Value* array_val = Bind(create);
 
   {
@@ -2321,6 +2329,7 @@ void EffectGraphVisitor::VisitStringInterpolateNode(
     Append(for_argument);
     PushArgumentInstr* push_arg = PushArgument(for_argument.value());
     values->Add(push_arg);
+    const int kTypeArgsLen = 0;
     const int kNumberOfArguments = 1;
     const Array& kNoArgumentNames = Object::null_array();
     const Class& cls =
@@ -2329,17 +2338,17 @@ void EffectGraphVisitor::VisitStringInterpolateNode(
     const Function& function = Function::ZoneHandle(
         Z, Resolver::ResolveStatic(
                cls, Library::PrivateCoreLibName(Symbols::InterpolateSingle()),
-               kNumberOfArguments, kNoArgumentNames));
-    StaticCallInstr* call =
-        new (Z) StaticCallInstr(node->token_pos(), function, kNoArgumentNames,
-                                values, owner()->ic_data_array());
+               kTypeArgsLen, kNumberOfArguments, kNoArgumentNames));
+    StaticCallInstr* call = new (Z) StaticCallInstr(
+        node->token_pos(), function, kTypeArgsLen, kNoArgumentNames, values,
+        owner()->ic_data_array(), owner()->GetNextDeoptId());
     ReturnDefinition(call);
     return;
   }
   arguments->Visit(&for_argument);
   Append(for_argument);
-  StringInterpolateInstr* instr =
-      new (Z) StringInterpolateInstr(for_argument.value(), node->token_pos());
+  StringInterpolateInstr* instr = new (Z) StringInterpolateInstr(
+      for_argument.value(), node->token_pos(), owner()->GetNextDeoptId());
   ReturnDefinition(instr);
 }
 
@@ -2394,20 +2403,24 @@ void EffectGraphVisitor::VisitClosureNode(ClosureNode* node) {
   Value* closure_val = Bind(alloc);
   {
     LocalVariable* closure_tmp_var = EnterTempLocalScope(closure_val);
-    // Store type arguments if scope class is generic.
-    const Type& function_type = Type::ZoneHandle(Z, function.SignatureType());
-    const Class& scope_cls = Class::ZoneHandle(Z, function_type.type_class());
-    if (scope_cls.IsGeneric()) {
-      ASSERT(function.Owner() == scope_cls.raw());
+    // Store instantiator type arguments if signature is class-uninstantiated.
+    if (!function.HasInstantiatedSignature(kCurrentClass)) {
       Value* closure_tmp_val =
           Bind(new (Z) LoadLocalInstr(*closure_tmp_var, node->token_pos()));
-      const Class& instantiator_class =
-          Class::Handle(Z, owner()->function().Owner());
-      Value* type_arguments = BuildInstantiatorTypeArguments(
-          node->token_pos(), instantiator_class, NULL);
-      Do(new (Z) StoreInstanceFieldInstr(Closure::type_arguments_offset(),
-                                         closure_tmp_val, type_arguments,
-                                         kEmitStoreBarrier, node->token_pos()));
+      Value* type_arguments = BuildInstantiatorTypeArguments(node->token_pos());
+      Do(new (Z) StoreInstanceFieldInstr(
+          Closure::instantiator_type_arguments_offset(), closure_tmp_val,
+          type_arguments, kEmitStoreBarrier, node->token_pos()));
+    }
+
+    // Store function type arguments if signature is function-uninstantiated.
+    if (!function.HasInstantiatedSignature(kFunctions)) {
+      Value* closure_tmp_val =
+          Bind(new (Z) LoadLocalInstr(*closure_tmp_var, node->token_pos()));
+      Value* type_arguments = BuildFunctionTypeArguments(node->token_pos());
+      Do(new (Z) StoreInstanceFieldInstr(
+          Closure::function_type_arguments_offset(), closure_tmp_val,
+          type_arguments, kEmitStoreBarrier, node->token_pos()));
     }
 
     // Store function.
@@ -2455,6 +2468,27 @@ void EffectGraphVisitor::VisitClosureNode(ClosureNode* node) {
                                          kEmitStoreBarrier, node->token_pos()));
     }
     ReturnDefinition(ExitTempLocalScope(closure_val));
+  }
+}
+
+
+void EffectGraphVisitor::BuildPushTypeArguments(
+    const ArgumentListNode& node,
+    ZoneGrowableArray<PushArgumentInstr*>* values) {
+  if (node.type_args_len() > 0) {
+    Value* type_args_val;
+    if (node.type_args_var() != NULL) {
+      type_args_val =
+          Bind(new (Z) LoadLocalInstr(*node.type_args_var(), node.token_pos()));
+    } else {
+      const TypeArguments& type_args = node.type_arguments();
+      ASSERT(!type_args.IsNull() && type_args.IsCanonical() &&
+             (type_args.Length() == node.type_args_len()));
+      type_args_val =
+          BuildInstantiatedTypeArguments(node.token_pos(), type_args);
+    }
+    PushArgumentInstr* push_type_args = PushArgument(type_args_val);
+    values->Add(push_type_args);
   }
 }
 
@@ -2516,22 +2550,28 @@ void ValueGraphVisitor::VisitInstanceCallNode(InstanceCallNode* node) {
 
 
 void EffectGraphVisitor::VisitInstanceCallNode(InstanceCallNode* node) {
-  ValueGraphVisitor for_receiver(owner());
-  node->receiver()->Visit(&for_receiver);
-  Append(for_receiver);
   if (node->is_conditional()) {
+    ASSERT(node->arguments()->type_args_len() == 0);
+    ValueGraphVisitor for_receiver(owner());
+    node->receiver()->Visit(&for_receiver);
+    Append(for_receiver);
     Do(BuildStoreExprTemp(for_receiver.value(), node->token_pos()));
     BuildInstanceCallConditional(node);
   } else {
+    ZoneGrowableArray<PushArgumentInstr*>* arguments =
+        new (Z) ZoneGrowableArray<PushArgumentInstr*>(
+            node->arguments()->LengthWithTypeArgs() + 1);
+    BuildPushTypeArguments(*node->arguments(), arguments);
+    ValueGraphVisitor for_receiver(owner());
+    node->receiver()->Visit(&for_receiver);
+    Append(for_receiver);
     PushArgumentInstr* push_receiver = PushArgument(for_receiver.value());
-    ZoneGrowableArray<PushArgumentInstr*>* arguments = new (Z)
-        ZoneGrowableArray<PushArgumentInstr*>(node->arguments()->length() + 1);
     arguments->Add(push_receiver);
-
     BuildPushArguments(*node->arguments(), arguments);
     InstanceCallInstr* call = new (Z) InstanceCallInstr(
         node->token_pos(), node->function_name(), Token::kILLEGAL, arguments,
-        node->arguments()->names(), 1, owner()->ic_data_array());
+        node->arguments()->type_args_len(), node->arguments()->names(), 1,
+        owner()->ic_data_array(), owner()->GetNextDeoptId());
     ReturnDefinition(call);
   }
 }
@@ -2540,12 +2580,15 @@ void EffectGraphVisitor::VisitInstanceCallNode(InstanceCallNode* node) {
 // <Expression> ::= StaticCall { function: Function
 //                               arguments: <ArgumentList> }
 void EffectGraphVisitor::VisitStaticCallNode(StaticCallNode* node) {
-  ZoneGrowableArray<PushArgumentInstr*>* arguments = new (Z)
-      ZoneGrowableArray<PushArgumentInstr*>(node->arguments()->length());
+  ZoneGrowableArray<PushArgumentInstr*>* arguments =
+      new (Z) ZoneGrowableArray<PushArgumentInstr*>(
+          node->arguments()->LengthWithTypeArgs());
+  BuildPushTypeArguments(*node->arguments(), arguments);
   BuildPushArguments(*node->arguments(), arguments);
   StaticCallInstr* call = new (Z) StaticCallInstr(
-      node->token_pos(), node->function(), node->arguments()->names(),
-      arguments, owner()->ic_data_array());
+      node->token_pos(), node->function(), node->arguments()->type_args_len(),
+      node->arguments()->names(), arguments, owner()->ic_data_array(),
+      owner()->GetNextDeoptId());
   if (node->function().recognized_kind() != MethodRecognizer::kUnknown) {
     call->set_result_cid(MethodRecognizer::ResultCid(node->function()));
   }
@@ -2555,15 +2598,17 @@ void EffectGraphVisitor::VisitStaticCallNode(StaticCallNode* node) {
 
 void EffectGraphVisitor::BuildClosureCall(ClosureCallNode* node,
                                           bool result_needed) {
+  ZoneGrowableArray<PushArgumentInstr*>* arguments =
+      new (Z) ZoneGrowableArray<PushArgumentInstr*>(
+          node->arguments()->LengthWithTypeArgs() + 1);
+
   ValueGraphVisitor for_closure(owner());
   node->closure()->Visit(&for_closure);
   Append(for_closure);
-
   Value* closure_value = for_closure.value();
   LocalVariable* tmp_var = EnterTempLocalScope(closure_value);
 
-  ZoneGrowableArray<PushArgumentInstr*>* arguments = new (Z)
-      ZoneGrowableArray<PushArgumentInstr*>(node->arguments()->length());
+  BuildPushTypeArguments(*node->arguments(), arguments);
   Value* closure_val =
       Bind(new (Z) LoadLocalInstr(*tmp_var, node->token_pos()));
   PushArgumentInstr* push_closure = PushArgument(closure_val);
@@ -2577,8 +2622,8 @@ void EffectGraphVisitor::BuildClosureCall(ClosureCallNode* node,
   function_load->set_is_immutable(true);
   Value* function_val = Bind(function_load);
 
-  Definition* closure_call =
-      new (Z) ClosureCallInstr(function_val, node, arguments);
+  Definition* closure_call = new (Z) ClosureCallInstr(
+      function_val, node, arguments, owner()->GetNextDeoptId());
   if (result_needed) {
     Value* result = Bind(closure_call);
     Do(new (Z) StoreLocalInstr(*tmp_var, result, ST(node->token_pos())));
@@ -2602,13 +2647,15 @@ void ValueGraphVisitor::VisitClosureCallNode(ClosureCallNode* node) {
 void EffectGraphVisitor::VisitInitStaticFieldNode(InitStaticFieldNode* node) {
   Value* field = Bind(
       new (Z) ConstantInstr(Field::ZoneHandle(Z, node->field().Original())));
-  AddInstruction(new (Z) InitStaticFieldInstr(field, node->field()));
+  AddInstruction(new (Z) InitStaticFieldInstr(field, node->field(),
+                                              owner()->GetNextDeoptId()));
 }
 
 
 void EffectGraphVisitor::VisitCloneContextNode(CloneContextNode* node) {
   Value* context = Bind(BuildCurrentContext(node->token_pos()));
-  Value* clone = Bind(new (Z) CloneContextInstr(node->token_pos(), context));
+  Value* clone = Bind(new (Z) CloneContextInstr(node->token_pos(), context,
+                                                owner()->GetNextDeoptId()));
   Do(BuildStoreContext(clone, node->token_pos()));
 }
 
@@ -2641,9 +2688,11 @@ void EffectGraphVisitor::BuildConstructorCall(
   arguments->Add(push_alloc_value);
 
   BuildPushArguments(*node->arguments(), arguments);
-  Do(new (Z) StaticCallInstr(node->token_pos(), node->constructor(),
-                             node->arguments()->names(), arguments,
-                             owner()->ic_data_array()));
+  const intptr_t kTypeArgsLen = 0;
+  Do(new (Z)
+         StaticCallInstr(node->token_pos(), node->constructor(), kTypeArgsLen,
+                         node->arguments()->names(), arguments,
+                         owner()->ic_data_array(), owner()->GetNextDeoptId()));
 }
 
 
@@ -2681,9 +2730,11 @@ void EffectGraphVisitor::VisitConstructorCallNode(ConstructorCallNode* node) {
     arguments->Add(push_type_arguments);
     ASSERT(arguments->length() == 1);
     BuildPushArguments(*node->arguments(), arguments);
-    StaticCallInstr* call = new (Z) StaticCallInstr(
-        node->token_pos(), node->constructor(), node->arguments()->names(),
-        arguments, owner()->ic_data_array());
+    const int kTypeArgsLen = 0;
+    StaticCallInstr* call = new (Z)
+        StaticCallInstr(node->token_pos(), node->constructor(), kTypeArgsLen,
+                        node->arguments()->names(), arguments,
+                        owner()->ic_data_array(), owner()->GetNextDeoptId());
     const intptr_t result_cid = GetResultCidOfListFactory(node);
     if (result_cid != kDynamicCid) {
       call->set_result_cid(result_cid);
@@ -2727,12 +2778,10 @@ Value* EffectGraphVisitor::BuildInstantiator(TokenPosition token_pos) {
 }
 
 
-// 'expression_temp_var' may not be used inside this method if 'instantiator'
-// is not NULL.
 Value* EffectGraphVisitor::BuildInstantiatorTypeArguments(
-    TokenPosition token_pos,
-    const Class& instantiator_class,
-    Value* instantiator) {
+    TokenPosition token_pos) {
+  const Class& instantiator_class =
+      Class::Handle(Z, owner()->function().Owner());
   if (!instantiator_class.IsGeneric()) {
     // The type arguments are compile time constants.
     TypeArguments& type_arguments =
@@ -2752,19 +2801,15 @@ Value* EffectGraphVisitor::BuildInstantiatorTypeArguments(
     outer_function = outer_function.parent_function();
   }
   if (outer_function.IsFactory()) {
-    // No instantiator for factories.
-    ASSERT(instantiator == NULL);
+    // Note that in the factory case, the instantiator is the first parameter
+    // of the factory, i.e. already a TypeArguments object.
     LocalVariable* instantiator_var = owner()->parsed_function().instantiator();
     ASSERT(instantiator_var != NULL);
     return Bind(BuildLoadLocal(*instantiator_var, token_pos));
   }
-  if (instantiator == NULL) {
-    instantiator = BuildInstantiator(token_pos);
-  }
   // The instantiator is the receiver of the caller, which is not a factory.
   // The receiver cannot be null; extract its TypeArguments object.
-  // Note that in the factory case, the instantiator is the first parameter
-  // of the factory, i.e. already a TypeArguments object.
+  Value* instantiator = BuildInstantiator(token_pos);
   intptr_t type_arguments_field_offset =
       instantiator_class.type_arguments_field_offset();
   ASSERT(type_arguments_field_offset != Class::kNoTypeArguments);
@@ -2773,6 +2818,32 @@ Value* EffectGraphVisitor::BuildInstantiatorTypeArguments(
       instantiator, type_arguments_field_offset,
       Type::ZoneHandle(Z, Type::null()),  // Not an instance, no type.
       token_pos));
+}
+
+
+Value* EffectGraphVisitor::BuildFunctionTypeArguments(TokenPosition token_pos) {
+  LocalVariable* function_type_arguments_var =
+      owner()->parsed_function().function_type_arguments();
+  if (function_type_arguments_var == NULL) {
+    // We encountered an uninstantiated type referring to type parameters of a
+    // signature that is local to the function being compiled. The type remains
+    // uninstantiated. Example: Foo(f<T>(T t)) => null;
+    // Foo is non-generic, but takes a generic function f as argument.
+    // The uninstantiated function type of f cannot be instantiated from within
+    // Foo and should not be instantiated. It is used in uninstantiated form to
+    // check incoming closures for assignability. We pass an empty function
+    // type argument vector.
+    return BuildEmptyTypeArguments(token_pos);
+
+    // Note that the function type could also get partially instantiated:
+    // Bar<B>(B g<T>(T t)) => null;
+    // In this case, function_type_arguments_var will not be null, since Bar
+    // is generic, and will be used to partially instantiate the type of g, more
+    // specifically the result type of g. Note that the instantiator vector will
+    // have length 1, and type parameters with indices above 0, e.g. T, must
+    // remain uninstantiated.
+  }
+  return Bind(BuildLoadLocal(*function_type_arguments_var, token_pos));
 }
 
 
@@ -2785,17 +2856,27 @@ Value* EffectGraphVisitor::BuildInstantiatedTypeArguments(
   // The type arguments are uninstantiated.
   const Class& instantiator_class =
       Class::ZoneHandle(Z, owner()->function().Owner());
-  Value* instantiator_value =
-      BuildInstantiatorTypeArguments(token_pos, instantiator_class, NULL);
-  const bool use_instantiator_type_args =
-      type_arguments.IsUninstantiatedIdentity() ||
-      type_arguments.CanShareInstantiatorTypeArguments(instantiator_class);
-  if (use_instantiator_type_args) {
-    return instantiator_value;
+  Value* instantiator_type_args = NULL;
+  if (type_arguments.IsInstantiated(kCurrentClass)) {
+    instantiator_type_args = BuildNullValue(token_pos);
   } else {
-    return Bind(new (Z) InstantiateTypeArgumentsInstr(
-        token_pos, type_arguments, instantiator_class, instantiator_value));
+    instantiator_type_args = BuildInstantiatorTypeArguments(token_pos);
+    const bool use_instantiator_type_args =
+        type_arguments.IsUninstantiatedIdentity() ||
+        type_arguments.CanShareInstantiatorTypeArguments(instantiator_class);
+    if (use_instantiator_type_args) {
+      return instantiator_type_args;
+    }
   }
+  Value* function_type_args = NULL;
+  if (type_arguments.IsInstantiated(kFunctions)) {
+    function_type_args = BuildNullValue(token_pos);
+  } else {
+    function_type_args = BuildFunctionTypeArguments(token_pos);
+  }
+  return Bind(new (Z) InstantiateTypeArgumentsInstr(
+      token_pos, type_arguments, instantiator_class, instantiator_type_args,
+      function_type_args, owner()->GetNextDeoptId()));
 }
 
 
@@ -2883,9 +2964,11 @@ void EffectGraphVisitor::VisitInstanceGetterNode(InstanceGetterNode* node) {
     arguments->Add(push_receiver);
     const String& name =
         String::ZoneHandle(Z, Field::GetterSymbol(node->field_name()));
+    const intptr_t kTypeArgsLen = 0;
     InstanceCallInstr* call = new (Z)
         InstanceCallInstr(node->token_pos(), name, Token::kGET, arguments,
-                          Object::null_array(), 1, owner()->ic_data_array());
+                          kTypeArgsLen, Object::null_array(), 1,
+                          owner()->ic_data_array(), owner()->GetNextDeoptId());
     ReturnDefinition(call);
   }
 }
@@ -2945,10 +3028,12 @@ void EffectGraphVisitor::VisitInstanceSetterNode(InstanceSetterNode* node) {
   BuildInstanceSetterArguments(node, arguments, kResultNotNeeded);
   const String& name =
       String::ZoneHandle(Z, Field::SetterSymbol(node->field_name()));
+  const int kTypeArgsLen = 0;
   const intptr_t kNumArgsChecked = 1;  // Do not check value type.
-  InstanceCallInstr* call = new (Z) InstanceCallInstr(
-      token_pos, name, Token::kSET, arguments, Object::null_array(),
-      kNumArgsChecked, owner()->ic_data_array());
+  InstanceCallInstr* call = new (Z)
+      InstanceCallInstr(token_pos, name, Token::kSET, arguments, kTypeArgsLen,
+                        Object::null_array(), kNumArgsChecked,
+                        owner()->ic_data_array(), owner()->GetNextDeoptId());
   ReturnDefinition(call);
 }
 
@@ -2989,10 +3074,12 @@ void ValueGraphVisitor::VisitInstanceSetterNode(InstanceSetterNode* node) {
   BuildInstanceSetterArguments(node, arguments, kResultNeeded);
   const String& name =
       String::ZoneHandle(Z, Field::SetterSymbol(node->field_name()));
+  const intptr_t kTypeArgsLen = 0;
   const intptr_t kNumArgsChecked = 1;  // Do not check value type.
   Do(new (Z) InstanceCallInstr(token_pos, name, Token::kSET, arguments,
-                               Object::null_array(), kNumArgsChecked,
-                               owner()->ic_data_array()));
+                               kTypeArgsLen, Object::null_array(),
+                               kNumArgsChecked, owner()->ic_data_array(),
+                               owner()->GetNextDeoptId()));
   ReturnDefinition(BuildLoadExprTemp(token_pos));
 }
 
@@ -3054,10 +3141,11 @@ void EffectGraphVisitor::VisitStaticGetterNode(StaticGetterNode* node) {
     }
   }
   ASSERT(!getter_function.IsNull());
-  StaticCallInstr* call =
-      new (Z) StaticCallInstr(node->token_pos(), getter_function,
-                              Object::null_array(),  // No names
-                              arguments, owner()->ic_data_array());
+  const intptr_t kTypeArgsLen = 0;
+  StaticCallInstr* call = new (Z) StaticCallInstr(
+      node->token_pos(), getter_function, kTypeArgsLen,
+      Object::null_array(),  // No names
+      arguments, owner()->ic_data_array(), owner()->GetNextDeoptId());
   ReturnDefinition(call);
 }
 
@@ -3116,10 +3204,11 @@ void EffectGraphVisitor::BuildStaticSetter(StaticSetterNode* node,
       value = for_value.value();
     }
     arguments->Add(PushArgument(value));
-
-    call = new (Z) StaticCallInstr(token_pos, setter_function,
+    const intptr_t kTypeArgsLen = 0;
+    call = new (Z) StaticCallInstr(token_pos, setter_function, kTypeArgsLen,
                                    Object::null_array(),  // No names.
-                                   arguments, owner()->ic_data_array());
+                                   arguments, owner()->ic_data_array(),
+                                   owner()->GetNextDeoptId());
   }
   if (result_is_needed) {
     Do(call);
@@ -3211,8 +3300,9 @@ void EffectGraphVisitor::VisitNativeBodyNode(NativeBodyNode* node) {
         Value* other = Bind(new (Z) LoadLocalInstr(*other_var, token_pos));
         // Receiver is not a number because numbers override equality.
         const bool kNoNumberCheck = false;
-        StrictCompareInstr* compare = new (Z) StrictCompareInstr(
-            token_pos, Token::kEQ_STRICT, receiver, other, kNoNumberCheck);
+        StrictCompareInstr* compare = new (Z)
+            StrictCompareInstr(token_pos, Token::kEQ_STRICT, receiver, other,
+                               kNoNumberCheck, owner()->GetNextDeoptId());
         return ReturnDefinition(compare);
       }
       case MethodRecognizer::kStringBaseLength:
@@ -3232,9 +3322,9 @@ void EffectGraphVisitor::VisitNativeBodyNode(NativeBodyNode* node) {
         Value* zero_val =
             Bind(new (Z) ConstantInstr(Smi::ZoneHandle(Z, Smi::New(0))));
         Value* load_val = Bind(load);
-        StrictCompareInstr* compare = new (Z)
-            StrictCompareInstr(token_pos, Token::kEQ_STRICT, load_val, zero_val,
-                               false);  // No number check.
+        StrictCompareInstr* compare = new (Z) StrictCompareInstr(
+            token_pos, Token::kEQ_STRICT, load_val, zero_val, false,
+            owner()->GetNextDeoptId());  // No number check.
         return ReturnDefinition(compare);
       }
       case MethodRecognizer::kGrowableArrayLength:
@@ -3277,8 +3367,8 @@ void EffectGraphVisitor::VisitNativeBodyNode(NativeBodyNode* node) {
             node->scope()->LookupVariable(Symbols::Length(), true);
         Value* length =
             Bind(new (Z) LoadLocalInstr(*length_parameter, token_pos));
-        CreateArrayInstr* create_array =
-            new CreateArrayInstr(token_pos, element_type, length);
+        CreateArrayInstr* create_array = new CreateArrayInstr(
+            token_pos, element_type, length, owner()->GetNextDeoptId());
         return ReturnDefinition(create_array);
       }
       case MethodRecognizer::kBigint_getDigits: {
@@ -3389,8 +3479,9 @@ void EffectGraphVisitor::VisitStoreLocalNode(StoreLocalNode* node) {
           !rhs->AsLoadLocalNode()->local().IsInternal()) ||
          rhs->IsClosureNode()) &&
         !node->local().IsInternal() && node->token_pos().IsDebugPause()) {
-      AddInstruction(new (Z) DebugStepCheckInstr(
-          node->token_pos(), RawPcDescriptors::kRuntimeCall));
+      AddInstruction(new (Z) DebugStepCheckInstr(node->token_pos(),
+                                                 RawPcDescriptors::kRuntimeCall,
+                                                 owner()->GetNextDeoptId()));
     }
   }
 
@@ -3432,7 +3523,7 @@ void EffectGraphVisitor::VisitStoreInstanceFieldNode(
   node->value()->Visit(&for_value);
   Append(for_value);
   Value* store_value = for_value.value();
-  if (Isolate::Current()->type_checks()) {
+  if (isolate()->type_checks()) {
     const AbstractType& type =
         AbstractType::ZoneHandle(Z, node->field().type());
     const String& dst_name = String::ZoneHandle(Z, node->field().name());
@@ -3440,7 +3531,7 @@ void EffectGraphVisitor::VisitStoreInstanceFieldNode(
                                        type, dst_name);
   }
 
-  if (FLAG_use_field_guards) {
+  if (isolate()->use_field_guards()) {
     store_value = Bind(BuildStoreExprTemp(store_value, token_pos));
     GuardFieldClassInstr* guard_field_class = new (Z) GuardFieldClassInstr(
         store_value, node->field(), thread()->GetNextDeoptId());
@@ -3492,8 +3583,9 @@ Definition* EffectGraphVisitor::BuildStoreStaticField(
     if ((rhs->IsLiteralNode() || rhs->IsLoadLocalNode() ||
          rhs->IsLoadStaticFieldNode() || rhs->IsClosureNode()) &&
         node->token_pos().IsDebugPause()) {
-      AddInstruction(new (Z) DebugStepCheckInstr(
-          node->token_pos(), RawPcDescriptors::kRuntimeCall));
+      AddInstruction(new (Z) DebugStepCheckInstr(node->token_pos(),
+                                                 RawPcDescriptors::kRuntimeCall,
+                                                 owner()->GetNextDeoptId()));
     }
   }
 
@@ -3563,18 +3655,20 @@ void EffectGraphVisitor::VisitLoadIndexedNode(LoadIndexedNode* node) {
   Append(for_index);
   arguments->Add(PushArgument(for_index.value()));
 
+  const intptr_t kTypeArgsLen = 0;
   if (super_function != NULL) {
     // Generate static call to super operator.
     StaticCallInstr* load = new (Z) StaticCallInstr(
-        node->token_pos(), *super_function, Object::null_array(), arguments,
-        owner()->ic_data_array());
+        node->token_pos(), *super_function, kTypeArgsLen, Object::null_array(),
+        arguments, owner()->ic_data_array(), owner()->GetNextDeoptId());
     ReturnDefinition(load);
   } else {
     // Generate dynamic call to index operator.
     const intptr_t checked_argument_count = 1;
     InstanceCallInstr* load = new (Z) InstanceCallInstr(
         node->token_pos(), Symbols::IndexToken(), Token::kINDEX, arguments,
-        Object::null_array(), checked_argument_count, owner()->ic_data_array());
+        kTypeArgsLen, Object::null_array(), checked_argument_count,
+        owner()->ic_data_array(), owner()->GetNextDeoptId());
     ReturnDefinition(load);
   }
 }
@@ -3634,12 +3728,13 @@ Definition* EffectGraphVisitor::BuildStoreIndexedValues(StoreIndexedNode* node,
   }
   arguments->Add(PushArgument(value));
 
+  const intptr_t kTypeArgsLen = 0;
   if (super_function != NULL) {
     // Generate static call to super operator []=.
 
-    StaticCallInstr* store = new (Z)
-        StaticCallInstr(token_pos, *super_function, Object::null_array(),
-                        arguments, owner()->ic_data_array());
+    StaticCallInstr* store = new (Z) StaticCallInstr(
+        token_pos, *super_function, kTypeArgsLen, Object::null_array(),
+        arguments, owner()->ic_data_array(), owner()->GetNextDeoptId());
     if (result_is_needed) {
       Do(store);
       return BuildLoadExprTemp(token_pos);
@@ -3651,7 +3746,8 @@ Definition* EffectGraphVisitor::BuildStoreIndexedValues(StoreIndexedNode* node,
     const intptr_t checked_argument_count = 2;  // Do not check for value type.
     InstanceCallInstr* store = new (Z) InstanceCallInstr(
         token_pos, Symbols::AssignIndexToken(), Token::kASSIGN_INDEX, arguments,
-        Object::null_array(), checked_argument_count, owner()->ic_data_array());
+        kTypeArgsLen, Object::null_array(), checked_argument_count,
+        owner()->ic_data_array(), owner()->GetNextDeoptId());
     if (result_is_needed) {
       Do(store);
       return BuildLoadExprTemp(token_pos);
@@ -3801,6 +3897,78 @@ void EffectGraphVisitor::VisitSequenceNode(SequenceNode* node) {
     }
   }
 
+  // Load the passed-in type argument vector from the temporary stack slot,
+  // prepend the function type arguments of the generic parent function, and
+  // store it to the final location, possibly in the context.
+  if (FLAG_reify_generic_functions && is_top_level_sequence &&
+      function.IsGeneric()) {
+    const ParsedFunction& parsed_function = owner()->parsed_function();
+    LocalVariable* type_args_var = parsed_function.function_type_arguments();
+    ASSERT(type_args_var->owner() == scope);
+    LocalVariable* parent_type_args_var =
+        parsed_function.parent_type_arguments();
+    if (type_args_var->is_captured() || (parent_type_args_var != NULL)) {
+      // Create a temporary local describing the original position.
+      const String& temp_name = Symbols::TempParam();
+      LocalVariable* temp_local =
+          new (Z) LocalVariable(TokenPosition::kNoSource,  // Token index.
+                                TokenPosition::kNoSource,  // Token index.
+                                temp_name,
+                                Object::dynamic_type());  // Type.
+      temp_local->set_index(parsed_function.first_stack_local_index());
+
+      // Mark this local as captured parameter so that the optimizer
+      // correctly handles these when compiling try-catch: Captured
+      // parameters are not in the stack environment, therefore they
+      // must be skipped when emitting sync-code in try-blocks.
+      temp_local->set_is_captured_parameter(true);  // TODO(regis): Correct?
+
+      Value* type_args_val =
+          Bind(BuildLoadLocal(*temp_local, node->token_pos()));
+      if (parent_type_args_var != NULL) {
+        ASSERT(parent_type_args_var->owner() != scope);
+        // Call the runtime to concatenate both vectors.
+        ZoneGrowableArray<PushArgumentInstr*>* arguments =
+            new (Z) ZoneGrowableArray<PushArgumentInstr*>(3);
+        arguments->Add(PushArgument(type_args_val));
+        Value* parent_type_args_val =
+            Bind(BuildLoadLocal(*parent_type_args_var, node->token_pos()));
+        arguments->Add(PushArgument(parent_type_args_val));
+        Value* len_const = Bind(new (Z) ConstantInstr(
+            Smi::ZoneHandle(Z, Smi::New(function.NumTypeParameters() +
+                                        function.NumParentTypeParameters()))));
+        arguments->Add(PushArgument(len_const));
+        const Library& dart_internal =
+            Library::Handle(Z, Library::InternalLibrary());
+        const Function& prepend_function =
+            Function::ZoneHandle(Z, dart_internal.LookupFunctionAllowPrivate(
+                                        Symbols::PrependTypeArguments()));
+        ASSERT(!prepend_function.IsNull());
+        const intptr_t kTypeArgsLen = 0;
+        type_args_val = Bind(new (Z) StaticCallInstr(
+            node->token_pos(), prepend_function, kTypeArgsLen,
+            Object::null_array(),  // No names.
+            arguments, owner()->ic_data_array(), owner()->GetNextDeoptId()));
+      }
+      Do(BuildStoreLocal(*type_args_var, type_args_val, ST(node->token_pos())));
+      if (type_args_var->is_captured()) {
+        // Write NULL to the source location to detect buggy accesses and
+        // allow GC of passed value if it gets overwritten by a new value in
+        // the function.
+        Value* null_constant =
+            Bind(new (Z) ConstantInstr(Object::ZoneHandle(Z, Object::null())));
+        Do(BuildStoreLocal(*temp_local, null_constant, ST(node->token_pos())));
+      } else {
+        // Do not write NULL, since the temp is also the final location.
+        ASSERT(temp_local->index() == type_args_var->index());
+      }
+    } else {
+      // The type args slot is the final location. No copy needed.
+      ASSERT(type_args_var->index() ==
+             parsed_function.first_stack_local_index());
+    }
+  }
+
   if (FLAG_causal_async_stacks && is_top_level_sequence &&
       (function.IsAsyncClosure() || function.IsAsyncGenClosure())) {
     LocalScope* top_scope = node->scope();
@@ -3821,10 +3989,12 @@ void EffectGraphVisitor::VisitSequenceNode(SequenceNode* node) {
         Z, isolate()->object_store()->async_set_thread_stack_trace());
     ASSERT(!async_set_thread_stack_trace.IsNull());
     // Call _asyncSetThreadStackTrace
+    const intptr_t kTypeArgsLen = 0;
     StaticCallInstr* call_async_set_thread_stack_trace = new (Z)
         StaticCallInstr(node->token_pos().ToSynthetic(),
-                        async_set_thread_stack_trace, Object::null_array(),
-                        arguments, owner()->ic_data_array());
+                        async_set_thread_stack_trace, kTypeArgsLen,
+                        Object::null_array(), arguments,
+                        owner()->ic_data_array(), owner()->GetNextDeoptId());
     Do(call_async_set_thread_stack_trace);
   }
 
@@ -3842,13 +4012,13 @@ void EffectGraphVisitor::VisitSequenceNode(SequenceNode* node) {
       check_pos = parameter.token_pos();
     }
 
-    if (!check_pos.IsDebugPause()) {
-      // No parameters or synthetic parameters.
+    if (check_pos.IsNoSource() || (check_pos.Pos() < node->token_pos().Pos())) {
+      // No parameters or synthetic parameters, e.g. 'this'.
       check_pos = node->token_pos();
       ASSERT(check_pos.IsDebugPause());
     }
-    AddInstruction(
-        new (Z) DebugStepCheckInstr(check_pos, RawPcDescriptors::kRuntimeCall));
+    AddInstruction(new (Z) DebugStepCheckInstr(
+        check_pos, RawPcDescriptors::kRuntimeCall, owner()->GetNextDeoptId()));
   }
 
   // This check may be deleted if the generated code is leaf.
@@ -3858,8 +4028,8 @@ void EffectGraphVisitor::VisitSequenceNode(SequenceNode* node) {
     // if we inline or not.
     if (!function.IsImplicitGetterFunction() &&
         !function.IsImplicitSetterFunction()) {
-      CheckStackOverflowInstr* check =
-          new (Z) CheckStackOverflowInstr(node->token_pos(), 0);
+      CheckStackOverflowInstr* check = new (Z) CheckStackOverflowInstr(
+          node->token_pos(), 0, owner()->GetNextDeoptId());
       // If we are inlining don't actually attach the stack check. We must still
       // create the stack check in order to allocate a deopt id.
       if (!owner()->IsInlining()) {
@@ -3899,8 +4069,9 @@ void EffectGraphVisitor::VisitSequenceNode(SequenceNode* node) {
   if (is_top_level_sequence &&
       (function.IsAsyncClosure() || function.IsSyncGenClosure() ||
        function.IsAsyncGenClosure())) {
-    JoinEntryInstr* preamble_end = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    JoinEntryInstr* preamble_end =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
     ASSERT(exit() != NULL);
     exit()->Goto(preamble_end);
     ASSERT(exit()->next()->IsGoto());
@@ -4042,13 +4213,14 @@ void EffectGraphVisitor::VisitTryCatchNode(TryCatchNode* node) {
 
   if (for_try.is_open()) {
     JoinEntryInstr* after_try = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), original_handler_index);
+        JoinEntryInstr(owner()->AllocateBlockId(), original_handler_index,
+                       owner()->GetNextDeoptId());
     for_try.Goto(after_try);
     for_try.exit_ = after_try;
   }
 
-  JoinEntryInstr* try_entry =
-      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), try_handler_index);
+  JoinEntryInstr* try_entry = new (Z) JoinEntryInstr(
+      owner()->AllocateBlockId(), try_handler_index, owner()->GetNextDeoptId());
 
   Goto(try_entry);
   AppendFragment(try_entry, for_try);
@@ -4078,16 +4250,18 @@ void EffectGraphVisitor::VisitTryCatchNode(TryCatchNode* node) {
   ASSERT(!catch_block->stacktrace_var().is_captured());
 
   CatchBlockEntryInstr* catch_entry = new (Z) CatchBlockEntryInstr(
+      catch_block->token_pos(), (node->token_pos() == TokenPosition::kNoSource),
       owner()->AllocateBlockId(), catch_handler_index, owner()->graph_entry(),
       catch_block->handler_types(), try_handler_index,
       catch_block->exception_var(), catch_block->stacktrace_var(),
-      catch_block->needs_stacktrace(), Thread::Current()->GetNextDeoptId());
+      catch_block->needs_stacktrace(), owner()->GetNextDeoptId());
   owner()->AddCatchEntry(catch_entry);
   AppendFragment(catch_entry, for_catch);
 
   if (for_catch.is_open()) {
     JoinEntryInstr* join = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), original_handler_index);
+        JoinEntryInstr(owner()->AllocateBlockId(), original_handler_index,
+                       owner()->GetNextDeoptId());
     for_catch.Goto(join);
     if (is_open()) Goto(join);
     exit_ = join;
@@ -4112,7 +4286,8 @@ void EffectGraphVisitor::VisitTryCatchNode(TryCatchNode* node) {
           catch_block->rethrow_stacktrace_var(), finally_block->token_pos()));
       for_finally.PushArgument(stacktrace);
       for_finally.AddInstruction(
-          new (Z) ReThrowInstr(catch_block->token_pos(), catch_handler_index));
+          new (Z) ReThrowInstr(catch_block->token_pos(), catch_handler_index,
+                               owner()->GetNextDeoptId()));
       for_finally.CloseFragment();
     }
     ASSERT(!for_finally.is_open());
@@ -4120,10 +4295,12 @@ void EffectGraphVisitor::VisitTryCatchNode(TryCatchNode* node) {
     const Array& types = Array::ZoneHandle(Z, Array::New(1, Heap::kOld));
     types.SetAt(0, Object::dynamic_type());
     CatchBlockEntryInstr* finally_entry = new (Z) CatchBlockEntryInstr(
+        finally_block->token_pos(),
+        true,  // this is not a catch block from user code.
         owner()->AllocateBlockId(), original_handler_index,
         owner()->graph_entry(), types, catch_handler_index,
         catch_block->exception_var(), catch_block->stacktrace_var(),
-        catch_block->needs_stacktrace(), Thread::Current()->GetNextDeoptId());
+        catch_block->needs_stacktrace(), owner()->GetNextDeoptId());
     owner()->AddCatchEntry(finally_entry);
     AppendFragment(finally_entry, for_finally);
   }
@@ -4155,9 +4332,10 @@ StaticCallInstr* EffectGraphVisitor::BuildStaticNoSuchMethodCall(
       args_pos, method_name, *method_arguments, temp, is_super_invocation);
   // Make sure we resolve to a compatible noSuchMethod, otherwise call
   // noSuchMethod of class Object.
+  const int kTypeArgsLen = 0;
   const int kNumArguments = 2;
-  ArgumentsDescriptor args_desc(
-      Array::ZoneHandle(Z, ArgumentsDescriptor::New(kNumArguments)));
+  ArgumentsDescriptor args_desc(Array::ZoneHandle(
+      Z, ArgumentsDescriptor::New(kTypeArgsLen, kNumArguments)));
   Function& no_such_method_func = Function::ZoneHandle(
       Z, Resolver::ResolveDynamicForReceiverClass(
              target_class, Symbols::NoSuchMethod(), args_desc));
@@ -4172,9 +4350,9 @@ StaticCallInstr* EffectGraphVisitor::BuildStaticNoSuchMethodCall(
   ZoneGrowableArray<PushArgumentInstr*>* push_arguments =
       new (Z) ZoneGrowableArray<PushArgumentInstr*>(2);
   BuildPushArguments(*args, push_arguments);
-  return new (Z)
-      StaticCallInstr(args_pos, no_such_method_func, Object::null_array(),
-                      push_arguments, owner()->ic_data_array());
+  return new (Z) StaticCallInstr(
+      args_pos, no_such_method_func, kTypeArgsLen, Object::null_array(),
+      push_arguments, owner()->ic_data_array(), owner()->GetNextDeoptId());
 }
 
 
@@ -4188,11 +4366,9 @@ StaticCallInstr* EffectGraphVisitor::BuildThrowNoSuchMethodError(
       new (Z) ZoneGrowableArray<PushArgumentInstr*>();
   // Object receiver, actually a class literal of the unresolved method's owner.
   AbstractType& type = Type::ZoneHandle(
-      Z,
-      Type::New(function_class, TypeArguments::Handle(Z, TypeArguments::null()),
-                token_pos, Heap::kOld));
-  type ^= ClassFinalizer::FinalizeType(function_class, type,
-                                       ClassFinalizer::kCanonicalize);
+      Z, Type::New(function_class, Object::null_type_arguments(), token_pos,
+                   Heap::kOld));
+  type ^= ClassFinalizer::FinalizeType(function_class, type);
   Value* receiver_value = Bind(new (Z) ConstantInstr(type));
   arguments->Add(PushArgument(receiver_value));
   // String memberName.
@@ -4234,14 +4410,16 @@ StaticCallInstr* EffectGraphVisitor::BuildThrowNoSuchMethodError(
   const Class& cls =
       Class::Handle(Z, core_lib.LookupClass(Symbols::NoSuchMethodError()));
   ASSERT(!cls.IsNull());
+  const intptr_t kTypeArgsLen = 0;
   const Function& func = Function::ZoneHandle(
       Z, Resolver::ResolveStatic(
              cls, Library::PrivateCoreLibName(Symbols::ThrowNew()),
-             arguments->length(), Object::null_array()));
+             kTypeArgsLen, arguments->length(), Object::null_array()));
   ASSERT(!func.IsNull());
-  return new (Z) StaticCallInstr(token_pos, func,
+  return new (Z) StaticCallInstr(token_pos, func, kTypeArgsLen,
                                  Object::null_array(),  // No names.
-                                 arguments, owner()->ic_data_array());
+                                 arguments, owner()->ic_data_array(),
+                                 owner()->GetNextDeoptId());
 }
 
 
@@ -4251,8 +4429,9 @@ void EffectGraphVisitor::BuildThrowNode(ThrowNode* node) {
         node->exception()->IsLoadLocalNode() ||
         node->exception()->IsLoadStaticFieldNode() ||
         node->exception()->IsClosureNode()) {
-      AddInstruction(new (Z) DebugStepCheckInstr(
-          node->token_pos(), RawPcDescriptors::kRuntimeCall));
+      AddInstruction(new (Z) DebugStepCheckInstr(node->token_pos(),
+                                                 RawPcDescriptors::kRuntimeCall,
+                                                 owner()->GetNextDeoptId()));
     }
   }
   ValueGraphVisitor for_exception(owner());
@@ -4261,13 +4440,14 @@ void EffectGraphVisitor::BuildThrowNode(ThrowNode* node) {
   PushArgument(for_exception.value());
   Instruction* instr = NULL;
   if (node->stacktrace() == NULL) {
-    instr = new (Z) ThrowInstr(node->token_pos());
+    instr = new (Z) ThrowInstr(node->token_pos(), owner()->GetNextDeoptId());
   } else {
     ValueGraphVisitor for_stack_trace(owner());
     node->stacktrace()->Visit(&for_stack_trace);
     Append(for_stack_trace);
     PushArgument(for_stack_trace.value());
-    instr = new (Z) ReThrowInstr(node->token_pos(), owner()->catch_try_index());
+    instr = new (Z) ReThrowInstr(node->token_pos(), owner()->catch_try_index(),
+                                 owner()->GetNextDeoptId());
   }
   AddInstruction(instr);
 }
@@ -4307,7 +4487,8 @@ void EffectGraphVisitor::VisitInlinedFinallyNode(InlinedFinallyNode* node) {
   // context variable.
 
   JoinEntryInstr* finally_entry =
-      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+      new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                             owner()->GetNextDeoptId());
   EffectGraphVisitor for_finally_block(owner());
   for_finally_block.AdjustContextLevel(node->finally_block()->scope());
   node->finally_block()->Visit(&for_finally_block);
@@ -4317,8 +4498,9 @@ void EffectGraphVisitor::VisitInlinedFinallyNode(InlinedFinallyNode* node) {
   }
 
   if (for_finally_block.is_open()) {
-    JoinEntryInstr* after_finally = new (Z)
-        JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index());
+    JoinEntryInstr* after_finally =
+        new (Z) JoinEntryInstr(owner()->AllocateBlockId(), owner()->try_index(),
+                               owner()->GetNextDeoptId());
     for_finally_block.Goto(after_finally);
     for_finally_block.exit_ = after_finally;
   }
@@ -4348,8 +4530,8 @@ FlowGraph* FlowGraphBuilder::BuildGraph() {
     AstPrinter ast_printer;
     ast_printer.PrintFunctionScope(parsed_function());
   }
-  TargetEntryInstr* normal_entry = new (Z)
-      TargetEntryInstr(AllocateBlockId(), CatchClauseNode::kInvalidTryIndex);
+  TargetEntryInstr* normal_entry = new (Z) TargetEntryInstr(
+      AllocateBlockId(), CatchClauseNode::kInvalidTryIndex, GetNextDeoptId());
   graph_entry_ =
       new (Z) GraphEntryInstr(parsed_function(), normal_entry, osr_id_);
   EffectGraphVisitor for_effect(this);
@@ -4358,30 +4540,45 @@ FlowGraph* FlowGraphBuilder::BuildGraph() {
   // Check that the graph is properly terminated.
   ASSERT(!for_effect.is_open());
 
-  // When compiling for OSR, use a depth first search to prune instructions
-  // unreachable from the OSR entry. Catch entries are always considered
-  // reachable, even if they become unreachable after OSR.
+  // When compiling for OSR, use a depth first search to find the OSR
+  // entry and make graph entry jump to it instead of normal entry.
+  // Catch entries are always considered reachable, even if they
+  // become unreachable after OSR.
   if (osr_id_ != Compiler::kNoOSRDeoptId) {
-    PruneUnreachable();
+    graph_entry_->RelinkToOsrEntry(Z, last_used_block_id_);
   }
 
   FlowGraph* graph =
       new (Z) FlowGraph(parsed_function(), graph_entry_, last_used_block_id_);
+  graph->set_await_token_positions(await_token_positions_);
   return graph;
 }
 
 
-void FlowGraphBuilder::PruneUnreachable() {
-  ASSERT(osr_id_ != Compiler::kNoOSRDeoptId);
-  BitVector* block_marks = new (Z) BitVector(Z, last_used_block_id_ + 1);
-  bool found =
-      graph_entry_->PruneUnreachable(graph_entry_, NULL, osr_id_, block_marks);
-  ASSERT(found);
+void FlowGraphBuilder::AppendAwaitTokenPosition(TokenPosition token_pos) {
+  await_token_positions_->Add(token_pos);
 }
 
 
 void FlowGraphBuilder::Bailout(const char* reason) const {
   parsed_function_.Bailout("FlowGraphBuilder", reason);
+}
+
+
+bool FlowGraphBuilder::SimpleInstanceOfType(const AbstractType& type) {
+  // Bail if the type is still uninstantiated at compile time.
+  if (!type.IsInstantiated()) return false;
+
+  // Bail if the type is a function or a Dart Function type.
+  if (type.IsFunctionType() || type.IsDartFunctionType()) return false;
+
+  ASSERT(type.HasResolvedTypeClass());
+  const Class& type_class = Class::Handle(type.type_class());
+  // Bail if the type has any type parameters.
+  if (type_class.IsGeneric()) return false;
+
+  // Finally a simple class for instance of checking.
+  return true;
 }
 
 }  // namespace dart

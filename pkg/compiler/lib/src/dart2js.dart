@@ -4,7 +4,7 @@
 
 library dart2js.cmdline;
 
-import 'dart:async' show EventSink, Future;
+import 'dart:async' show Future;
 import 'dart:convert' show UTF8, LineSplitter;
 import 'dart:io' show exit, File, FileMode, Platform, stdin, stderr;
 
@@ -104,6 +104,7 @@ void parseCommandLine(List<OptionHandler> handlers, List<String> argv) {
 FormattingDiagnosticHandler diagnosticHandler;
 
 Future<api.CompilationResult> compile(List<String> argv) {
+  Stopwatch wallclock = new Stopwatch()..start();
   stackTraceFilePrefix = '$currentDirectory';
   Uri libraryRoot = currentDirectory;
   Uri out = currentDirectory.resolve('out.js');
@@ -130,6 +131,7 @@ Future<api.CompilationResult> compile(List<String> argv) {
   bool showWarnings;
   bool showHints;
   bool enableColors;
+  bool loadFromDill = false;
   // List of provided options that imply that output is expected.
   List<String> optionsImplyCompilation = <String>[];
   bool hasDisallowUnsafeEval = false;
@@ -200,7 +202,7 @@ Future<api.CompilationResult> compile(List<String> argv) {
     passThrough(argument);
   }
 
-  String getDepsOutput(Map<Uri, SourceFile> sourceFiles) {
+  String getDepsOutput(Map<Uri, api.Input> sourceFiles) {
     var filenames = sourceFiles.keys.map((uri) => '$uri').toList();
     filenames.sort();
     return filenames.join("\n");
@@ -276,6 +278,11 @@ Future<api.CompilationResult> compile(List<String> argv) {
     passThrough('--categories=${categories.join(",")}');
   }
 
+  void setLoadFromDill(String argument) {
+    loadFromDill = true;
+    passThrough(argument);
+  }
+
   void handleThrowOnError(String argument) {
     throwOnError = true;
     String parameter = extractParameter(argument, isOptionalArgument: true);
@@ -324,7 +331,11 @@ Future<api.CompilationResult> compile(List<String> argv) {
     new OptionHandler(
         '--output-type=dart|--output-type=dart-multi|--output-type=js',
         setOutputType),
+    // TODO(efortuna): Remove this once kernel global inference is fully
+    // implemented.
+    new OptionHandler(Flags.kernelGlobalInference, passThrough),
     new OptionHandler(Flags.useKernel, passThrough),
+    new OptionHandler(Flags.loadFromDill, setLoadFromDill),
     new OptionHandler(Flags.noFrequencyBasedMinification, passThrough),
     new OptionHandler(Flags.verbose, setVerbose),
     new OptionHandler(Flags.version, (_) => wantVersion = true),
@@ -345,6 +356,7 @@ Future<api.CompilationResult> compile(List<String> argv) {
     }),
     new OptionHandler('--enable[_-]checked[_-]mode|--checked',
         (_) => setCheckedMode(Flags.enableCheckedMode)),
+    new OptionHandler(Flags.enableAsserts, passThrough),
     new OptionHandler(Flags.trustTypeAnnotations,
         (_) => setTrustTypeAnnotations(Flags.trustTypeAnnotations)),
     new OptionHandler(Flags.trustPrimitives,
@@ -399,6 +411,14 @@ Future<api.CompilationResult> compile(List<String> argv) {
     new OptionHandler(Flags.useNewSourceInfo, passThrough),
     new OptionHandler(Flags.testMode, passThrough),
 
+    // Experimental features.
+    // We don't provide documentation for these yet.
+    // TODO(29574): provide documentation when this feature is supported.
+    // TODO(29574): provide a warning/hint/error, when profile-based data is
+    // used without `--fast-startup`.
+    new OptionHandler(Flags.experimentalTrackAllocations, passThrough),
+    new OptionHandler("${Flags.experimentalAllocationsPath}=.+", passThrough),
+
     // The following three options must come last.
     new OptionHandler('-D.+=.*', addInEnvironment),
     new OptionHandler('-.*', (String argument) {
@@ -440,6 +460,9 @@ Future<api.CompilationResult> compile(List<String> argv) {
   }
   for (String hint in hints) {
     diagnosticHandler.info(hint, api.Diagnostic.HINT);
+  }
+  if (loadFromDill) {
+    diagnosticHandler.autoReadFileUri = true;
   }
 
   if (wantHelp || wantVersion) {
@@ -527,11 +550,21 @@ Future<api.CompilationResult> compile(List<String> argv) {
     }
     writeString(
         Uri.parse('$out.deps'), getDepsOutput(inputProvider.sourceFiles));
-    diagnosticHandler
-        .info('Compiled ${inputProvider.dartCharactersRead} characters Dart '
-            '-> ${outputProvider.totalCharactersWritten} characters '
-            'JavaScript in '
-            '${relativize(currentDirectory, out, Platform.isWindows)}');
+    int dartCharactersRead = inputProvider.dartCharactersRead;
+    int jsCharactersWritten = outputProvider.totalCharactersWrittenJavaScript;
+    int jsCharactersPrimary = outputProvider.totalCharactersWrittenPrimary;
+
+    print('Compiled '
+        '${_formatCharacterCount(dartCharactersRead)} characters Dart'
+        ' to '
+        '${_formatCharacterCount(jsCharactersWritten)} characters JavaScript'
+        ' in '
+        '${_formatDurationAsSeconds(wallclock.elapsed)} seconds');
+
+    diagnosticHandler.info(
+        '${_formatCharacterCount(jsCharactersPrimary)} characters JavaScript'
+        ' in '
+        '${relativize(currentDirectory, out, Platform.isWindows)}');
     if (diagnosticHandler.verbose) {
       String input = uriPathToNative(arguments[0]);
       print('Dart file ($input) compiled to JavaScript.');
@@ -563,6 +596,28 @@ Future<api.CompilationResult> compile(List<String> argv) {
       .then(compilationDone);
 }
 
+/// Returns the non-negative integer formatted with a thousands separator.
+String _formatCharacterCount(int value, [String separator = ',']) {
+  String text = '$value';
+  // 'Insert' separators right-to-left. Inefficient, but used just a few times.
+  for (int position = text.length - 3; position > 0; position -= 3) {
+    text = text.substring(0, position) + separator + text.substring(position);
+  }
+  return text;
+}
+
+/// Formats [duration] in seconds in fixed-point format, preferring to keep the
+/// result at to below [width] characters.
+String _formatDurationAsSeconds(Duration duration, [int width = 4]) {
+  num seconds = duration.inMilliseconds / 1000.0;
+  String text;
+  for (int digits = 3; digits >= 0; digits--) {
+    text = seconds.toStringAsFixed(digits);
+    if (text.length <= width) return text;
+  }
+  return text;
+}
+
 class AbortLeg {
   final message;
   AbortLeg(this.message);
@@ -570,6 +625,7 @@ class AbortLeg {
 }
 
 void writeString(Uri uri, String text) {
+  if (!enableWriteString) return;
   if (uri.scheme != 'file') {
     fail('Unhandled scheme ${uri.scheme}.');
   }
@@ -682,11 +738,33 @@ Supported options:
     `uri` getter for `LibraryMirror`s is mangled in minified mode.
 
   --csp
-    Disables dynamic generation of code in the generated output. This is
+    Disable dynamic generation of code in the generated output. This is
     necessary to satisfy CSP restrictions (see http://www.w3.org/TR/CSP/).
 
   --no-source-maps
     Do not generate a source map file.
+
+  --fast-startup
+    Produce JavaScript that can be parsed more quickly by VMs. This option
+    usually results in larger JavaScript files with faster startup.
+    Note: the dart:mirrors library is not supported with this option.
+
+The following advanced options can help reduce the size of the generated code,
+but they may cause programs to behave unexpectedly if assumptions are not met.
+Only turn on these flags if you have enough test coverage to ensure they are
+safe to use:
+
+  --trust-type-annotations
+    Assume that all types are correct. This option allows the compiler to drop
+    type checks and to rely on local type information for optimizations. Use
+    this option only if you have enough testing to ensure that your program
+    works in strong mode or checked mode.
+
+  --trust-primitives
+    Assume that operations on numbers, strings, and lists have valid inputs.
+    This option allows the compiler to drop runtime checks for those operations.
+    Note: a well-typed program is not guaranteed to have valid inputs. For
+    example, an int index argument may be null or out of range.
 
 The following options are only used for compiler development and may
 be removed in a future version:
@@ -771,6 +849,11 @@ typedef Future<api.CompilationResult> CompileFunc(
 
 ExitFunc exitFunc = exit;
 CompileFunc compileFunc = api.compile;
+
+/// If `true` a '.deps' file will be generated after compilation.
+///
+/// Set this to `false` in end-to-end tests to avoid generating '.deps' files.
+bool enableWriteString = true;
 
 Future<api.CompilationResult> internalMain(List<String> arguments) {
   Future onError(exception, trace) {
@@ -986,12 +1069,13 @@ class _CompilerInput implements api.CompilerInput {
   _CompilerInput(this._input, this._data);
 
   @override
-  Future readFromUri(Uri uri) {
+  Future<api.Input> readFromUri(Uri uri,
+      {api.InputKind inputKind: api.InputKind.utf8}) {
     String data = _data[uri];
     if (data != null) {
-      return new Future.value(data);
+      return new Future.value(new StringSourceFile.fromUri(uri, data));
     }
-    return _input.readFromUri(uri);
+    return _input.readFromUri(uri, inputKind: inputKind);
   }
 }
 

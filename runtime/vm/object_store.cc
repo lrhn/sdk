@@ -25,6 +25,7 @@ ObjectStore::ObjectStore()
       number_type_(Type::null()),
       int_type_(Type::null()),
       integer_implementation_class_(Class::null()),
+      int64_type_(Type::null()),
       smi_class_(Class::null()),
       smi_type_(Type::null()),
       mint_class_(Class::null()),
@@ -83,7 +84,6 @@ ObjectStore::ObjectStore()
       resume_capabilities_(GrowableObjectArray::null()),
       exit_listeners_(GrowableObjectArray::null()),
       error_listeners_(GrowableObjectArray::null()),
-      empty_context_(Context::null()),
       stack_overflow_(Instance::null()),
       out_of_memory_(Instance::null()),
       preallocated_unhandled_exception_(UnhandledException::null()),
@@ -96,6 +96,9 @@ ObjectStore::ObjectStore()
       simple_instance_of_false_function_(Function::null()),
       async_clear_thread_stack_trace_(Function::null()),
       async_set_thread_stack_trace_(Function::null()),
+      async_star_move_next_helper_(Function::null()),
+      complete_on_async_return_(Function::null()),
+      async_star_stream_controller_(Class::null()),
       library_load_error_table_(Array::null()),
       unique_dynamic_targets_(Array::null()),
       token_objects_(GrowableObjectArray::null()),
@@ -244,16 +247,60 @@ void ObjectStore::InitKnownObjects() {
   Function& function = Function::Handle(zone);
   function_name ^= async_lib.PrivateName(Symbols::SetAsyncThreadStackTrace());
   ASSERT(!function_name.IsNull());
-  function ^= Resolver::ResolveStatic(async_lib, Object::null_string(),
-                                      function_name, 1, Object::null_array());
+  function ^=
+      Resolver::ResolveStatic(async_lib, Object::null_string(), function_name,
+                              0, 1, Object::null_array());
+  ASSERT(!function.IsNull());
   set_async_set_thread_stack_trace(function);
 
   function_name ^= async_lib.PrivateName(Symbols::ClearAsyncThreadStackTrace());
   ASSERT(!function_name.IsNull());
-  function ^= Resolver::ResolveStatic(async_lib, Object::null_string(),
-                                      function_name, 0, Object::null_array());
+  function ^=
+      Resolver::ResolveStatic(async_lib, Object::null_string(), function_name,
+                              0, 0, Object::null_array());
   ASSERT(!function.IsNull());
   set_async_clear_thread_stack_trace(function);
+
+
+  function_name ^= async_lib.PrivateName(Symbols::AsyncStarMoveNextHelper());
+  ASSERT(!function_name.IsNull());
+  function ^=
+      Resolver::ResolveStatic(async_lib, Object::null_string(), function_name,
+                              0, 1, Object::null_array());
+  ASSERT(!function.IsNull());
+  set_async_star_move_next_helper(function);
+
+  function_name ^= async_lib.PrivateName(Symbols::_CompleteOnAsyncReturn());
+  ASSERT(!function_name.IsNull());
+  function ^=
+      Resolver::ResolveStatic(async_lib, Object::null_string(), function_name,
+                              0, 2, Object::null_array());
+  ASSERT(!function.IsNull());
+  set_complete_on_async_return(function);
+  if (FLAG_async_debugger) {
+    // Disable debugging and inlining the _CompleteOnAsyncReturn function.
+    function.set_is_debuggable(false);
+    function.set_is_inlinable(false);
+  }
+
+  cls =
+      async_lib.LookupClassAllowPrivate(Symbols::_AsyncStarStreamController());
+  ASSERT(!cls.IsNull());
+  set_async_star_stream_controller(cls);
+
+  if (FLAG_async_debugger) {
+    // Disable debugging and inlining of all functions on the
+    // _AsyncStarStreamController class.
+    const Array& functions = Array::Handle(cls.functions());
+    for (intptr_t i = 0; i < functions.Length(); i++) {
+      function ^= functions.At(i);
+      if (function.IsNull()) {
+        break;
+      }
+      function.set_is_debuggable(false);
+      function.set_is_inlinable(false);
+    }
+  }
 
   const Library& internal_lib = Library::Handle(_internal_library());
   cls = internal_lib.LookupClass(Symbols::Symbol());

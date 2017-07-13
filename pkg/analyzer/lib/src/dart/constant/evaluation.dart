@@ -422,7 +422,8 @@ class ConstantEvaluationEngine {
       List<Expression> arguments,
       ConstructorElement constructor,
       ConstantVisitor constantVisitor,
-      ErrorReporter errorReporter) {
+      ErrorReporter errorReporter,
+      {ConstructorInvocation invocation}) {
     if (!getConstructorImpl(constructor).isCycleFree) {
       // It's not safe to evaluate this constructor, so bail out.
       // TODO(paulberry): ensure that a reasonable error message is produced
@@ -434,6 +435,7 @@ class ConstantEvaluationEngine {
     int argumentCount = arguments.length;
     List<DartObjectImpl> argumentValues =
         new List<DartObjectImpl>(argumentCount);
+    List<DartObjectImpl> positionalArguments = <DartObjectImpl>[];
     List<Expression> argumentNodes = new List<Expression>(argumentCount);
     HashMap<String, DartObjectImpl> namedArgumentValues =
         new HashMap<String, DartObjectImpl>();
@@ -448,9 +450,15 @@ class ConstantEvaluationEngine {
         namedArgumentNodes[name] = argument;
         argumentValues[i] = typeProvider.nullObject;
       } else {
-        argumentValues[i] = constantVisitor._valueOf(argument);
+        var argumentValue = constantVisitor._valueOf(argument);
+        argumentValues[i] = argumentValue;
+        positionalArguments.add(argumentValue);
         argumentNodes[i] = argument;
       }
+    }
+    if (invocation == null) {
+      invocation = new ConstructorInvocation(
+          constructor, positionalArguments, namedArgumentValues);
     }
     constructor = followConstantRedirectionChain(constructor);
     InterfaceType definingClass = constructor.returnType as InterfaceType;
@@ -467,7 +475,7 @@ class ConstantEvaluationEngine {
         }
         String variableName =
             argumentCount < 1 ? null : argumentValues[0].toStringValue();
-        if (identical(definingClass, typeProvider.boolType)) {
+        if (definingClass == typeProvider.boolType) {
           DartObject valueFromEnvironment;
           valueFromEnvironment =
               _declaredVariables.getBool(typeProvider, variableName);
@@ -475,7 +483,7 @@ class ConstantEvaluationEngine {
               valueFromEnvironment,
               new DartObjectImpl(typeProvider.boolType, BoolState.FALSE_STATE),
               namedArgumentValues);
-        } else if (identical(definingClass, typeProvider.intType)) {
+        } else if (definingClass == typeProvider.intType) {
           DartObject valueFromEnvironment;
           valueFromEnvironment =
               _declaredVariables.getInt(typeProvider, variableName);
@@ -483,7 +491,7 @@ class ConstantEvaluationEngine {
               valueFromEnvironment,
               new DartObjectImpl(typeProvider.nullType, NullState.NULL_STATE),
               namedArgumentValues);
-        } else if (identical(definingClass, typeProvider.stringType)) {
+        } else if (definingClass == typeProvider.stringType) {
           DartObject valueFromEnvironment;
           valueFromEnvironment =
               _declaredVariables.getString(typeProvider, variableName);
@@ -493,7 +501,7 @@ class ConstantEvaluationEngine {
               namedArgumentValues);
         }
       } else if (constructor.name == "" &&
-          identical(definingClass, typeProvider.symbolType) &&
+          definingClass == typeProvider.symbolType &&
           argumentCount == 1) {
         if (!checkSymbolArguments(
             arguments, argumentValues, namedArgumentValues)) {
@@ -542,7 +550,35 @@ class ConstantEvaluationEngine {
     }
 
     var fieldMap = new HashMap<String, DartObjectImpl>();
-    var fieldInitVisitor = new ConstantVisitor(this, errorReporter,
+
+    // The errors reported while computing values for field initializers, or
+    // default values for the constructor parameters, cannot be reported
+    // into the current ErrorReporter, because they usually happen in a
+    // different source. But they still should cause a constant evaluation
+    // error for the current node.
+    var externalErrorListener = new RecordingErrorListener();
+    var externalErrorReporter =
+        new ErrorReporter(externalErrorListener, constructor.source);
+
+    void reportLocalErrorForRecordedExternalErrors() {
+      ErrorCode errorCode;
+      for (AnalysisError error in externalErrorListener.errors) {
+        if (error.errorCode is CompileTimeErrorCode) {
+          errorCode = CompileTimeErrorCode.CONST_EVAL_THROWS_EXCEPTION;
+          break;
+        }
+        if (error.errorCode is CheckedModeCompileTimeErrorCode) {
+          errorCode =
+              CheckedModeCompileTimeErrorCode.CONST_EVAL_THROWS_EXCEPTION;
+          break;
+        }
+      }
+      if (errorCode != null) {
+        errorReporter.reportErrorForNode(errorCode, node);
+      }
+    }
+
+    var fieldInitVisitor = new ConstantVisitor(this, externalErrorReporter,
         lexicalEnvironment: typeArgumentMap);
     // Start with final fields that are initialized at their declaration site.
     List<FieldElement> fields = constructor.enclosingElement.fields;
@@ -665,7 +701,7 @@ class ConstantEvaluationEngine {
       }
     }
     ConstantVisitor initializerVisitor = new ConstantVisitor(
-        this, errorReporter,
+        this, externalErrorReporter,
         lexicalEnvironment: parameterMap);
     String superName = null;
     NodeList<Expression> superArguments = null;
@@ -704,12 +740,18 @@ class ConstantEvaluationEngine {
         // it redirects to.
         ConstructorElement constructor = initializer.staticElement;
         if (constructor != null && constructor.isConst) {
-          return evaluateConstructorCall(
+          // Instantiate the constructor with the in-scope type arguments.
+          constructor = ConstructorMember.from(constructor, definingClass);
+
+          DartObjectImpl result = evaluateConstructorCall(
               node,
               initializer.argumentList.arguments,
               constructor,
               initializerVisitor,
-              errorReporter);
+              externalErrorReporter,
+              invocation: invocation);
+          reportLocalErrorForRecordedExternalErrors();
+          return result;
         }
       }
     }
@@ -720,14 +762,16 @@ class ConstantEvaluationEngine {
           superclass.lookUpConstructor(superName, constructor.library);
       if (superConstructor != null) {
         if (superArguments == null) {
-          superArguments = astFactory.nodeList/*<Expression>*/(null);
+          superArguments = astFactory.nodeList<Expression>(null);
         }
 
         evaluateSuperConstructorCall(node, fieldMap, superConstructor,
-            superArguments, initializerVisitor, errorReporter);
+            superArguments, initializerVisitor, externalErrorReporter);
       }
     }
-    return new DartObjectImpl(definingClass, new GenericState(fieldMap));
+    reportLocalErrorForRecordedExternalErrors();
+    return new DartObjectImpl(
+        definingClass, new GenericState(fieldMap, invocation: invocation));
   }
 
   void evaluateSuperConstructorCall(

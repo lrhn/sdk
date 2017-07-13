@@ -12,8 +12,8 @@ import 'package:compiler/src/js/js.dart' show js;
 Future testStatement(String statement, arguments, String expect) {
   jsAst.Node node = js.statement(statement, arguments);
   return MockCompiler.create((MockCompiler compiler) {
-    String jsText =
-        jsAst.prettyPrint(node, compiler, allowVariableMinification: false);
+    String jsText = jsAst.prettyPrint(node, compiler.options,
+        allowVariableMinification: false);
 
     Expect.stringEquals(expect.trim(), jsText.trim());
   });
@@ -28,7 +28,7 @@ Future testError(String statement, arguments, [String expect = ""]) {
     }
 
     void action() {
-      jsAst.Node node = js.statement(statement, arguments);
+      js.statement(statement, arguments);
     }
 
     Expect.throws(action, doCheck);

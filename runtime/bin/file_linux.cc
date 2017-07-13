@@ -3,7 +3,7 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "platform/globals.h"
-#if defined(TARGET_OS_LINUX)
+#if defined(HOST_OS_LINUX)
 
 #include "bin/file.h"
 
@@ -81,6 +81,7 @@ bool File::IsClosed() {
 
 MappedMemory* File::Map(MapType type, int64_t position, int64_t length) {
   ASSERT(handle_->fd() >= 0);
+  ASSERT(length > 0);
   int prot = PROT_NONE;
   switch (type) {
     case kReadOnly:
@@ -150,11 +151,6 @@ bool File::SetPosition(int64_t position) {
   ASSERT(handle_->fd() >= 0);
   return NO_RETRY_EXPECTED(lseek64(handle_->fd(), position, SEEK_SET)) >= 0;
 }
-
-
-// There is no difference between binary and text translation modes on this
-// platform, so this operation is a no-op.
-void File::SetTranslation(DartFileTranslation translation) {}
 
 
 bool File::Truncate(int64_t length) {
@@ -583,10 +579,7 @@ File::StdioHandleType File::GetStdioHandleType(int fd) {
   struct stat64 buf;
   int result = TEMP_FAILURE_RETRY(fstat64(fd, &buf));
   if (result == -1) {
-    const int kBufferSize = 1024;
-    char error_buf[kBufferSize];
-    FATAL2("Failed stat on file descriptor %d: %s", fd,
-           Utils::StrError(errno, error_buf, kBufferSize));
+    return kOther;
   }
   if (S_ISCHR(buf.st_mode)) {
     return kTerminal;
@@ -620,4 +613,4 @@ File::Identical File::AreIdentical(const char* file_1, const char* file_2) {
 }  // namespace bin
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_LINUX)
+#endif  // defined(HOST_OS_LINUX)

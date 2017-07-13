@@ -11,6 +11,7 @@ import '../constants/expressions.dart';
 import '../elements/resolution_types.dart';
 import '../diagnostics/source_span.dart';
 import '../elements/elements.dart';
+import '../elements/jumps.dart';
 import '../tree/tree.dart';
 import '../universe/call_structure.dart' show CallStructure;
 import '../universe/feature.dart';
@@ -147,6 +148,12 @@ class ResolutionWorldImpactBuilder extends WorldImpactBuilderImpl
     if (_constSymbolNames != null) {
       sb.write('\n const-symbol-names: $_constSymbolNames');
     }
+    if (_nativeData != null) {
+      sb.write('\n native-data:');
+      for (var data in _nativeData) {
+        sb.write('\n  $data');
+      }
+    }
     return sb.toString();
   }
 }
@@ -273,22 +280,22 @@ class ResolutionRegistry {
 
   /// Register [node] to be the declaration of [target].
   void defineTarget(Node node, JumpTarget target) {
-    assert(invariant(node, node is Statement || node is SwitchCase,
-        message: "Only statements and switch cases can define targets."));
+    assert(node is Statement || node is SwitchCase,
+        failedAt(node, "Only statements and switch cases can define targets."));
     mapping.defineTarget(node, target);
   }
 
   /// Returns the [JumpTarget] defined by [node].
   JumpTarget getTargetDefinition(Node node) {
-    assert(invariant(node, node is Statement || node is SwitchCase,
-        message: "Only statements and switch cases can define targets."));
+    assert(node is Statement || node is SwitchCase,
+        failedAt(node, "Only statements and switch cases can define targets."));
     return mapping.getTargetDefinition(node);
   }
 
   /// Undefine the target of [node]. This is used to cleanup unused targets.
   void undefineTarget(Node node) {
-    assert(invariant(node, node is Statement || node is SwitchCase,
-        message: "Only statements and switch cases can define targets."));
+    assert(node is Statement || node is SwitchCase,
+        failedAt(node, "Only statements and switch cases can define targets."));
     mapping.undefineTarget(node);
   }
 

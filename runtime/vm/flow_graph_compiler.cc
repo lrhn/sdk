@@ -23,6 +23,7 @@
 #include "vm/object_store.h"
 #include "vm/parser.h"
 #include "vm/raw_object.h"
+#include "vm/resolver.h"
 #include "vm/stack_frame.h"
 #include "vm/stub_code.h"
 #include "vm/symbols.h"
@@ -34,16 +35,6 @@ DEFINE_FLAG(bool,
             enable_simd_inline,
             true,
             "Enable inlining of SIMD related method calls.");
-DEFINE_FLAG(
-    bool,
-    inline_smi_string_hashcode,
-    true,
-    "Inline hashcode for Smi and one-byte strings in case of megamorphic call");
-DEFINE_FLAG(
-    int,
-    inline_smi_string_hashcode_ratio,
-    50,
-    "Minimal hotness (0..100) of one-byte-string before inlining its hashcode");
 DEFINE_FLAG(int,
             min_optimization_counter_threshold,
             5000,
@@ -88,6 +79,7 @@ static void PrecompilationModeHandler(bool value) {
     FLAG_use_field_guards = false;
     FLAG_use_cha_deopt = false;
     FLAG_unbox_numeric_fields = false;
+    FLAG_enable_mirrors = false;
 
 #if !defined(PRODUCT) && !defined(DART_PRECOMPILED_RUNTIME)
     // Set flags affecting runtime accordingly for dart_bootstrap.
@@ -96,7 +88,6 @@ static void PrecompilationModeHandler(bool value) {
     FLAG_support_debugger = false;
     FLAG_deoptimize_alot = false;  // Used in some tests.
     FLAG_deoptimize_every = 0;     // Used in some tests.
-    FLAG_enable_mirrors = false;
     FLAG_load_deferred_eagerly = true;
     FLAG_print_stop_message = false;
     FLAG_use_osr = false;
@@ -112,7 +103,6 @@ DEFINE_FLAG_HANDLER(PrecompilationModeHandler,
 
 COMPILE_ASSERT(!FLAG_collect_code);
 COMPILE_ASSERT(!FLAG_deoptimize_alot);  // Used in some tests.
-COMPILE_ASSERT(!FLAG_enable_mirrors);
 COMPILE_ASSERT(FLAG_precompiled_runtime);
 COMPILE_ASSERT(!FLAG_print_stop_message);
 COMPILE_ASSERT(!FLAG_use_osr);
@@ -152,31 +142,6 @@ void CompilerDeoptInfo::EmitMaterializations(Environment* env,
 }
 
 
-// Returns true if OnebyteString is a frequent receiver class. We inline
-// Smi check as well, since a Smi check must be done anyway.
-// TODO(srdjan): Add check and code if Smi class is hot.
-bool FlowGraphCompiler::ShouldInlineSmiStringHashCode(const ICData& ic_data) {
-  if (!FLAG_inline_smi_string_hashcode ||
-      (ic_data.target_name() != Symbols::hashCode().raw())) {
-    return false;
-  }
-  // Precompiled code has no ICData, optimistically inline it.
-  if (ic_data.IsNull() || (ic_data.NumberOfChecks() == 0)) {
-    return true;
-  }
-  // Check if OneByteString is hot enough.
-  const ICData& ic_data_sorted =
-      ICData::Handle(ic_data.AsUnaryClassChecksSortedByCount());
-  ASSERT(ic_data_sorted.NumberOfChecks() > 0);
-  if (ic_data_sorted.GetReceiverClassIdAt(0) == kOneByteStringCid) {
-    const intptr_t total_count = ic_data_sorted.AggregateCount();
-    const intptr_t ratio = (ic_data_sorted.GetCountAt(0) * 100) / total_count;
-    return ratio > FLAG_inline_smi_string_hashcode_ratio;
-  }
-  return false;
-}
-
-
 FlowGraphCompiler::FlowGraphCompiler(
     Assembler* assembler,
     FlowGraph* flow_graph,
@@ -196,6 +161,7 @@ FlowGraphCompiler::FlowGraphCompiler(
       pc_descriptors_list_(NULL),
       stackmap_table_builder_(NULL),
       code_source_map_builder_(NULL),
+      catch_entry_state_maps_builder_(NULL),
       block_info_(block_order_.length()),
       deopt_infos_(),
       static_calls_target_table_(),
@@ -267,6 +233,7 @@ bool FlowGraphCompiler::IsPotentialUnboxedField(const Field& field) {
 void FlowGraphCompiler::InitCompiler() {
   pc_descriptors_list_ = new (zone()) DescriptorList(64);
   exception_handlers_list_ = new (zone()) ExceptionHandlerList();
+  catch_entry_state_maps_builder_ = new (zone()) CatchEntryStateMapBuilder();
   block_info_.Clear();
   // Conservative detection of leaf routines used to remove the stack check
   // on function entry.
@@ -333,7 +300,7 @@ bool FlowGraphCompiler::CanOptimizeFunction() const {
 
 
 bool FlowGraphCompiler::CanOSRFunction() const {
-  return FLAG_use_osr & CanOptimizeFunction() && !is_optimizing();
+  return isolate()->use_osr() && CanOptimizeFunction() && !is_optimizing();
 }
 
 
@@ -412,6 +379,91 @@ void FlowGraphCompiler::CompactBlocks() {
 }
 
 
+void FlowGraphCompiler::EmitCatchEntryState(Environment* env,
+                                            intptr_t try_index) {
+#if defined(DART_PRECOMPILER) || defined(DART_PRECOMPILED_RUNTIME)
+  env = env ? env : pending_deoptimization_env_;
+  try_index = try_index != CatchClauseNode::kInvalidTryIndex
+                  ? try_index
+                  : CurrentTryIndex();
+  if (is_optimizing() && env != NULL &&
+      (try_index != CatchClauseNode::kInvalidTryIndex)) {
+    env = env->Outermost();
+    CatchBlockEntryInstr* catch_block =
+        flow_graph().graph_entry()->GetCatchEntry(try_index);
+    const GrowableArray<Definition*>* idefs =
+        catch_block->initial_definitions();
+    catch_entry_state_maps_builder_->NewMapping(assembler()->CodeSize());
+    // Parameters first.
+    intptr_t i = 0;
+    const intptr_t num_non_copied_params = flow_graph().num_non_copied_params();
+    for (; i < num_non_copied_params; ++i) {
+      // Don't sync captured parameters. They are not in the environment.
+      if (flow_graph().captured_parameters()->Contains(i)) continue;
+      if ((*idefs)[i]->IsConstant()) continue;  // Common constants.
+      Location src = env->LocationAt(i);
+      intptr_t dest_index = i - num_non_copied_params;
+      if (!src.IsStackSlot()) {
+        ASSERT(src.IsConstant());
+        // Skip dead locations.
+        if (src.constant().raw() == Symbols::OptimizedOut().raw()) {
+          continue;
+        }
+        intptr_t id =
+            assembler()->object_pool_wrapper().FindObject(src.constant());
+        catch_entry_state_maps_builder_->AppendConstant(id, dest_index);
+        continue;
+      }
+      if (src.stack_index() != dest_index) {
+        catch_entry_state_maps_builder_->AppendMove(src.stack_index(),
+                                                    dest_index);
+      }
+    }
+
+    // Process locals. Skip exception_var and stacktrace_var.
+    intptr_t local_base = kFirstLocalSlotFromFp + num_non_copied_params;
+    intptr_t ex_idx = local_base - catch_block->exception_var().index();
+    intptr_t st_idx = local_base - catch_block->stacktrace_var().index();
+    for (; i < flow_graph().variable_count(); ++i) {
+      // Don't sync captured parameters. They are not in the environment.
+      if (flow_graph().captured_parameters()->Contains(i)) continue;
+      if (i == ex_idx || i == st_idx) continue;
+      if ((*idefs)[i]->IsConstant()) continue;  // Common constants.
+      Location src = env->LocationAt(i);
+      if (src.IsInvalid()) continue;
+      intptr_t dest_index = i - num_non_copied_params;
+      if (!src.IsStackSlot()) {
+        ASSERT(src.IsConstant());
+        // Skip dead locations.
+        if (src.constant().raw() == Symbols::OptimizedOut().raw()) {
+          continue;
+        }
+        intptr_t id =
+            assembler()->object_pool_wrapper().FindObject(src.constant());
+        catch_entry_state_maps_builder_->AppendConstant(id, dest_index);
+        continue;
+      }
+      if (src.stack_index() != dest_index) {
+        catch_entry_state_maps_builder_->AppendMove(src.stack_index(),
+                                                    dest_index);
+      }
+    }
+    catch_entry_state_maps_builder_->EndMapping();
+  }
+#endif  // defined(DART_PRECOMPILER) || defined(DART_PRECOMPILED_RUNTIME)
+}
+
+
+void FlowGraphCompiler::EmitCallsiteMetaData(TokenPosition token_pos,
+                                             intptr_t deopt_id,
+                                             RawPcDescriptors::Kind kind,
+                                             LocationSummary* locs) {
+  AddCurrentDescriptor(kind, deopt_id, token_pos);
+  RecordSafepoint(locs);
+  EmitCatchEntryState();
+}
+
+
 void FlowGraphCompiler::EmitInstructionPrologue(Instruction* instr) {
   if (!is_optimizing()) {
     if (instr->CanBecomeDeoptimizationTarget() && !instr->IsGoto()) {
@@ -422,10 +474,6 @@ void FlowGraphCompiler::EmitInstructionPrologue(Instruction* instr) {
                            instr->token_pos());
     }
     AllocateRegistersLocally(instr);
-  } else if (instr->MayThrow() &&
-             (CurrentTryIndex() != CatchClauseNode::kInvalidTryIndex)) {
-    // Optimized try-block: Sync locals to fixed stack locations.
-    EmitTrySync(instr, CurrentTryIndex());
   }
 }
 
@@ -544,69 +592,6 @@ void FlowGraphCompiler::Bailout(const char* reason) {
 }
 
 
-void FlowGraphCompiler::EmitTrySync(Instruction* instr, intptr_t try_index) {
-  ASSERT(is_optimizing());
-  Environment* env = instr->env()->Outermost();
-  CatchBlockEntryInstr* catch_block =
-      flow_graph().graph_entry()->GetCatchEntry(try_index);
-  const GrowableArray<Definition*>* idefs = catch_block->initial_definitions();
-
-  // Construct a ParallelMove instruction for parameters and locals. Skip the
-  // special locals exception_var and stacktrace_var since they will be filled
-  // when an exception is thrown. Constant locations are known to be the same
-  // at all instructions that may throw, and do not need to be materialized.
-
-  // Parameters first.
-  intptr_t i = 0;
-  const intptr_t num_non_copied_params = flow_graph().num_non_copied_params();
-  ParallelMoveInstr* move_instr = new (zone()) ParallelMoveInstr();
-  for (; i < num_non_copied_params; ++i) {
-    // Don't sync captured parameters. They are not in the environment.
-    if (flow_graph().captured_parameters()->Contains(i)) continue;
-    if ((*idefs)[i]->IsConstant()) continue;  // Common constants
-    Location src = env->LocationAt(i);
-#if defined(TARGET_ARCH_DBC)
-    intptr_t dest_index = kNumberOfCpuRegisters - 1 - i;
-    Location dest = Location::RegisterLocation(dest_index);
-    // Update safepoint bitmap to indicate that the target location
-    // now contains a pointer. With DBC parameters are copied into
-    // the locals area.
-    instr->locs()->SetStackBit(dest_index);
-#else
-    intptr_t dest_index = i - num_non_copied_params;
-    Location dest = Location::StackSlot(dest_index);
-#endif
-    move_instr->AddMove(dest, src);
-  }
-
-  // Process locals. Skip exception_var and stacktrace_var.
-  intptr_t local_base = kFirstLocalSlotFromFp + num_non_copied_params;
-  intptr_t ex_idx = local_base - catch_block->exception_var().index();
-  intptr_t st_idx = local_base - catch_block->stacktrace_var().index();
-  for (; i < flow_graph().variable_count(); ++i) {
-    // Don't sync captured parameters. They are not in the environment.
-    if (flow_graph().captured_parameters()->Contains(i)) continue;
-    if (i == ex_idx || i == st_idx) continue;
-    if ((*idefs)[i]->IsConstant()) continue;
-    Location src = env->LocationAt(i);
-    ASSERT(!src.IsFpuRegister());
-    ASSERT(!src.IsDoubleStackSlot());
-#if defined(TARGET_ARCH_DBC)
-    intptr_t dest_index = kNumberOfCpuRegisters - 1 - i;
-    Location dest = Location::RegisterLocation(dest_index);
-#else
-    intptr_t dest_index = i - num_non_copied_params;
-    Location dest = Location::StackSlot(dest_index);
-#endif
-    move_instr->AddMove(dest, src);
-    // Update safepoint bitmap to indicate that the target location
-    // now contains a pointer.
-    instr->locs()->SetStackBit(dest_index);
-  }
-  parallel_move_resolver()->EmitNativeCode(move_instr);
-}
-
-
 intptr_t FlowGraphCompiler::StackSize() const {
   if (is_optimizing_) {
     return flow_graph_.graph_entry()->spill_slot_count();
@@ -671,10 +656,13 @@ void FlowGraphCompiler::GenerateDeferredCode() {
 void FlowGraphCompiler::AddExceptionHandler(intptr_t try_index,
                                             intptr_t outer_try_index,
                                             intptr_t pc_offset,
+                                            TokenPosition token_pos,
+                                            bool is_generated,
                                             const Array& handler_types,
                                             bool needs_stacktrace) {
   exception_handlers_list_->AddHandler(try_index, outer_try_index, pc_offset,
-                                       handler_types, needs_stacktrace);
+                                       token_pos, is_generated, handler_types,
+                                       needs_stacktrace);
 }
 
 
@@ -1012,6 +1000,15 @@ void FlowGraphCompiler::FinalizeVarDescriptors(const Code& code) {
   code.set_var_descriptors(var_descs);
 }
 
+void FlowGraphCompiler::FinalizeCatchEntryStateMap(const Code& code) {
+#if defined(DART_PRECOMPILED_RUNTIME) || defined(DART_PRECOMPILER)
+  TypedData& maps = TypedData::Handle(
+      catch_entry_state_maps_builder_->FinalizeCatchEntryStateMap());
+  code.set_catch_entry_state_maps(maps);
+#else
+  code.set_variables(Smi::Handle(Smi::New(flow_graph().variable_count())));
+#endif
+}
 
 void FlowGraphCompiler::FinalizeStaticCallTargetsTable(const Code& code) {
   ASSERT(code.static_calls_target_table() == Array::null());
@@ -1081,7 +1078,7 @@ bool FlowGraphCompiler::TryIntrinsify() {
       if (field.is_instance() &&
           (FLAG_precompiled_mode || !IsPotentialUnboxedField(field))) {
         GenerateInlinedGetter(field.Offset());
-        return !FLAG_use_field_guards;
+        return !isolate()->use_field_guards();
       }
       return false;
     }
@@ -1094,7 +1091,7 @@ bool FlowGraphCompiler::TryIntrinsify() {
       if (field.is_instance() &&
           (FLAG_precompiled_mode || field.guarded_cid() == kDynamicCid)) {
         GenerateInlinedSetter(field.Offset());
-        return !FLAG_use_field_guards;
+        return !isolate()->use_field_guards();
       }
       return false;
     }
@@ -1120,6 +1117,23 @@ bool FlowGraphCompiler::TryIntrinsify() {
 // DBC is very different from other architectures in how it performs instance
 // and static calls because it does not use stubs.
 #if !defined(TARGET_ARCH_DBC)
+void FlowGraphCompiler::GenerateCallWithDeopt(TokenPosition token_pos,
+                                              intptr_t deopt_id,
+                                              const StubEntry& stub_entry,
+                                              RawPcDescriptors::Kind kind,
+                                              LocationSummary* locs) {
+  GenerateCall(token_pos, stub_entry, kind, locs);
+  const intptr_t deopt_id_after = Thread::ToDeoptAfter(deopt_id);
+  if (is_optimizing()) {
+    AddDeoptIndexAtCall(deopt_id_after);
+  } else {
+    // Add deoptimization continuation point after the call and before the
+    // arguments are removed.
+    AddCurrentDescriptor(RawPcDescriptors::kDeopt, deopt_id_after, token_pos);
+  }
+}
+
+
 void FlowGraphCompiler::GenerateInstanceCall(intptr_t deopt_id,
                                              TokenPosition token_pos,
                                              intptr_t argument_count,
@@ -1155,8 +1169,12 @@ void FlowGraphCompiler::GenerateInstanceCall(intptr_t deopt_id,
   }
 
   if (is_optimizing()) {
-    EmitMegamorphicInstanceCall(ic_data_in, argument_count, deopt_id, token_pos,
-                                locs, CatchClauseNode::kInvalidTryIndex);
+    String& name = String::Handle(ic_data_in.target_name());
+    Array& arguments_descriptor =
+        Array::Handle(ic_data_in.arguments_descriptor());
+    EmitMegamorphicInstanceCall(name, arguments_descriptor, argument_count,
+                                deopt_id, token_pos, locs,
+                                CatchClauseNode::kInvalidTryIndex);
     return;
   }
 
@@ -1178,20 +1196,20 @@ void FlowGraphCompiler::GenerateInstanceCall(intptr_t deopt_id,
 void FlowGraphCompiler::GenerateStaticCall(intptr_t deopt_id,
                                            TokenPosition token_pos,
                                            const Function& function,
-                                           intptr_t argument_count,
-                                           const Array& argument_names,
+                                           ArgumentsInfo args_info,
                                            LocationSummary* locs,
                                            const ICData& ic_data_in) {
   const ICData& ic_data = ICData::ZoneHandle(ic_data_in.Original());
-  const Array& arguments_descriptor =
-      Array::ZoneHandle(ic_data.IsNull() ? ArgumentsDescriptor::New(
-                                               argument_count, argument_names)
-                                         : ic_data.arguments_descriptor());
+  const Array& arguments_descriptor = Array::ZoneHandle(
+      zone(), ic_data.IsNull() ? args_info.ToArgumentsDescriptor()
+                               : ic_data.arguments_descriptor());
+  ASSERT(ArgumentsDescriptor(arguments_descriptor).TypeArgsLen() ==
+         args_info.type_args_len);
   if (is_optimizing()) {
-    EmitOptimizedStaticCall(function, arguments_descriptor, argument_count,
-                            deopt_id, token_pos, locs);
+    EmitOptimizedStaticCall(function, arguments_descriptor,
+                            args_info.pushed_argc, deopt_id, token_pos, locs);
   } else {
-    ICData& call_ic_data = ICData::ZoneHandle(ic_data.raw());
+    ICData& call_ic_data = ICData::ZoneHandle(zone(), ic_data.raw());
     if (call_ic_data.IsNull()) {
       const intptr_t kNumArgsChecked = 0;
       call_ic_data =
@@ -1200,7 +1218,7 @@ void FlowGraphCompiler::GenerateStaticCall(intptr_t deopt_id,
               ->raw();
     }
     AddCurrentDescriptor(RawPcDescriptors::kRewind, deopt_id, token_pos);
-    EmitUnoptimizedStaticCall(argument_count, deopt_id, token_pos, locs,
+    EmitUnoptimizedStaticCall(args_info.pushed_argc, deopt_id, token_pos, locs,
                               call_ic_data);
   }
 }
@@ -1615,32 +1633,6 @@ ParallelMoveResolver::ScratchRegisterScope::~ScratchRegisterScope() {
 }
 
 
-static int HighestCountFirst(const CidTarget* a, const CidTarget* b) {
-  // Negative if 'a' should sort before 'b'.
-  return b->count - a->count;
-}
-
-
-// Returns 'sorted' array in decreasing count order.
-// The expected number of elements to sort is less than 10.
-void FlowGraphCompiler::SortICDataByCount(const ICData& ic_data,
-                                          GrowableArray<CidTarget>* sorted,
-                                          bool drop_smi) {
-  ASSERT(ic_data.NumArgsTested() == 1);
-  const intptr_t len = ic_data.NumberOfChecks();
-  sorted->Clear();
-
-  for (int i = 0; i < len; i++) {
-    intptr_t receiver_cid = ic_data.GetReceiverClassIdAt(i);
-    if (drop_smi && (receiver_cid == kSmiCid)) continue;
-    sorted->Add(CidTarget(receiver_cid,
-                          &Function::ZoneHandle(ic_data.GetTargetAt(i)),
-                          ic_data.GetCountAt(i)));
-  }
-  sorted->Sort(HighestCountFirst);
-}
-
-
 const ICData* FlowGraphCompiler::GetOrAddInstanceCallICData(
     intptr_t deopt_id,
     const String& target_name,
@@ -1652,6 +1644,8 @@ const ICData* FlowGraphCompiler::GetOrAddInstanceCallICData(
     ASSERT(res->deopt_id() == deopt_id);
     ASSERT(res->target_name() == target_name.raw());
     ASSERT(res->NumArgsTested() == num_args_tested);
+    ASSERT(res->TypeArgsLen() ==
+           ArgumentsDescriptor(arguments_descriptor).TypeArgsLen());
     ASSERT(!res->is_static_call());
     return res;
   }
@@ -1681,6 +1675,8 @@ const ICData* FlowGraphCompiler::GetOrAddStaticCallICData(
     ASSERT(res->deopt_id() == deopt_id);
     ASSERT(res->target_name() == target.name());
     ASSERT(res->NumArgsTested() == num_args_tested);
+    ASSERT(res->TypeArgsLen() ==
+           ArgumentsDescriptor(arguments_descriptor).TypeArgsLen());
     ASSERT(res->is_static_call());
     return res;
   }
@@ -1749,39 +1745,211 @@ void FlowGraphCompiler::EndCodeSourceRange(TokenPosition token_pos) {
 }
 
 
+const CallTargets* FlowGraphCompiler::ResolveCallTargetsForReceiverCid(
+    intptr_t cid,
+    const String& selector,
+    const Array& args_desc_array) {
+  Zone* zone = Thread::Current()->zone();
+
+  ArgumentsDescriptor args_desc(args_desc_array);
+
+  Function& fn = Function::ZoneHandle(zone);
+  if (!LookupMethodFor(cid, selector, args_desc, &fn)) return NULL;
+
+  CallTargets* targets = new (zone) CallTargets(zone);
+  targets->Add(new (zone) TargetInfo(cid, cid, &fn, /* count = */ 1));
+
+  return targets;
+}
+
+
+bool FlowGraphCompiler::LookupMethodFor(int class_id,
+                                        const String& name,
+                                        const ArgumentsDescriptor& args_desc,
+                                        Function* fn_return,
+                                        bool* class_is_abstract_return) {
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
+  Zone* zone = thread->zone();
+  if (class_id < 0) return false;
+  if (class_id >= isolate->class_table()->NumCids()) return false;
+
+  RawClass* raw_class = isolate->class_table()->At(class_id);
+  if (raw_class == NULL) return false;
+  Class& cls = Class::Handle(zone, raw_class);
+  if (cls.IsNull()) return false;
+  if (!cls.is_finalized()) return false;
+  if (Array::Handle(cls.functions()).IsNull()) return false;
+
+  if (class_is_abstract_return != NULL) {
+    *class_is_abstract_return = cls.is_abstract();
+  }
+  const bool allow_add = false;
+  Function& target_function =
+      Function::Handle(zone, Resolver::ResolveDynamicForReceiverClass(
+                                 cls, name, args_desc, allow_add));
+  if (target_function.IsNull()) return false;
+  *fn_return ^= target_function.raw();
+  return true;
+}
+
+
 #if !defined(TARGET_ARCH_DBC)
 // DBC emits calls very differently from other architectures due to its
 // interpreted nature.
-void FlowGraphCompiler::EmitPolymorphicInstanceCall(const ICData& ic_data,
-                                                    intptr_t argument_count,
-                                                    const Array& argument_names,
-                                                    intptr_t deopt_id,
-                                                    TokenPosition token_pos,
-                                                    LocationSummary* locs,
-                                                    bool complete) {
+void FlowGraphCompiler::EmitPolymorphicInstanceCall(
+    const CallTargets& targets,
+    const InstanceCallInstr& original_call,
+    ArgumentsInfo args_info,
+    intptr_t deopt_id,
+    TokenPosition token_pos,
+    LocationSummary* locs,
+    bool complete,
+    intptr_t total_ic_calls) {
   if (FLAG_polymorphic_with_deopt) {
     Label* deopt =
         AddDeoptStub(deopt_id, ICData::kDeoptPolymorphicInstanceCallTestFail);
     Label ok;
-    EmitTestAndCall(ic_data, argument_count, argument_names,
+    EmitTestAndCall(targets, original_call.function_name(), args_info,
                     deopt,  // No cid match.
                     &ok,    // Found cid.
-                    deopt_id, token_pos, locs, complete);
+                    deopt_id, token_pos, locs, complete, total_ic_calls);
     assembler()->Bind(&ok);
   } else {
     if (complete) {
       Label ok;
-      EmitTestAndCall(ic_data, argument_count, argument_names,
+      EmitTestAndCall(targets, original_call.function_name(), args_info,
                       NULL,  // No cid match.
                       &ok,   // Found cid.
-                      deopt_id, token_pos, locs, true);
+                      deopt_id, token_pos, locs, true, total_ic_calls);
       assembler()->Bind(&ok);
     } else {
-      EmitSwitchableInstanceCall(ic_data, argument_count, deopt_id, token_pos,
-                                 locs);
+      const ICData& unary_checks = ICData::ZoneHandle(
+          zone(), original_call.ic_data()->AsUnaryClassChecks());
+      EmitSwitchableInstanceCall(unary_checks, args_info.pushed_argc, deopt_id,
+                                 token_pos, locs);
     }
   }
 }
+
+
+#define __ assembler()->
+void FlowGraphCompiler::EmitTestAndCall(const CallTargets& targets,
+                                        const String& function_name,
+                                        ArgumentsInfo args_info,
+                                        Label* failed,
+                                        Label* match_found,
+                                        intptr_t deopt_id,
+                                        TokenPosition token_index,
+                                        LocationSummary* locs,
+                                        bool complete,
+                                        intptr_t total_ic_calls) {
+  ASSERT(is_optimizing());
+
+  const Array& arguments_descriptor =
+      Array::ZoneHandle(zone(), args_info.ToArgumentsDescriptor());
+  EmitTestAndCallLoadReceiver(args_info.pushed_argc, arguments_descriptor);
+
+  static const int kNoCase = -1;
+  int smi_case = kNoCase;
+  int which_case_to_skip = kNoCase;
+
+  const int length = targets.length();
+  ASSERT(length > 0);
+  int non_smi_length = length;
+
+  // Find out if one of the classes in one of the cases is the Smi class. We
+  // will be handling that specially.
+  for (int i = 0; i < length; i++) {
+    const intptr_t start = targets[i].cid_start;
+    if (start > kSmiCid) continue;
+    const intptr_t end = targets[i].cid_end;
+    if (end >= kSmiCid) {
+      smi_case = i;
+      if (start == kSmiCid && end == kSmiCid) {
+        // If this case has only the Smi class then we won't need to emit it at
+        // all later.
+        which_case_to_skip = i;
+        non_smi_length--;
+      }
+      break;
+    }
+  }
+
+  if (smi_case != kNoCase) {
+    Label after_smi_test;
+    EmitTestAndCallSmiBranch(non_smi_length == 0 ? failed : &after_smi_test,
+                             /* jump_if_smi= */ false);
+
+    // Do not use the code from the function, but let the code be patched so
+    // that we can record the outgoing edges to other code.
+    const Function& function = *targets.TargetAt(smi_case)->target;
+    GenerateStaticDartCall(deopt_id, token_index,
+                           *StubCode::CallStaticFunction_entry(),
+                           RawPcDescriptors::kOther, locs, function);
+    __ Drop(args_info.pushed_argc);
+    if (match_found != NULL) {
+      __ Jump(match_found);
+    }
+    __ Bind(&after_smi_test);
+  } else {
+    if (!complete) {
+      // Smi is not a valid class.
+      EmitTestAndCallSmiBranch(failed, /* jump_if_smi = */ true);
+    }
+  }
+
+  if (non_smi_length == 0) {
+    // If non_smi_length is 0 then only a Smi check was needed; the Smi check
+    // above will fail if there was only one check and receiver is not Smi.
+    return;
+  }
+
+  bool add_megamorphic_call = false;
+  int bias = 0;
+
+  // Value is not Smi.
+  EmitTestAndCallLoadCid();
+
+  int last_check = which_case_to_skip == length - 1 ? length - 2 : length - 1;
+
+  for (intptr_t i = 0; i < length; i++) {
+    if (i == which_case_to_skip) continue;
+    const bool is_last_check = (i == last_check);
+    const int count = targets.TargetAt(i)->count;
+    if (!is_last_check && !complete && count < (total_ic_calls >> 5)) {
+      // This case is hit too rarely to be worth writing class-id checks inline
+      // for.  Note that we can't do this for calls with only one target because
+      // the type propagator may have made use of that and expects a deopt if
+      // a new class is seen at this calls site.  See IsMonomorphic.
+      add_megamorphic_call = true;
+      break;
+    }
+    Label next_test;
+    if (!complete || !is_last_check) {
+      bias = EmitTestAndCallCheckCid(is_last_check ? failed : &next_test,
+                                     targets[i], bias);
+    }
+    // Do not use the code from the function, but let the code be patched so
+    // that we can record the outgoing edges to other code.
+    const Function& function = *targets.TargetAt(i)->target;
+    GenerateStaticDartCall(deopt_id, token_index,
+                           *StubCode::CallStaticFunction_entry(),
+                           RawPcDescriptors::kOther, locs, function);
+    __ Drop(args_info.pushed_argc);
+    if (!is_last_check || add_megamorphic_call) {
+      __ Jump(match_found);
+    }
+    __ Bind(&next_test);
+  }
+  if (add_megamorphic_call) {
+    int try_index = CatchClauseNode::kInvalidTryIndex;
+    EmitMegamorphicInstanceCall(function_name, arguments_descriptor,
+                                args_info.pushed_argc, deopt_id, token_index,
+                                locs, try_index);
+  }
+}
+#undef __
 #endif
 
 #if defined(DEBUG) && !defined(TARGET_ARCH_DBC)

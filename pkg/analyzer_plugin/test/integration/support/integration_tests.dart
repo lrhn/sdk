@@ -7,6 +7,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:analyzer_plugin/protocol/protocol_generated.dart';
 import 'package:path/path.dart';
 import 'package:test/test.dart';
@@ -258,17 +259,6 @@ abstract class AbstractAnalysisServerIntegrationTest
     file.writeAsStringSync(contents);
     return file.resolveSymbolicLinksSync();
   }
-}
-
-/**
- * An error result from a server request.
- */
-class ServerErrorMessage {
-  final Map message;
-
-  ServerErrorMessage(this.message);
-
-  dynamic get error => message['error'];
 }
 
 /**
@@ -528,7 +518,7 @@ class Server {
   /**
    * Stop the server.
    */
-  Future kill(String reason) {
+  Future<int> kill(String reason) {
     debugStdio();
     _recordStdio('FORCIBLY TERMINATING PROCESS: $reason');
     _process.kill();
@@ -736,6 +726,17 @@ class Server {
     }
     _recordedStdio.add(line);
   }
+}
+
+/**
+ * An error result from a server request.
+ */
+class ServerErrorMessage {
+  final Map message;
+
+  ServerErrorMessage(this.message);
+
+  dynamic get error => message['error'];
 }
 
 /**

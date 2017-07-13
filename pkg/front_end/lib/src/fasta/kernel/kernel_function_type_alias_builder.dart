@@ -4,114 +4,103 @@
 
 library fasta.kernel_function_type_alias_builder;
 
-import 'package:kernel/ast.dart' show
-    DartType,
-    DynamicType,
-    FunctionType,
-    InvalidType,
-    NamedType,
-    TypeParameter;
+import 'package:kernel/ast.dart'
+    show
+        DartType,
+        DynamicType,
+        FunctionType,
+        InvalidType,
+        TypeParameter,
+        Typedef;
 
-import 'package:kernel/type_algebra.dart' show
-    substitute;
+import 'package:kernel/type_algebra.dart' show substitute;
 
-import '../messages.dart' show
-    warning;
+import '../fasta_codes.dart' show templateCyclicTypedef;
 
-import 'kernel_builder.dart' show
-    FormalParameterBuilder,
-    FunctionTypeAliasBuilder,
-    KernelFormalParameterBuilder,
-    KernelTypeBuilder,
-    KernelTypeVariableBuilder,
-    LibraryBuilder,
-    MetadataBuilder,
-    TypeVariableBuilder,
-    computeDefaultTypeArguments;
+import 'kernel_builder.dart'
+    show
+        FunctionTypeAliasBuilder,
+        KernelFunctionTypeBuilder,
+        KernelTypeBuilder,
+        KernelTypeVariableBuilder,
+        LibraryBuilder,
+        MetadataBuilder,
+        TypeVariableBuilder,
+        computeDefaultTypeArguments;
 
 class KernelFunctionTypeAliasBuilder
-    extends FunctionTypeAliasBuilder<KernelTypeBuilder, DartType> {
+    extends FunctionTypeAliasBuilder<KernelFunctionTypeBuilder, DartType> {
+  final Typedef target;
+
   DartType thisType;
 
-  DartType type;
-
-  KernelFunctionTypeAliasBuilder(List<MetadataBuilder> metadata,
-      KernelTypeBuilder returnType, String name,
+  KernelFunctionTypeAliasBuilder(
+      List<MetadataBuilder> metadata,
+      String name,
       List<TypeVariableBuilder> typeVariables,
-      List<FormalParameterBuilder> formals, LibraryBuilder parent,
-      int charOffset)
-      : super(metadata, returnType, name, typeVariables, formals, parent,
-          charOffset);
+      KernelFunctionTypeBuilder type,
+      LibraryBuilder parent,
+      int charOffset,
+      [Typedef target])
+      : target = target ??
+            (new Typedef(name, null, fileUri: parent.target.fileUri)
+              ..fileOffset = charOffset),
+        super(metadata, name, typeVariables, type, parent, charOffset);
 
-  DartType buildThisType() {
+  Typedef build(LibraryBuilder libraryBuilder) {
+    return target..type ??= buildThisType(libraryBuilder);
+  }
+
+  DartType buildThisType(LibraryBuilder library) {
     if (thisType != null) {
-      if (thisType == const InvalidType()) {
-        thisType = const DynamicType();
-        // TODO(ahe): Build an error somehow.
-        warning(parent.uri, -1,
-            "The typedef '$name' has a reference to itself.");
+      if (const InvalidType() == thisType) {
+        library.addCompileTimeError(
+            templateCyclicTypedef.withArguments(name), charOffset, fileUri);
+        return const DynamicType();
       }
       return thisType;
     }
     thisType = const InvalidType();
-    DartType returnType = this.returnType?.build() ?? const DynamicType();
-    List<DartType> positionalParameters = <DartType>[];
-    List<NamedType> namedParameters;
-    int requiredParameterCount = 0;
-    if (formals != null) {
-      for (KernelFormalParameterBuilder formal in formals) {
-        DartType type = formal.type?.build() ?? const DynamicType();
-        if (formal.isPositional) {
-          positionalParameters.add(type);
-          if (formal.isRequired) requiredParameterCount++;
-        } else if (formal.isNamed) {
-          namedParameters ??= <NamedType>[];
-          namedParameters.add(new NamedType(formal.name, type));
-        }
-      }
-      if (namedParameters != null) {
-        namedParameters.sort();
-      }
-    }
-    List<TypeParameter> typeParameters;
+    DartType builtType = type?.build(library) ?? const DynamicType();
     if (typeVariables != null) {
-      typeParameters = <TypeParameter>[];
-      for (KernelTypeVariableBuilder t in typeVariables) {
-        typeParameters.add(t.parameter);
+      for (KernelTypeVariableBuilder tv in typeVariables) {
+        tv.parameter.bound = tv?.bound?.build(library);
+        target.typeParameters.add(tv.parameter..parent = target);
       }
     }
-    return thisType = new FunctionType(positionalParameters, returnType,
-        namedParameters: namedParameters ?? const <NamedType>[],
-        typeParameters: typeParameters ?? const <TypeParameter>[],
-        requiredParameterCount: requiredParameterCount);
+    return thisType = builtType;
   }
 
   /// [arguments] have already been built.
-  DartType buildTypesWithBuiltArguments(List<DartType> arguments) {
-    var thisType = buildThisType();
-    if (thisType is DynamicType) return thisType;
+  DartType buildTypesWithBuiltArguments(
+      LibraryBuilder library, List<DartType> arguments) {
+    var thisType = buildThisType(library);
+    if (const DynamicType() == thisType) return thisType;
     FunctionType result = thisType;
-    if (result.typeParameters.isEmpty && arguments == null) return result;
-    arguments = computeDefaultTypeArguments(result.typeParameters, arguments);
+    if (target.typeParameters.isEmpty && arguments == null) return result;
+    arguments =
+        computeDefaultTypeArguments(library, target.typeParameters, arguments);
     Map<TypeParameter, DartType> substitution = <TypeParameter, DartType>{};
-    for (int i = 0; i < result.typeParameters.length; i++) {
-      substitution[result.typeParameters[i]] = arguments[i];
+    for (int i = 0; i < target.typeParameters.length; i++) {
+      substitution[target.typeParameters[i]] = arguments[i];
     }
-    return substitute(result.withoutTypeParameters, substitution);
+    return substitute(result, substitution);
   }
 
-  DartType buildType(List<KernelTypeBuilder> arguments) {
-    var thisType = buildThisType();
+  @override
+  DartType buildType(
+      LibraryBuilder library, List<KernelTypeBuilder> arguments) {
+    var thisType = buildThisType(library);
     if (thisType is DynamicType) return thisType;
     FunctionType result = thisType;
-    if (result.typeParameters.isEmpty && arguments == null) return result;
+    if (target.typeParameters.isEmpty && arguments == null) return result;
     // Otherwise, substitute.
     List<DartType> builtArguments = <DartType>[];
     if (arguments != null) {
       for (int i = 0; i < arguments.length; i++) {
-        builtArguments.add(arguments[i].build());
+        builtArguments.add(arguments[i].build(library));
       }
     }
-    return buildTypesWithBuiltArguments(builtArguments);
+    return buildTypesWithBuiltArguments(library, builtArguments);
   }
 }

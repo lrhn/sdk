@@ -4,16 +4,20 @@
 
 library dart2js.parser.node_listener;
 
+import 'package:front_end/src/fasta/parser/parser.dart'
+    show FormalParameterType, MemberKind;
+import 'package:front_end/src/fasta/parser/identifier_context.dart'
+    show IdentifierContext;
+import 'package:front_end/src/fasta/scanner.dart' show Token;
+import 'package:front_end/src/scanner/token.dart' show TokenType;
+
 import '../common.dart';
 import '../elements/elements.dart' show CompilationUnitElement;
-import 'package:front_end/src/fasta/parser/parser.dart'
-    show FormalParameterType;
-import 'package:front_end/src/fasta/scanner/precedence.dart' as Precedence
-    show INDEX_INFO;
-import 'package:front_end/src/fasta/scanner.dart' show StringToken, Token;
 import '../tree/tree.dart';
 import '../util/util.dart' show Link;
 import 'element_listener.dart' show ElementListener, ScannerOptions;
+
+import 'package:front_end/src/fasta/parser/parser.dart' as fasta show Assert;
 
 class NodeListener extends ElementListener {
   NodeListener(ScannerOptions scannerOptions, DiagnosticReporter reporter,
@@ -87,7 +91,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endPartOf(Token partKeyword, Token semicolon) {
+  void endPartOf(Token partKeyword, Token semicolon, bool hasName) {
     Expression name = popNode(); // name
     pushNode(new PartOf(
         partKeyword,
@@ -98,8 +102,12 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endClassDeclaration(int interfacesCount, Token beginToken,
-      Token classKeyword, Token extendsKeyword, Token implementsKeyword,
+  void endClassDeclaration(
+      int interfacesCount,
+      Token beginToken,
+      Token classKeyword,
+      Token extendsKeyword,
+      Token implementsKeyword,
       Token endToken) {
     NodeList body = popNode();
     NodeList interfaces =
@@ -160,15 +168,8 @@ class NodeListener extends ElementListener {
       typeParameters = functionType.typeParameters;
       formals = functionType.formals;
     }
-    pushNode(new Typedef(
-        isGeneralizedTypeAlias,
-        templateParameters,
-        returnType,
-        name,
-        typeParameters,
-        formals,
-        typedefKeyword,
-        endToken));
+    pushNode(new Typedef(isGeneralizedTypeAlias, templateParameters, returnType,
+        name, typeParameters, formals, typedefKeyword, endToken));
   }
 
   void handleNoName(Token token) {
@@ -176,18 +177,17 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void handleFunctionType(Token functionToken, Token endToken) {
+  void endFunctionType(Token functionToken, Token endToken) {
     NodeList formals = popNode();
-    NodeList typeParameters = popNode();
     TypeAnnotation returnType = popNode();
+    NodeList typeParameters = popNode();
     pushNode(new FunctionTypeAnnotation(
         returnType, functionToken, typeParameters, formals));
   }
 
   @override
-  void endNamedMixinApplication(
-      Token beginToken, Token classKeyword, Token equals,
-      Token implementsKeyword, Token endToken) {
+  void endNamedMixinApplication(Token beginToken, Token classKeyword,
+      Token equals, Token implementsKeyword, Token endToken) {
     NodeList interfaces = (implementsKeyword != null) ? popNode() : null;
     Node mixinApplication = popNode();
     NodeList typeParameters = popNode();
@@ -231,7 +231,8 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFormalParameter(Token thisKeyword, FormalParameterType kind) {
+  void endFormalParameter(Token thisKeyword, Token nameToken,
+      FormalParameterType kind, MemberKind memberKind) {
     Expression name = popNode();
     if (thisKeyword != null) {
       Identifier thisIdentifier = new Identifier(thisKeyword);
@@ -249,12 +250,13 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFormalParameters(int count, Token beginToken, Token endToken) {
+  void endFormalParameters(
+      int count, Token beginToken, Token endToken, MemberKind kind) {
     pushNode(makeNodeList(count, beginToken, endToken, ","));
   }
 
   @override
-  void handleNoFormalParameters(Token token) {
+  void handleNoFormalParameters(Token token, MemberKind kind) {
     pushNode(null);
   }
 
@@ -305,6 +307,14 @@ class NodeListener extends ElementListener {
     pushNode(new RedirectingFactoryBody(beginToken, endToken, popNode()));
   }
 
+  void handleEmptyFunctionBody(Token semicolon) {
+    endBlockFunctionBody(0, null, semicolon);
+  }
+
+  void handleExpressionFunctionBody(Token arrowToken, Token endToken) {
+    endReturnStatement(true, arrowToken, endToken);
+  }
+
   @override
   void endReturnStatement(
       bool hasExpression, Token beginToken, Token endToken) {
@@ -324,8 +334,8 @@ class NodeListener extends ElementListener {
   }
 
   void handleOnError(Token token, var errorInformation) {
-    reporter.internalError(
-        reporter.spanFromToken(token), "'${token.value}': ${errorInformation}");
+    reporter.internalError(reporter.spanFromToken(token),
+        "'${token.lexeme}': ${errorInformation}");
   }
 
   @override
@@ -446,7 +456,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endSend(Token token) {
+  void endSend(Token beginToken, Token endToken) {
     NodeList arguments = popNode();
     NodeList typeArguments = popNode();
     Node selector = popNode();
@@ -455,7 +465,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFunctionBody(int count, Token beginToken, Token endToken) {
+  void endBlockFunctionBody(int count, Token beginToken, Token endToken) {
     if (count == 0 && beginToken == null) {
       pushNode(new EmptyStatement(endToken));
     } else {
@@ -473,7 +483,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void handleFunctionBodySkipped(Token token) {
+  void handleFunctionBodySkipped(Token token, bool isExpressionBody) {
     pushNode(new Block(new NodeList.empty()));
   }
 
@@ -483,7 +493,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFunction(Token getOrSet, Token endToken) {
+  void endNamedFunctionExpression(Token endToken) {
     Statement body = popNode();
     AsyncModifier asyncModifier = popNode();
     NodeList initializers = popNode();
@@ -494,12 +504,22 @@ class NodeListener extends ElementListener {
     TypeAnnotation type = popNode();
     Modifiers modifiers = popNode();
     pushNode(new FunctionExpression(name, typeVariables, formals, body, type,
-        modifiers, initializers, getOrSet, asyncModifier));
+        modifiers, initializers, null, asyncModifier));
   }
 
   @override
   void endFunctionDeclaration(Token endToken) {
-    pushNode(new FunctionDeclaration(popNode()));
+    Statement body = popNode();
+    AsyncModifier asyncModifier = popNode();
+    NodeList initializers = popNode();
+    NodeList formals = popNode();
+    NodeList typeVariables = popNode();
+    // The name can be an identifier or a send in case of named constructors.
+    Expression name = popNode();
+    TypeAnnotation type = popNode();
+    Modifiers modifiers = popNode();
+    pushNode(new FunctionDeclaration(new FunctionExpression(name, typeVariables,
+        formals, body, type, modifiers, initializers, null, asyncModifier)));
   }
 
   @override
@@ -509,6 +529,7 @@ class NodeListener extends ElementListener {
     NodeList variables = makeNodeList(count, null, endToken, ",");
     TypeAnnotation type = popNode();
     Modifiers modifiers = popNode();
+    popNode();
     pushNode(new VariableDefinitions(type, modifiers, variables));
   }
 
@@ -523,7 +544,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFieldInitializer(Token assignmentOperator) {
+  void endFieldInitializer(Token assignmentOperator, Token token) {
     endVariableInitializer(assignmentOperator);
   }
 
@@ -536,13 +557,13 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endForStatement(
-      int updateExpressionCount, Token beginToken, Token endToken) {
+  void endForStatement(Token forKeyword, Token leftSeparator,
+      int updateExpressionCount, Token endToken) {
     Statement body = popNode();
     NodeList updates = makeNodeList(updateExpressionCount, null, null, ',');
     Statement condition = popNode();
     Node initializer = popNode();
-    pushNode(new For(initializer, condition, updates, body, beginToken));
+    pushNode(new For(initializer, condition, updates, body, forKeyword));
   }
 
   @override
@@ -597,12 +618,12 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void handleSuperExpression(Token token) {
+  void handleSuperExpression(Token token, IdentifierContext context) {
     pushNode(new Identifier(token));
   }
 
   @override
-  void handleThisExpression(Token token) {
+  void handleThisExpression(Token token, IdentifierContext context) {
     pushNode(new Identifier(token));
   }
 
@@ -709,28 +730,32 @@ class NodeListener extends ElementListener {
     NodeList arguments =
         makeNodeList(1, openSquareBracket, closeSquareBracket, null);
     Node receiver = popNode();
-    Token token = new StringToken.fromString(
-        Precedence.INDEX_INFO, '[]', openSquareBracket.charOffset);
+    Token token = new Token(TokenType.INDEX, openSquareBracket.charOffset);
     Node selector = new Operator(token);
     pushNode(new Send(receiver, selector, arguments));
   }
 
   @override
-  void handleNewExpression(Token token) {
+  void endNewExpression(Token token) {
     NodeList arguments = popNode();
     Node name = popNode();
     pushNode(new NewExpression(token, new Send(null, name, arguments)));
   }
 
   @override
-  void handleConstExpression(Token token) {
+  void endConstExpression(Token token) {
     // [token] carries the 'const' information.
-    handleNewExpression(token);
+    endNewExpression(token);
   }
 
   @override
   void handleOperator(Token token) {
     pushNode(new Operator(token));
+  }
+
+  @override
+  void handleSymbolVoid(Token token) {
+    logEvent('SymbolVoid');
   }
 
   @override
@@ -753,13 +778,36 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFunctionTypedFormalParameter(Token endToken) {
+  void handleIdentifier(Token token, IdentifierContext context) {
+    if (IdentifierContext.formalParameterDeclaration == context ||
+        IdentifierContext.fieldInitializer == context) {
+      var typeAnnotation = popNode();
+      if (typeAnnotation is FunctionExpression) {
+        pushNode(null); // Signal "no type" to endFormalParameter.
+        pushNode(new FunctionExpression(
+            new Identifier(token),
+            typeAnnotation.typeVariables,
+            typeAnnotation.parameters,
+            null,
+            typeAnnotation.returnType,
+            typeAnnotation.modifiers,
+            null,
+            null,
+            null));
+        return;
+      } else {
+        pushNode(typeAnnotation);
+      }
+    }
+    pushNode(new Identifier(token));
+  }
+
+  @override
+  void endFunctionTypedFormalParameter() {
     NodeList formals = popNode();
-    NodeList typeVariables = popNode();
-    Identifier name = popNode();
     TypeAnnotation returnType = popNode();
-    pushNode(null); // Signal "no type" to endFormalParameter.
-    pushNode(new FunctionExpression(name, typeVariables, formals, null,
+    NodeList typeVariables = popNode();
+    pushNode(new FunctionExpression(null, typeVariables, formals, null,
         returnType, Modifiers.EMPTY, null, null, null));
   }
 
@@ -772,8 +820,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void handleFormalParameterWithoutValue(Token token) {
-  }
+  void handleFormalParameterWithoutValue(Token token) {}
 
   @override
   void endTryStatement(int catchCount, Token tryKeyword, Token finallyKeyword) {
@@ -854,12 +901,14 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endFactoryMethod(Token beginToken, Token endToken) {
-    super.endFactoryMethod(beginToken, endToken);
+  void endFactoryMethod(
+      Token beginToken, Token factoryKeyword, Token endToken) {
+    super.endFactoryMethod(beginToken, factoryKeyword, endToken);
     Statement body = popNode();
     AsyncModifier asyncModifier = popNode();
     NodeList formals = popNode();
     Node name = popNode();
+    popNode(); // Discard modifiers. They're recomputed below.
 
     // TODO(ahe): Move this parsing to the parser.
     int modifierCount = 0;
@@ -885,8 +934,8 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endForIn(
-      Token awaitToken, Token forToken, Token inKeyword, Token endToken) {
+  void endForIn(Token awaitToken, Token forToken, Token leftParenthesis,
+      Token inKeyword, Token rightParenthesis, Token endToken) {
     Statement body = popNode();
     Expression expression = popNode();
     Node declaredIdentifier = popNode();
@@ -946,8 +995,8 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void handleAssertStatement(
-      Token assertKeyword, Token commaToken, Token semicolonToken) {
+  void endAssert(Token assertKeyword, fasta.Assert kind, Token leftParenthesis,
+      Token commaToken, Token rightParenthesis, Token semicolonToken) {
     Node message;
     Node condition;
     if (commaToken != null) {
@@ -958,7 +1007,7 @@ class NodeListener extends ElementListener {
   }
 
   @override
-  void endUnnamedFunction(Token token) {
+  void endFunctionExpression(Token beginToken, Token token) {
     Statement body = popNode();
     AsyncModifier asyncModifier = popNode();
     NodeList formals = popNode();
@@ -993,6 +1042,18 @@ class NodeListener extends ElementListener {
     Statement statement = popNode();
     NodeList labels = makeNodeList(labelCount, null, null, null);
     pushNode(new LabeledStatement(labels, statement));
+  }
+
+  @override
+  void endTypeVariable(Token token, Token extendsOrSuper) {
+    inTypeVariable = false;
+    NominalTypeAnnotation bound = popNode();
+    Identifier name = popNode();
+    // TODO(paulberry): type variable metadata should not be ignored.  See
+    // dartbug.com/5841.
+    popNode(); // Metadata
+    pushNode(new TypeVariable(name, extendsOrSuper, bound));
+    rejectBuiltInIdentifier(name);
   }
 
   @override

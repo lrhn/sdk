@@ -2,10 +2,7 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.services.refactoring.rename_library;
-
-import 'package:analysis_server/plugin/protocol/protocol.dart';
-import 'package:analyzer/src/generated/source.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -14,7 +11,6 @@ import 'abstract_rename.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(RenameLibraryTest);
-    defineReflectiveTests(RenameLibraryTest_Driver);
   });
 }
 
@@ -44,7 +40,7 @@ library my.app;
   }
 
   test_createChange() async {
-    Source unitSource = addSource(
+    addSource(
         '/part.dart',
         '''
 part of my.app;
@@ -53,9 +49,6 @@ part of my.app;
 library my.app;
 part 'part.dart';
 ''');
-    if (!enableNewAnalysisDriver) {
-      index.indexUnit(context.resolveCompilationUnit2(unitSource, testSource));
-    }
     // configure refactoring
     _createRenameRefactoring();
     expect(refactoring.refactoringName, 'Rename Library');
@@ -74,7 +67,7 @@ part of the.new.name;
   }
 
   test_createChange_hasWhitespaces() async {
-    Source unitSource = addSource(
+    addSource(
         '/part.dart',
         '''
 part of my .  app;
@@ -83,9 +76,6 @@ part of my .  app;
 library my    . app;
 part 'part.dart';
 ''');
-    if (!enableNewAnalysisDriver) {
-      index.indexUnit(context.resolveCompilationUnit2(unitSource, testSource));
-    }
     // configure refactoring
     _createRenameRefactoring();
     expect(refactoring.refactoringName, 'Rename Library');
@@ -106,10 +96,4 @@ part of the.new.name;
   void _createRenameRefactoring() {
     createRenameRefactoringForElement(testUnitElement.library);
   }
-}
-
-@reflectiveTest
-class RenameLibraryTest_Driver extends RenameLibraryTest {
-  @override
-  bool get enableNewAnalysisDriver => true;
 }

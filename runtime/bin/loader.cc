@@ -7,17 +7,23 @@
 
 #include "bin/builtin.h"
 #include "bin/dartutils.h"
+#include "bin/dfe.h"
 #include "bin/extensions.h"
 #include "bin/file.h"
 #include "bin/lockers.h"
 #include "bin/utils.h"
 #include "include/dart_tools_api.h"
+#include "platform/growable_array.h"
 
 namespace dart {
 namespace bin {
 
 // Development flag.
 static bool trace_loader = false;
+#if !defined(DART_PRECOMPILED_RUNTIME)
+extern DFE dfe;
+#endif
+
 // Keep in sync with loader.dart.
 static const intptr_t _Dart_kImportExtension = 9;
 static const intptr_t _Dart_kResolveAsFilePath = 10;
@@ -139,7 +145,7 @@ void Loader::Init(const char* package_root,
   // Keep in sync with loader.dart.
   const intptr_t _Dart_kInitLoader = 4;
 
-  Dart_Handle request = Dart_NewList(8);
+  Dart_Handle request = Dart_NewList(9);
   Dart_ListSetAt(request, 0, trace_loader ? Dart_True() : Dart_False());
   Dart_ListSetAt(request, 1, Dart_NewInteger(Dart_GetMainPortId()));
   Dart_ListSetAt(request, 2, Dart_NewInteger(_Dart_kInitLoader));
@@ -154,6 +160,8 @@ void Loader::Init(const char* package_root,
   Dart_ListSetAt(request, 7, (root_script_uri == NULL)
                                  ? Dart_Null()
                                  : Dart_NewStringFromCString(root_script_uri));
+  Dart_ListSetAt(request, 8, Dart_NewBoolean(Dart_IsReloading()));
+
 
   bool success = Dart_Post(loader_port, request);
   ASSERT(success);
@@ -283,6 +291,47 @@ static bool PathContainsSeparator(const char* path) {
 }
 
 
+void Loader::AddDependencyLocked(Loader* loader, const char* resolved_uri) {
+  MallocGrowableArray<char*>* dependencies =
+      loader->isolate_data_->dependencies();
+  if (dependencies == NULL) {
+    return;
+  }
+  dependencies->Add(strdup(resolved_uri));
+}
+
+
+void Loader::ResolveDependenciesAsFilePaths() {
+  IsolateData* isolate_data =
+      reinterpret_cast<IsolateData*>(Dart_CurrentIsolateData());
+  ASSERT(isolate_data != NULL);
+  MallocGrowableArray<char*>* dependencies = isolate_data->dependencies();
+  if (dependencies == NULL) {
+    return;
+  }
+
+  for (intptr_t i = 0; i < dependencies->length(); i++) {
+    char* resolved_uri = (*dependencies)[i];
+
+    uint8_t* scoped_file_path = NULL;
+    intptr_t scoped_file_path_length = -1;
+    Dart_Handle uri = Dart_NewStringFromCString(resolved_uri);
+    ASSERT(!Dart_IsError(uri));
+    Dart_Handle result = Loader::ResolveAsFilePath(uri, &scoped_file_path,
+                                                   &scoped_file_path_length);
+    if (Dart_IsError(result)) {
+      Log::Print("Error resolving dependency: %s\n", Dart_GetError(result));
+      return;
+    }
+
+    (*dependencies)[i] =
+        StringUtils::StrNDup(reinterpret_cast<const char*>(scoped_file_path),
+                             scoped_file_path_length);
+    free(resolved_uri);
+  }
+}
+
+
 bool Loader::ProcessResultLocked(Loader* loader, Loader::IOResult* result) {
   // We have to copy everything we care about out of |result| because after
   // dropping the lock below |result| may no longer valid.
@@ -295,6 +344,8 @@ bool Loader::ProcessResultLocked(Loader* loader, Loader::IOResult* result) {
     library_uri =
         Dart_NewStringFromCString(reinterpret_cast<char*>(result->library_uri));
   }
+
+  AddDependencyLocked(loader, result->resolved_uri);
 
   // A negative result tag indicates a loading error occurred in the service
   // isolate. The payload is a C string of the error message.
@@ -573,7 +624,22 @@ Dart_Handle Loader::ResolveAsFilePath(Dart_Handle url,
                              payload_length);
 }
 
+#if defined(DART_PRECOMPILED_RUNTIME)
+Dart_Handle Loader::LibraryTagHandler(Dart_LibraryTag tag,
+                                      Dart_Handle library,
+                                      Dart_Handle url) {
+  return Dart_Null();
+}
 
+
+Dart_Handle Loader::DartColonLibraryTagHandler(Dart_LibraryTag tag,
+                                               Dart_Handle library,
+                                               Dart_Handle url,
+                                               const char* library_url_string,
+                                               const char* url_string) {
+  return Dart_Null();
+}
+#else
 Dart_Handle Loader::LibraryTagHandler(Dart_LibraryTag tag,
                                       Dart_Handle library,
                                       Dart_Handle url) {
@@ -589,9 +655,21 @@ Dart_Handle Loader::LibraryTagHandler(Dart_LibraryTag tag,
   if (Dart_IsError(result)) {
     return result;
   }
-
-  // Special case for handling dart: imports and parts.
-  if (tag != Dart_kScriptTag) {
+  if (tag == Dart_kScriptTag) {
+    if (dfe.UseDartFrontend()) {
+      Dart_Isolate current = Dart_CurrentIsolate();
+      // Check if we are trying to reload a kernel file or if the '--dfe'
+      // option was specified and we need to compile sources using DFE.
+      if (!Dart_IsServiceIsolate(current) && !Dart_IsKernelIsolate(current)) {
+        // When using DFE the library tag handler should be called only when
+        // we are reloading scripts.
+        return dfe.ReloadScript(current, url_string);
+      }
+    }
+    // TODO(asiva) We need to ensure that the kernel and service isolates
+    // are always loaded from a kernel IR and do not use this path.
+  } else {
+    // Special case for handling dart: imports and parts.
     // Grab the library's url.
     Dart_Handle library_url = Dart_LibraryUrl(library);
     if (Dart_IsError(library_url)) {
@@ -627,7 +705,15 @@ Dart_Handle Loader::LibraryTagHandler(Dart_LibraryTag tag,
   IsolateData* isolate_data =
       reinterpret_cast<IsolateData*>(Dart_CurrentIsolateData());
   ASSERT(isolate_data != NULL);
-
+  if ((tag == Dart_kScriptTag) && Dart_IsString(library)) {
+    // Update packages file for isolate.
+    const char* packages_file = NULL;
+    Dart_Handle result = Dart_StringToCString(library, &packages_file);
+    if (Dart_IsError(result)) {
+      return result;
+    }
+    isolate_data->UpdatePackagesFile(packages_file);
+  }
   // Grab this isolate's loader.
   Loader* loader = NULL;
 
@@ -751,6 +837,7 @@ Dart_Handle Loader::DartColonLibraryTagHandler(Dart_LibraryTag tag,
   UNREACHABLE();
   return Dart_Null();
 }
+#endif  // !defined(DART_PRECOMPILED_RUNTIME)
 
 
 void Loader::InitOnce() {

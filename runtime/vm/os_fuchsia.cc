@@ -3,12 +3,14 @@
 // BSD-style license that can be found in the LICENSE file.
 
 #include "vm/globals.h"
-#if defined(TARGET_OS_FUCHSIA)
+#if defined(HOST_OS_FUCHSIA)
 
 #include "vm/os.h"
 
 #include <errno.h>
+#include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/object.h>
 #include <magenta/types.h>
 
 #include "platform/assert.h"
@@ -128,7 +130,7 @@ intptr_t OS::PreferredCodeAlignment() {
 #if defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_X64) ||                   \
     defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_DBC)
   const int kMinimumAlignment = 32;
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_ARM)
   const int kMinimumAlignment = 16;
 #else
 #error Unsupported architecture.
@@ -144,36 +146,40 @@ intptr_t OS::PreferredCodeAlignment() {
 }
 
 
-bool OS::AllowStackFrameIteratorFromAnotherThread() {
-  UNIMPLEMENTED();
-  return false;
-}
-
-
 int OS::NumberOfAvailableProcessors() {
   return sysconf(_SC_NPROCESSORS_CONF);
 }
 
 
 uintptr_t OS::MaxRSS() {
-  // TODO(US-95): Implement.
-  return 0;
+  mx_info_task_stats_t task_stats;
+  mx_handle_t process = mx_process_self();
+  mx_status_t status = mx_object_get_info(
+      process, MX_INFO_TASK_STATS, &task_stats, sizeof(task_stats), NULL, NULL);
+  return (status == MX_OK)
+             ? (task_stats.mem_private_bytes + task_stats.mem_shared_bytes)
+             : 0;
 }
 
 
 void OS::Sleep(int64_t millis) {
-  mx_nanosleep(millis * kMicrosecondsPerMillisecond *
-               kNanosecondsPerMicrosecond);
+  SleepMicros(millis * kMicrosecondsPerMillisecond);
 }
 
 
 void OS::SleepMicros(int64_t micros) {
-  mx_nanosleep(micros * kNanosecondsPerMicrosecond);
+  mx_nanosleep(mx_deadline_after(micros * kNanosecondsPerMicrosecond));
 }
 
 
 void OS::DebugBreak() {
   UNIMPLEMENTED();
+}
+
+
+uintptr_t DART_NOINLINE OS::GetProgramCounter() {
+  return reinterpret_cast<uintptr_t>(
+      __builtin_extract_return_addr(__builtin_return_address(0)));
 }
 
 
@@ -311,4 +317,4 @@ void OS::Exit(int code) {
 
 }  // namespace dart
 
-#endif  // defined(TARGET_OS_FUCHSIA)
+#endif  // defined(HOST_OS_FUCHSIA)

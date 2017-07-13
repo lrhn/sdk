@@ -6,7 +6,9 @@ library dev_compiler.web.web_command;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:html' show HttpRequest;
+import 'dart:typed_data';
 
 import 'package:analyzer/dart/element/element.dart'
     show
@@ -20,11 +22,7 @@ import 'package:analyzer/file_system/memory_file_system.dart'
 import 'package:analyzer/src/context/context.dart' show AnalysisContextImpl;
 import 'package:analyzer/src/summary/idl.dart' show PackageBundle;
 import 'package:analyzer/src/summary/package_bundle_reader.dart'
-    show
-        SummaryDataStore,
-        InSummaryUriResolver,
-        InputPackagesResultProvider,
-        InSummarySource;
+    show SummaryDataStore, InSummaryUriResolver, InSummarySource;
 import 'package:analyzer/src/dart/resolver/scope.dart' show Scope;
 
 import 'package:args/command_runner.dart';
@@ -38,6 +36,22 @@ import 'package:js/js.dart';
 import 'package:path/path.dart' as path;
 
 typedef void MessageHandler(Object message);
+
+@JS()
+@anonymous
+class JSIterator<V> {}
+
+@JS('Map')
+class JSMap<K, V> {
+  external V get(K v);
+  external set(K k, V v);
+  external JSIterator<K> keys();
+  external JSIterator<V> values();
+  external int get size;
+}
+
+@JS('Array.from')
+external List<V> iteratorToList<V>(JSIterator<V> iterator);
 
 @JS()
 @anonymous
@@ -67,35 +81,60 @@ class WebCompileCommand extends Command {
     return requestSummaries;
   }
 
-  void requestSummaries(String summaryRoot, String sdkUrl, List<String> summaryUrls,
-      Function onCompileReady, Function onError) {
-    HttpRequest
-        .request(summaryRoot + sdkUrl,
-            responseType: "arraybuffer", mimeType: "application/octet-stream")
-        .then((sdkRequest) {
-      var sdkBytes = sdkRequest.response.asUint8List();
+  Future<Null> requestSummaries(String sdkUrl, JSMap<String, String> summaryMap,
+      Function onCompileReady, Function onError, Function onProgress) async {
+    var sdkRequest;
+    var progress = 0;
+    // Add 1 to the count for the SDK summary.
+    var total = summaryMap.size + 1;
+    // No need to report after every  summary is loaded. Posting about 100
+    // progress updates should be more than sufficient for users to understand
+    // how long loading will take.
+    num progressDelta = math.max(total / 100, 1);
+    num nextProgressToReport = 0;
+    maybeReportProgress() {
+      if (nextProgressToReport > progress && progress != total) return;
+      nextProgressToReport += progressDelta;
+      if (onProgress != null) onProgress(progress, total);
+    }
 
-      // Map summary URLs to HttpRequests.
-      var summaryRequests = summaryUrls.map((summary) => new Future(() =>
-          HttpRequest.request(summaryRoot + summary,
-              responseType: "arraybuffer",
-              mimeType: "application/octet-stream")));
+    try {
+      sdkRequest = await HttpRequest.request(sdkUrl,
+          responseType: "arraybuffer", mimeType: "application/octet-stream");
+    } catch (error) {
+      onError('Dart sdk summaries failed to load: $error. url: $sdkUrl');
+      return null;
+    }
+    progress++;
+    maybeReportProgress();
 
-      Future.wait(summaryRequests).then((summaryResponses) {
-        // Map summary responses to summary bytes.
-        var summaryBytes = <List<int>>[];
-        for (var response in summaryResponses) {
-          summaryBytes.add(response.response.asUint8List());
-        }
+    var sdkBytes = (sdkRequest.response as ByteBuffer).asUint8List();
 
-        onCompileReady(setUpCompile(sdkBytes, summaryBytes, summaryUrls));
-      }).catchError((error) => onError('Summaries failed to load: $error'));
-    }).catchError(
-            (error) => onError('Dart sdk summaries failed to load: $error. url: $sdkUrl'));
+    // Map summary URLs to HttpRequests.
+
+    var summaryRequests =
+        iteratorToList(summaryMap.values()).map((String summaryUrl) async {
+      var request = await HttpRequest.request(summaryUrl,
+          responseType: "arraybuffer", mimeType: "application/octet-stream");
+      progress++;
+      maybeReportProgress();
+      return request;
+    }).toList();
+    try {
+      var summaryResponses = await Future.wait(summaryRequests);
+      // Map summary responses to summary bytes.
+      List<List<int>> summaryBytes = summaryResponses
+          .map((response) => (response.response as ByteBuffer).asUint8List())
+          .toList();
+      onCompileReady(setUpCompile(
+          sdkBytes, summaryBytes, iteratorToList(summaryMap.keys())));
+    } catch (error) {
+      onError('Summaries failed to load: $error');
+    }
   }
 
   List<Function> setUpCompile(List<int> sdkBytes, List<List<int>> summaryBytes,
-      List<String> summaryUrls) {
+      List<String> moduleIds) {
     var dartSdkSummaryPath = '/dart-sdk/lib/_internal/web_sdk.sum';
 
     var resourceProvider = new MemoryResourceProvider()
@@ -104,13 +143,17 @@ class WebCompileCommand extends Command {
     var resourceUriResolver = new ResourceUriResolver(resourceProvider);
 
     var options = new AnalyzerOptions.basic(
-            dartSdkPath: '/dart-sdk', dartSdkSummaryPath: dartSdkSummaryPath);
+        dartSdkPath: '/dart-sdk', dartSdkSummaryPath: dartSdkSummaryPath);
 
-    var summaryDataStore =
-        new SummaryDataStore(options.summaryPaths, resourceProvider: resourceProvider, recordDependencyInfo: true);
+    var summaryDataStore = new SummaryDataStore(options.summaryPaths,
+        resourceProvider: resourceProvider, recordDependencyInfo: true);
     for (var i = 0; i < summaryBytes.length; i++) {
       var bytes = summaryBytes[i];
-      var url = '/' + summaryUrls[i];
+
+      // Packages with no dart source files will have empty invalid summaries.
+      if (bytes.length == 0) continue;
+
+      var url = '/${moduleIds[i]}.api.ds';
       var summaryBundle = new PackageBundle.fromBuffer(bytes);
       summaryDataStore.addBundle(url, summaryBundle);
     }
@@ -119,8 +162,7 @@ class WebCompileCommand extends Command {
 
     var fileResolvers = [summaryResolver, resourceUriResolver];
 
-    var compiler = new ModuleCompiler(
-        options,
+    var compiler = new ModuleCompiler(options,
         analysisRoot: '/web-compile-root',
         fileResolvers: fileResolvers,
         resourceProvider: resourceProvider,

@@ -4,143 +4,150 @@
 
 import 'dart:async';
 
-import 'package:analyzer/dart/ast/ast.dart';
-import 'package:analyzer/dart/ast/standard_resolution_map.dart';
-import 'package:analyzer/dart/element/element.dart';
-import 'package:analyzer/error/error.dart';
-import 'package:analyzer/src/generated/engine.dart';
-import 'package:analyzer/src/generated/source.dart';
 import 'package:front_end/incremental_kernel_generator.dart';
-import 'package:front_end/incremental_resolved_ast_generator.dart';
+import 'package:front_end/src/base/performace_logger.dart';
 import 'package:front_end/src/base/processed_options.dart';
-import 'package:front_end/src/base/source.dart';
-import 'package:front_end/src/incremental_resolved_ast_generator_impl.dart';
-import 'package:kernel/analyzer/loader.dart';
+import 'package:front_end/src/fasta/uri_translator.dart';
+import 'package:front_end/src/incremental/file_state.dart';
+import 'package:front_end/src/incremental/kernel_driver.dart';
 import 'package:kernel/kernel.dart' hide Source;
-
-dynamic unimplemented() {
-  // TODO(paulberry): get rid of this.
-  throw new UnimplementedError();
-}
-
-DartOptions _convertOptions(ProcessedOptions options) {
-  // TODO(paulberry): make sure options.compileSdk is handled correctly.
-  return new DartOptions(
-      strongMode: true, // TODO(paulberry): options.strongMode,
-      sdk: null, // TODO(paulberry): _uriToPath(options.sdkRoot, options),
-      sdkSummary:
-          null, // TODO(paulberry): options.compileSdk ? null : _uriToPath(options.sdkSummary, options),
-      packagePath:
-          null, // TODO(paulberry): _uriToPath(options.packagesFileUri, options),
-      declaredVariables: null // TODO(paulberry): options.declaredVariables
-      );
-}
+import 'package:meta/meta.dart';
 
 /// Implementation of [IncrementalKernelGenerator].
+///
+/// TODO(scheglov) Update the documentation.
 ///
 /// Theory of operation: an instance of [IncrementalResolvedAstGenerator] is
 /// used to obtain resolved ASTs, and these are fed into kernel code generation
 /// logic.
-///
-/// Note that the kernel doesn't expect to take resolved ASTs as a direct input;
-/// it expects to request resolved ASTs from an [AnalysisContext].  To deal with
-/// this, we create [_AnalysisContextProxy] which returns the resolved ASTs when
-/// requested.  TODO(paulberry): Make this unnecessary.
 class IncrementalKernelGeneratorImpl implements IncrementalKernelGenerator {
-  final IncrementalResolvedAstGenerator _resolvedAstGenerator;
-  final ProcessedOptions _options;
+  /// The version of data format, should be incremented on every format change.
+  static const int DATA_VERSION = 1;
 
-  IncrementalKernelGeneratorImpl(Uri source, ProcessedOptions options)
-      : _resolvedAstGenerator =
-            new IncrementalResolvedAstGeneratorImpl(source, options),
-        _options = options;
+  /// The logger to report compilation progress.
+  final PerformanceLog _logger;
 
-  @override
-  Future<DeltaProgram> computeDelta(
-      {Future<Null> watch(Uri uri, bool used)}) async {
-    var deltaLibraries = await _resolvedAstGenerator.computeDelta();
-    var kernelOptions = _convertOptions(_options);
-    var packages = null; // TODO(paulberry)
-    var kernels = <Uri, Program>{};
-    for (Uri uri in deltaLibraries.newState.keys) {
-      // The kernel generation code doesn't currently support building a kernel
-      // directly from resolved ASTs--it wants to query an analysis context.  So
-      // we provide it with a proxy analysis context that feeds it the resolved
-      // ASTs.
-      var strongMode = true; // TODO(paulberry): set this correctly
-      var analysisOptions = new _AnalysisOptionsProxy(strongMode);
-      var context =
-          new _AnalysisContextProxy(deltaLibraries.newState, analysisOptions);
-      var program = new Program();
-      var loader =
-          new DartLoader(program, kernelOptions, packages, context: context);
-      loader.loadLibrary(uri);
-      kernels[uri] = program;
-      // TODO(paulberry) rework watch invocation to eliminate race condition,
-      // include part source files, and prevent watch from being a bottleneck
-      if (watch != null) await watch(uri, true);
+  /// The URI of the program entry point.
+  final Uri _entryPoint;
+
+  /// The function to notify when files become used or unused, or `null`.
+  final WatchUsedFilesFn _watchFn;
+
+  /// TODO(scheglov) document
+  KernelDriver _driver;
+
+  /// Latest compilation signatures produced by [computeDelta] for libraries.
+  final Map<Uri, String> _latestSignature = {};
+
+  /// The object that provides additional information for tests.
+  _TestView _testView;
+
+  IncrementalKernelGeneratorImpl(
+      ProcessedOptions options, UriTranslator uriTranslator, this._entryPoint,
+      {WatchUsedFilesFn watch})
+      : _logger = options.logger,
+        _watchFn = watch {
+    _testView = new _TestView(this);
+
+    Future<Null> onFileAdded(Uri uri) {
+      if (_watchFn != null) {
+        return _watchFn(uri, true);
+      }
+      return new Future.value();
     }
-    // TODO(paulberry) invoke watch with used=false for each unused source
-    return new DeltaProgram(kernels);
+
+    _driver = new KernelDriver(_logger, options.fileSystem, options.byteStore,
+        uriTranslator, options.strongMode,
+        fileAddedFn: onFileAdded);
+  }
+
+  /// Return the object that provides additional information for tests.
+  @visibleForTesting
+  _TestView get test => _testView;
+
+  @override
+  Future<DeltaProgram> computeDelta() async {
+    return await _logger.runAsync('Compute delta', () async {
+      KernelResult kernelResult = await _driver.getKernel(_entryPoint);
+      List<LibraryCycleResult> results = kernelResult.results;
+
+      // The file graph might have changed, perform GC.
+      await _gc();
+
+      // The set of affected library cycles (have different signatures).
+      final affectedLibraryCycles = new Set<LibraryCycle>();
+      for (LibraryCycleResult result in results) {
+        for (Library library in result.kernelLibraries) {
+          Uri uri = library.importUri;
+          if (_latestSignature[uri] != result.signature) {
+            _latestSignature[uri] = result.signature;
+            affectedLibraryCycles.add(result.cycle);
+          }
+        }
+      }
+
+      // The set of affected library cycles (have different signatures),
+      // or libraries that import or export affected libraries (so VM might
+      // have inlined some code from affected libraries into them).
+      final vmRequiredLibraryCycles = new Set<LibraryCycle>();
+
+      void gatherVmRequiredLibraryCycles(LibraryCycle cycle) {
+        if (vmRequiredLibraryCycles.add(cycle)) {
+          cycle.directUsers.forEach(gatherVmRequiredLibraryCycles);
+        }
+      }
+
+      affectedLibraryCycles.forEach(gatherVmRequiredLibraryCycles);
+
+      // Add required libraries.
+      Program program = new Program(nameRoot: kernelResult.nameRoot);
+      for (LibraryCycleResult result in results) {
+        if (vmRequiredLibraryCycles.contains(result.cycle)) {
+          for (Library library in result.kernelLibraries) {
+            program.libraries.add(library);
+            library.parent = program;
+          }
+        }
+      }
+
+      // Set the main method.
+      if (program.libraries.isNotEmpty) {
+        for (Library library in results.last.kernelLibraries) {
+          if (library.importUri == _entryPoint) {
+            program.mainMethod = library.procedures.firstWhere(
+                (procedure) => procedure.name.name == 'main',
+                orElse: () => null);
+            break;
+          }
+        }
+      }
+
+      return new DeltaProgram(program);
+    });
   }
 
   @override
-  void invalidate(String path) => _resolvedAstGenerator.invalidate(path);
-
-  @override
-  void invalidateAll() => _resolvedAstGenerator.invalidateAll();
-}
-
-class _AnalysisContextProxy implements AnalysisContext {
-  final Map<Uri, Map<Uri, CompilationUnit>> _resolvedLibraries;
-
-  @override
-  final _SourceFactoryProxy sourceFactory = new _SourceFactoryProxy();
-
-  @override
-  final AnalysisOptions analysisOptions;
-
-  _AnalysisContextProxy(this._resolvedLibraries, this.analysisOptions);
-
-  List<AnalysisError> computeErrors(Source source) {
-    // TODO(paulberry): do we need to return errors sometimes?
-    return [];
+  void invalidate(Uri uri) {
+    _driver.invalidate(uri);
   }
 
-  LibraryElement computeLibraryElement(Source source) {
-    assert(_resolvedLibraries.containsKey(source.uri));
-    return resolutionMap
-        .elementDeclaredByCompilationUnit(
-            _resolvedLibraries[source.uri][source.uri])
-        .library;
-  }
-
-  noSuchMethod(Invocation invocation) => unimplemented();
-
-  CompilationUnit resolveCompilationUnit(
-      Source unitSource, LibraryElement library) {
-    var unit = _resolvedLibraries[library.source.uri][unitSource.uri];
-    assert(unit != null);
-    return unit;
+  /// TODO(scheglov) document
+  Future<Null> _gc() async {
+    var removedFiles = _driver.fsState.gc(_entryPoint);
+    if (removedFiles.isNotEmpty && _watchFn != null) {
+      for (var removedFile in removedFiles) {
+        await _watchFn(removedFile.fileUri, false);
+      }
+    }
   }
 }
 
-class _AnalysisOptionsProxy implements AnalysisOptions {
-  final bool strongMode;
+@visibleForTesting
+class _TestView {
+  final IncrementalKernelGeneratorImpl _generator;
 
-  _AnalysisOptionsProxy(this.strongMode);
+  _TestView(this._generator);
 
-  noSuchMethod(Invocation invocation) => unimplemented();
-}
-
-class _SourceFactoryProxy implements SourceFactory {
-  Source forUri2(Uri absoluteUri) => new _SourceProxy(absoluteUri);
-
-  noSuchMethod(Invocation invocation) => unimplemented();
-}
-
-class _SourceProxy extends BasicSource {
-  _SourceProxy(Uri uri) : super(uri);
-
-  noSuchMethod(Invocation invocation) => unimplemented();
+  /// The [KernelDriver] that is used to actually compile.
+  KernelDriver get driver => _generator._driver;
 }

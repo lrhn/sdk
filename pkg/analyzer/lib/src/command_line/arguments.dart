@@ -15,42 +15,61 @@ import 'package:args/args.dart';
 import 'package:path/path.dart';
 
 const String analysisOptionsFileOption = 'options';
+const String bazelAnalysisOptionsPath =
+    'package:dart.analysis_options/default.yaml';
 const String defineVariableOption = 'D';
 const String enableInitializingFormalAccessFlag = 'initializing-formal-access';
 const String enableStrictCallChecksFlag = 'enable-strict-call-checks';
 const String enableSuperMixinFlag = 'supermixin';
+const String flutterAnalysisOptionsPath =
+    'package:flutter/analysis_options_user.yaml';
 const String ignoreUnrecognizedFlagsFlag = 'ignore-unrecognized-flags';
 const String lintsFlag = 'lints';
 const String noImplicitCastsFlag = 'no-implicit-casts';
 const String noImplicitDynamicFlag = 'no-implicit-dynamic';
+const String packageDefaultAnalysisOptions = 'package-default-analysis-options';
 const String packageRootOption = 'package-root';
 const String packagesOption = 'packages';
 const String sdkPathOption = 'dart-sdk';
+
 const String sdkSummaryPathOption = 'dart-sdk-summary';
 const String strongModeFlag = 'strong';
 
 /**
  * Update [options] with the value of each analysis option command line flag.
  */
-void applyAnalysisOptionFlags(AnalysisOptionsImpl options, ArgResults args) {
+void applyAnalysisOptionFlags(AnalysisOptionsImpl options, ArgResults args,
+    {void verbosePrint(String text)}) {
+  void verbose(String text) {
+    if (verbosePrint != null) {
+      verbosePrint('Analysis options: $text');
+    }
+  }
+
   if (args.wasParsed(enableStrictCallChecksFlag)) {
     options.enableStrictCallChecks = args[enableStrictCallChecksFlag];
+    verbose('$enableStrictCallChecksFlag = ${options.enableStrictCallChecks}');
   }
   if (args.wasParsed(enableSuperMixinFlag)) {
     options.enableSuperMixins = args[enableSuperMixinFlag];
+    verbose('$enableSuperMixinFlag = ${options.enableSuperMixins}');
   }
   if (args.wasParsed(noImplicitCastsFlag)) {
     options.implicitCasts = !args[noImplicitCastsFlag];
+    verbose('$noImplicitCastsFlag = ${options.implicitCasts}');
   }
   if (args.wasParsed(noImplicitDynamicFlag)) {
     options.implicitDynamic = !args[noImplicitDynamicFlag];
+    verbose('$noImplicitDynamicFlag = ${options.implicitDynamic}');
   }
   if (args.wasParsed(strongModeFlag)) {
     options.strongMode = args[strongModeFlag];
+    verbose('$strongModeFlag = ${options.strongMode}');
   }
   try {
     if (args.wasParsed(lintsFlag)) {
       options.lint = args[lintsFlag];
+      verbose('$lintsFlag = ${options.lint}');
     }
   } on ArgumentError {
     // lints were not defined - ignore and fall through
@@ -73,6 +92,11 @@ ContextBuilderOptions createContextBuilderOptions(ArgResults args,
       args[analysisOptionsFileOption];
   builderOptions.defaultPackageFilePath = args[packagesOption];
   builderOptions.defaultPackagesDirectoryPath = args[packageRootOption];
+  //
+  // Flags.
+  //
+  builderOptions.packageDefaultAnalysisOptions =
+      args[packageDefaultAnalysisOptions];
   //
   // Analysis options.
   //
@@ -165,6 +189,17 @@ void defineAnalysisArguments(ArgParser parser, {bool hide: true, ddc: false}) {
       allowMultiple: true,
       help: 'Define environment variables. For example, "-Dfoo=bar" defines an '
           'environment variable named "foo" whose value is "bar".',
+      hide: hide);
+  parser.addFlag(packageDefaultAnalysisOptions,
+      help: 'If an analysis options file is not explicitly specified '
+          'via the "--$analysisOptionsFileOption" option\n'
+          'and an analysis options file cannot be found '
+          'in the project directory or any parent directory,\n'
+          'then look for analysis options in the following locations:\n'
+          '- $flutterAnalysisOptionsPath\n'
+          '- $bazelAnalysisOptionsPath',
+      defaultsTo: true,
+      negatable: true,
       hide: hide);
   parser.addOption(packagesOption,
       help: 'The path to the package resolution configuration file, which '

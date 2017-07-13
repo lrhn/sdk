@@ -2,10 +2,7 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library analyzer_cli.src.driver;
-
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:analyzer/error/error.dart';
@@ -18,7 +15,6 @@ import 'package:analyzer/source/package_map_resolver.dart';
 import 'package:analyzer/source/pub_package_map_provider.dart';
 import 'package:analyzer/source/sdk_ext.dart';
 import 'package:analyzer/src/context/builder.dart';
-import 'package:analyzer/src/dart/analysis/byte_store.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/dart/analysis/file_state.dart';
 import 'package:analyzer/src/dart/sdk/sdk.dart';
@@ -36,12 +32,17 @@ import 'package:analyzer/src/summary/idl.dart';
 import 'package:analyzer/src/summary/package_bundle_reader.dart';
 import 'package:analyzer/src/summary/summary_sdk.dart' show SummaryBasedDartSdk;
 import 'package:analyzer_cli/src/analyzer_impl.dart';
+import 'package:analyzer_cli/src/batch_mode.dart';
 import 'package:analyzer_cli/src/build_mode.dart';
 import 'package:analyzer_cli/src/error_formatter.dart';
+import 'package:analyzer_cli/src/error_severity.dart';
 import 'package:analyzer_cli/src/options.dart';
 import 'package:analyzer_cli/src/perf_report.dart';
 import 'package:analyzer_cli/starter.dart' show CommandLineStarter;
+import 'package:front_end/src/base/performace_logger.dart';
+import 'package:front_end/src/incremental/byte_store.dart';
 import 'package:linter/src/rules.dart' as linter;
+import 'package:meta/meta.dart';
 import 'package:package_config/discovery.dart' as pkg_discovery;
 import 'package:package_config/packages.dart' show Packages;
 import 'package:package_config/packages_file.dart' as pkgfile show parse;
@@ -49,17 +50,25 @@ import 'package:package_config/src/packages_impl.dart' show MapPackages;
 import 'package:path/path.dart' as path;
 import 'package:plugin/manager.dart';
 import 'package:plugin/plugin.dart';
+import 'package:telemetry/crash_reporting.dart';
+import 'package:telemetry/telemetry.dart' as telemetry;
 import 'package:yaml/yaml.dart';
 
+const _analyticsID = 'UA-26406144-28';
+
 /// Shared IO sink for standard error reporting.
-///
-/// *Visible for testing.*
+@visibleForTesting
 StringSink errorSink = io.stderr;
 
 /// Shared IO sink for standard out reporting.
-///
-/// *Visible for testing.*
+@visibleForTesting
 StringSink outSink = io.stdout;
+
+telemetry.Analytics _analytics;
+
+/// The analytics instance for analyzer-cli.
+telemetry.Analytics get analytics => (_analytics ??=
+    telemetry.createAnalyticsInstance(_analyticsID, 'analyzer-cli'));
 
 /// Test this option map to see if it specifies lint rules.
 bool containsLintRuleEntry(Map<String, YamlNode> options) {
@@ -67,11 +76,26 @@ bool containsLintRuleEntry(Map<String, YamlNode> options) {
   return linterNode is YamlMap && linterNode.containsKey('rules');
 }
 
-typedef Future<ErrorSeverity> _BatchRunnerHandler(List<String> args);
+/// Make sure that we create an analytics instance that doesn't send for this
+/// session.
+void disableAnalyticsForSession() {
+  _analytics = telemetry.createAnalyticsInstance(_analyticsID, 'analyzer-cli',
+      disableForSession: true);
+}
+
+@visibleForTesting
+void setAnalytics(telemetry.Analytics replacementAnalytics) {
+  _analytics = replacementAnalytics;
+}
 
 class Driver implements CommandLineStarter {
   static final PerformanceTag _analyzeAllTag =
       new PerformanceTag("Driver._analyzeAll");
+
+  /// Cache of [AnalysisOptionsImpl] objects that correspond to directories
+  /// with analyzed files, used to reduce searching for `analysis_options.yaml`
+  /// files.
+  static Map<String, AnalysisOptionsImpl> _directoryToAnalysisOptions = {};
 
   static ByteStore analysisDriverMemoryByteStore = new MemoryByteStore();
 
@@ -106,10 +130,25 @@ class Driver implements CommandLineStarter {
   /// Collected analysis statistics.
   final AnalysisStats stats = new AnalysisStats();
 
-  /// This Driver's current analysis context.
+  CrashReportSender _crashReportSender;
+
+  /// Create a new Driver instance.
   ///
-  /// *Visible for testing.*
+  /// [isTesting] is true if we're running in a test environment.
+  Driver({bool isTesting: false}) {
+    if (isTesting) {
+      disableAnalyticsForSession();
+    }
+  }
+
+  /// This Driver's current analysis context.
+  @visibleForTesting
   AnalysisContext get context => _context;
+
+  /// The crash reporting instance for analyzer-cli.
+  /// TODO(devoncarew): Replace with the real crash product ID.
+  CrashReportSender get crashReportSender => (_crashReportSender ??=
+      new CrashReportSender('Dart_analyzer_cli', analytics));
 
   @override
   void set userDefinedPlugins(List<Plugin> plugins) {
@@ -130,22 +169,32 @@ class Driver implements CommandLineStarter {
     // Parse commandline options.
     CommandLineOptions options = CommandLineOptions.parse(args);
 
+    if (options.batchMode || options.buildMode) {
+      disableAnalyticsForSession();
+    }
+
+    // Ping analytics with our initial call.
+    analytics.sendScreenView('home');
+
+    var timer = analytics.startTimer('analyze');
+
     // Do analysis.
     if (options.buildMode) {
       ErrorSeverity severity = _buildModeAnalyze(options);
-      // In case of error propagate exit code.
-      if (severity == ErrorSeverity.ERROR) {
+      // Propagate issues to the exit code.
+      if (_shouldBeFatal(severity, options)) {
         io.exitCode = severity.ordinal;
       }
-    } else if (options.shouldBatch) {
-      _BatchRunner.runAsBatch(args, (List<String> args) async {
+    } else if (options.batchMode) {
+      BatchRunner batchRunner = new BatchRunner(outSink, errorSink);
+      batchRunner.runAsBatch(args, (List<String> args) async {
         CommandLineOptions options = CommandLineOptions.parse(args);
         return await _analyzeAll(options);
       });
     } else {
       ErrorSeverity severity = await _analyzeAll(options);
-      // In case of error propagate exit code.
-      if (severity == ErrorSeverity.ERROR) {
+      // Propagate issues to the exit code.
+      if (_shouldBeFatal(severity, options)) {
         io.exitCode = severity.ordinal;
       }
     }
@@ -154,17 +203,32 @@ class Driver implements CommandLineStarter {
       _analyzedFileCount += _context.sources.length;
     }
 
+    // Send how long analysis took.
+    timer.finish();
+
+    // Send how many files were analyzed.
+    analytics.sendEvent('analyze', 'fileCount', value: _analyzedFileCount);
+
     if (options.perfReport != null) {
       String json = makePerfReport(
           startTime, currentTimeMillis, options, _analyzedFileCount, stats);
       new io.File(options.perfReport).writeAsStringSync(json);
     }
+
+    // Wait a brief time for any analytics calls to finish.
+    await analytics.waitForLastPing(timeout: new Duration(milliseconds: 200));
+    analytics.close();
   }
 
   Future<ErrorSeverity> _analyzeAll(CommandLineOptions options) async {
     PerformanceTag previous = _analyzeAllTag.makeCurrent();
     try {
       return await _analyzeAllImpl(options);
+    } catch (e, st) {
+      // Catch and ignore any exceptions when reporting exceptions (network
+      // errors or other).
+      crashReportSender.sendReport(e, stackTrace: st).catchError((_) {});
+      rethrow;
     } finally {
       previous.makeCurrent();
     }
@@ -207,7 +271,8 @@ class Driver implements CommandLineStarter {
       // Note that these files will all be analyzed in the same context.
       // This should be updated when the ContextManager re-work is complete
       // (See: https://github.com/dart-lang/sdk/issues/24133)
-      Iterable<io.File> files = _collectFiles(sourcePath);
+      Iterable<io.File> files =
+          _collectFiles(sourcePath, context.analysisOptions);
       if (files.isEmpty) {
         errorSink.writeln('No dart files found at: $sourcePath');
         io.exitCode = ErrorSeverity.ERROR.ordinal;
@@ -232,6 +297,26 @@ class Driver implements CommandLineStarter {
     List<Uri> libUris = <Uri>[];
     Set<Source> partSources = new Set<Source>();
 
+    SeverityProcessor defaultSeverityProcessor = (AnalysisError error) {
+      return determineProcessedSeverity(
+          error, options, _context.analysisOptions);
+    };
+
+    // We currently print out to stderr to ensure that when in batch mode we
+    // print to stderr, this is because the prints from batch are made to
+    // stderr. The reason that options.shouldBatch isn't used is because when
+    // the argument flags are constructed in BatchRunner and passed in from
+    // batch mode which removes the batch flag to prevent the "cannot have the
+    // batch flag and source file" error message.
+    ErrorFormatter formatter;
+    if (options.machineFormat) {
+      formatter = new MachineErrorFormatter(errorSink, options, stats,
+          severityProcessor: defaultSeverityProcessor);
+    } else {
+      formatter = new HumanErrorFormatter(outSink, options, stats,
+          severityProcessor: defaultSeverityProcessor);
+    }
+
     for (Source source in sourcesToAnalyze) {
       SourceKind sourceKind = analysisDriver != null
           ? await analysisDriver.getSourceKind(source.fullName)
@@ -240,12 +325,12 @@ class Driver implements CommandLineStarter {
         partSources.add(source);
         continue;
       }
-      // TODO(devoncarew): Analyzing each source individually causes errors to
-      // be reported multiple times (#25697).
-      ErrorSeverity status = await _runAnalyzer(source, options);
+      ErrorSeverity status = await _runAnalyzer(source, options, formatter);
       allResult = allResult.max(status);
       libUris.add(source.uri);
     }
+
+    formatter.flush();
 
     // Check that each part has a corresponding source in the input list.
     for (Source partSource in partSources) {
@@ -292,68 +377,12 @@ class Driver implements CommandLineStarter {
     });
   }
 
-  /// Determine whether the context created during a previous call to
-  /// [_analyzeAll] can be re-used in order to analyze using [options].
-  bool _canContextBeReused(CommandLineOptions options) {
-    // TODO(paulberry): add a command-line option that disables context re-use.
-    if (_context == null) {
-      return false;
-    }
-    if (options.packageRootPath != _previousOptions.packageRootPath) {
-      return false;
-    }
-    if (options.packageConfigPath != _previousOptions.packageConfigPath) {
-      return false;
-    }
-    if (!_equalMaps(
-        options.definedVariables, _previousOptions.definedVariables)) {
-      return false;
-    }
-    if (options.log != _previousOptions.log) {
-      return false;
-    }
-    if (options.disableHints != _previousOptions.disableHints) {
-      return false;
-    }
-    if (options.enableStrictCallChecks !=
-        _previousOptions.enableStrictCallChecks) {
-      return false;
-    }
-    if (options.showPackageWarnings != _previousOptions.showPackageWarnings) {
-      return false;
-    }
-    if (options.showPackageWarningsPrefix !=
-        _previousOptions.showPackageWarningsPrefix) {
-      return false;
-    }
-    if (options.showSdkWarnings != _previousOptions.showSdkWarnings) {
-      return false;
-    }
-    if (options.lints != _previousOptions.lints) {
-      return false;
-    }
-    if (options.strongMode != _previousOptions.strongMode) {
-      return false;
-    }
-    if (options.enableSuperMixins != _previousOptions.enableSuperMixins) {
-      return false;
-    }
-    if (!_equalLists(
-        options.buildSummaryInputs, _previousOptions.buildSummaryInputs)) {
-      return false;
-    }
-    if (options.disableCacheFlushing != _previousOptions.disableCacheFlushing) {
-      return false;
-    }
-    return true;
-  }
-
   /// Decide on the appropriate policy for which files need to be fully parsed
   /// and which files need to be diet parsed, based on [options], and return an
   /// [AnalyzeFunctionBodiesPredicate] that implements this policy.
   AnalyzeFunctionBodiesPredicate _chooseDietParsingPolicy(
       CommandLineOptions options) {
-    if (options.shouldBatch) {
+    if (options.batchMode) {
       // As analyzer is currently implemented, once a file has been diet
       // parsed, it can't easily be un-diet parsed without creating a brand new
       // context and losing caching.  In batch mode, we can't predict which
@@ -476,14 +505,26 @@ class Driver implements CommandLineStarter {
     return new SourceFactory(resolvers, packageInfo.packages);
   }
 
-  // TODO(devoncarew): This needs to respect analysis_options excludes.
-
   /// Collect all analyzable files at [filePath], recursively if it's a
   /// directory, ignoring links.
-  Iterable<io.File> _collectFiles(String filePath) {
+  Iterable<io.File> _collectFiles(String filePath, AnalysisOptions options) {
+    List<String> excludedPaths = options.excludePatterns;
+
+    /**
+     * Returns `true` if the given [path] is excluded by [excludedPaths].
+     */
+    bool _isExcluded(String path) {
+      return excludedPaths.any((excludedPath) {
+        if (resourceProvider.absolutePathContext.isWithin(excludedPath, path)) {
+          return true;
+        }
+        return path == excludedPath;
+      });
+    }
+
     List<io.File> files = <io.File>[];
     io.File file = new io.File(filePath);
-    if (file.existsSync()) {
+    if (file.existsSync() && !_isExcluded(filePath)) {
       files.add(file);
     } else {
       io.Directory directory = new io.Directory(filePath);
@@ -492,6 +533,7 @@ class Driver implements CommandLineStarter {
             in directory.listSync(recursive: true, followLinks: false)) {
           String relative = path.relative(entry.path, from: directory.path);
           if (AnalysisEngine.isDartFileName(entry.path) &&
+              !_isExcluded(relative) &&
               !_isInHiddenDir(relative)) {
             files.add(entry);
           }
@@ -522,10 +564,30 @@ class Driver implements CommandLineStarter {
   /// Create an analysis context that is prepared to analyze sources according
   /// to the given [options], and store it in [_context].
   void _createAnalysisContext(CommandLineOptions options) {
-    if (_canContextBeReused(options)) {
+    // If not the same command-line options, clear cached information.
+    if (!_equalCommandLineOptions(_previousOptions, options)) {
+      _previousOptions = options;
+      _directoryToAnalysisOptions.clear();
+      _context = null;
+      analysisDriver = null;
+    }
+
+    AnalysisOptionsImpl analysisOptions =
+        createAnalysisOptionsForCommandLineOptions(resourceProvider, options);
+    analysisOptions.analyzeFunctionBodiesPredicate =
+        _chooseDietParsingPolicy(options);
+
+    // If we have the analysis driver, and the new analysis options are the
+    // same, we can reuse this analysis driver.
+    if (_context != null &&
+        _equalAnalysisOptions(_context.analysisOptions, analysisOptions)) {
       return;
     }
-    _previousOptions = options;
+
+    // Set up logging.
+    if (options.log) {
+      AnalysisEngine.instance.logger = new StdLogger();
+    }
 
     // Save stats from previous context before clobbering it.
     if (_context != null) {
@@ -554,11 +616,6 @@ class Driver implements CommandLineStarter {
     SummaryDataStore summaryDataStore = new SummaryDataStore(
         useSummaries ? options.buildSummaryInputs : <String>[]);
 
-    AnalysisOptionsImpl analysisOptions =
-        createAnalysisOptionsForCommandLineOptions(resourceProvider, options);
-    analysisOptions.analyzeFunctionBodiesPredicate =
-        _chooseDietParsingPolicy(options);
-
     // Once options and embedders are processed, setup the SDK.
     _setupSdk(options, useSummaries, analysisOptions);
 
@@ -574,8 +631,9 @@ class Driver implements CommandLineStarter {
 
     // Create a context.
     _context = AnalysisEngine.instance.createAnalysisContext();
-    setupAnalysisContext(_context, options, analysisOptions);
+    _context.analysisOptions = analysisOptions;
     _context.sourceFactory = sourceFactory;
+    declareVariables(context.declaredVariables, options);
 
     if (options.enableNewAnalysisDriver) {
       PerformanceLog log = new PerformanceLog(null);
@@ -586,7 +644,7 @@ class Driver implements CommandLineStarter {
           resourceProvider,
           analysisDriverMemoryByteStore,
           new FileContentOverlay(),
-          'test',
+          null,
           context.sourceFactory,
           context.analysisOptions);
       analysisDriver.results.listen((_) {});
@@ -612,6 +670,23 @@ class Driver implements CommandLineStarter {
     }
 
     return null;
+  }
+
+  /// Return whether [a] and [b] options are equal for the purpose of
+  /// command line analysis.
+  bool _equalAnalysisOptions(AnalysisOptionsImpl a, AnalysisOptions b) {
+    return a.enableAssertInitializer == b.enableAssertInitializer &&
+        a.enableStrictCallChecks == b.enableStrictCallChecks &&
+        a.enableLazyAssignmentOperators == b.enableLazyAssignmentOperators &&
+        a.enableSuperMixins == b.enableSuperMixins &&
+        a.enableTiming == b.enableTiming &&
+        a.generateImplicitErrors == b.generateImplicitErrors &&
+        a.generateSdkErrors == b.generateSdkErrors &&
+        a.hint == b.hint &&
+        a.lint == b.lint &&
+        AnalysisOptionsImpl.compareLints(a.lintRules, b.lintRules) &&
+        a.preserveComments == b.preserveComments &&
+        a.strongMode == b.strongMode;
   }
 
   _PackageInfo _findPackages(CommandLineOptions options) {
@@ -692,18 +767,11 @@ class Driver implements CommandLineStarter {
 
   /// Analyze a single source.
   Future<ErrorSeverity> _runAnalyzer(
-      Source source, CommandLineOptions options) async {
+      Source source, CommandLineOptions options, ErrorFormatter formatter) {
     int startTime = currentTimeMillis;
     AnalyzerImpl analyzer = new AnalyzerImpl(_context.analysisOptions, _context,
         analysisDriver, source, options, stats, startTime);
-    ErrorSeverity errorSeverity = await analyzer.analyze();
-    if (errorSeverity == ErrorSeverity.ERROR) {
-      io.exitCode = errorSeverity.ordinal;
-    }
-    if (options.warningsAreFatal && errorSeverity == ErrorSeverity.WARNING) {
-      io.exitCode = errorSeverity.ordinal;
-    }
-    return errorSeverity;
+    return analyzer.analyze(formatter);
   }
 
   void _setupSdk(CommandLineOptions options, bool useSummaries,
@@ -728,6 +796,19 @@ class Driver implements CommandLineStarter {
     }
   }
 
+  bool _shouldBeFatal(ErrorSeverity severity, CommandLineOptions options) {
+    if (severity == ErrorSeverity.ERROR) {
+      return true;
+    } else if (severity == ErrorSeverity.WARNING &&
+        (options.warningsAreFatal || options.infosAreFatal)) {
+      return true;
+    } else if (severity == ErrorSeverity.INFO && options.infosAreFatal) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+
   static AnalysisOptionsImpl createAnalysisOptionsForCommandLineOptions(
       ResourceProvider resourceProvider, CommandLineOptions options) {
     if (options.analysisOptionsFile != null) {
@@ -739,49 +820,119 @@ class Driver implements CommandLineStarter {
       }
     }
 
-    AnalysisOptionsImpl contextOptions = new ContextBuilder(
-            resourceProvider, null, null,
+    String contextRoot;
+    if (options.sourceFiles.isEmpty) {
+      contextRoot = path.current;
+    } else {
+      contextRoot = options.sourceFiles[0];
+      if (!path.isAbsolute(contextRoot)) {
+        contextRoot = path.absolute(contextRoot);
+      }
+    }
+
+    void verbosePrint(String text) {
+      outSink.writeln(text);
+    }
+
+    // Prepare the directory which is, or contains, the context root.
+    String contextRootDirectory;
+    if (resourceProvider.getFolder(contextRoot).exists) {
+      contextRootDirectory = contextRoot;
+    } else {
+      contextRootDirectory = resourceProvider.pathContext.dirname(contextRoot);
+    }
+
+    // Check if there is the options object for the content directory.
+    AnalysisOptionsImpl contextOptions =
+        _directoryToAnalysisOptions[contextRootDirectory];
+    if (contextOptions != null) {
+      return contextOptions;
+    }
+
+    contextOptions = new ContextBuilder(resourceProvider, null, null,
             options: options.contextBuilderOptions)
-        .getAnalysisOptions(options.sourceFiles.isNotEmpty
-            ? options.sourceFiles[0]
-            : path.current);
+        .getAnalysisOptions(contextRoot,
+            verbosePrint: options.verbose ? verbosePrint : null);
 
     contextOptions.trackCacheDependencies = false;
     contextOptions.disableCacheFlushing = options.disableCacheFlushing;
     contextOptions.hint = !options.disableHints;
     contextOptions.generateImplicitErrors = options.showPackageWarnings;
     contextOptions.generateSdkErrors = options.showSdkWarnings;
+    if (options.enableAssertInitializer != null) {
+      contextOptions.enableAssertInitializer = options.enableAssertInitializer;
+    }
 
+    _directoryToAnalysisOptions[contextRootDirectory] = contextOptions;
     return contextOptions;
   }
 
-  static void setAnalysisContextOptions(
-      file_system.ResourceProvider resourceProvider,
-      AnalysisContext context,
-      CommandLineOptions options,
-      void configureContextOptions(AnalysisOptionsImpl contextOptions)) {
-    AnalysisOptionsImpl analysisOptions =
-        createAnalysisOptionsForCommandLineOptions(resourceProvider, options);
-    configureContextOptions(analysisOptions);
-    setupAnalysisContext(context, options, analysisOptions);
-  }
-
-  static void setupAnalysisContext(AnalysisContext context,
-      CommandLineOptions options, AnalysisOptionsImpl analysisOptions) {
+  /// Copy variables defined in the [options] into [declaredVariables].
+  static void declareVariables(
+      DeclaredVariables declaredVariables, CommandLineOptions options) {
     Map<String, String> definedVariables = options.definedVariables;
     if (definedVariables.isNotEmpty) {
-      DeclaredVariables declaredVariables = context.declaredVariables;
       definedVariables.forEach((String variableName, String value) {
         declaredVariables.define(variableName, value);
       });
     }
+  }
 
-    if (options.log) {
-      AnalysisEngine.instance.logger = new StdLogger();
+  /// Return whether the [newOptions] are equal to the [previous].
+  static bool _equalCommandLineOptions(
+      CommandLineOptions previous, CommandLineOptions newOptions) {
+    if (previous == null || newOptions == null) {
+      return false;
     }
-
-    // Set context options.
-    context.analysisOptions = analysisOptions;
+    if (newOptions.packageRootPath != previous.packageRootPath) {
+      return false;
+    }
+    if (newOptions.packageConfigPath != previous.packageConfigPath) {
+      return false;
+    }
+    if (!_equalMaps(newOptions.definedVariables, previous.definedVariables)) {
+      return false;
+    }
+    if (newOptions.log != previous.log) {
+      return false;
+    }
+    if (newOptions.disableHints != previous.disableHints) {
+      return false;
+    }
+    if (newOptions.enableStrictCallChecks != previous.enableStrictCallChecks) {
+      return false;
+    }
+    if (newOptions.enableAssertInitializer !=
+        previous.enableAssertInitializer) {
+      return false;
+    }
+    if (newOptions.showPackageWarnings != previous.showPackageWarnings) {
+      return false;
+    }
+    if (newOptions.showPackageWarningsPrefix !=
+        previous.showPackageWarningsPrefix) {
+      return false;
+    }
+    if (newOptions.showSdkWarnings != previous.showSdkWarnings) {
+      return false;
+    }
+    if (newOptions.lints != previous.lints) {
+      return false;
+    }
+    if (newOptions.strongMode != previous.strongMode) {
+      return false;
+    }
+    if (newOptions.enableSuperMixins != previous.enableSuperMixins) {
+      return false;
+    }
+    if (!_equalLists(
+        newOptions.buildSummaryInputs, previous.buildSummaryInputs)) {
+      return false;
+    }
+    if (newOptions.disableCacheFlushing != previous.disableCacheFlushing) {
+      return false;
+    }
+    return true;
   }
 
   /// Perform a deep comparison of two string lists.
@@ -813,61 +964,6 @@ class Driver implements CommandLineStarter {
   /// Convert [sourcePath] into an absolute path.
   static String _normalizeSourcePath(String sourcePath) =>
       path.normalize(new io.File(sourcePath).absolute.path);
-}
-
-/// Provides a framework to read command line options from stdin and feed them
-/// to a callback.
-class _BatchRunner {
-  /// Run the tool in 'batch' mode, receiving command lines through stdin and
-  /// returning pass/fail status through stdout. This feature is intended for
-  /// use in unit testing.
-  static void runAsBatch(List<String> sharedArgs, _BatchRunnerHandler handler) {
-    outSink.writeln('>>> BATCH START');
-    Stopwatch stopwatch = new Stopwatch();
-    stopwatch.start();
-    int testsFailed = 0;
-    int totalTests = 0;
-    ErrorSeverity batchResult = ErrorSeverity.NONE;
-    // Read line from stdin.
-    Stream cmdLine =
-        io.stdin.transform(UTF8.decoder).transform(new LineSplitter());
-    cmdLine.listen((String line) async {
-      // Maybe finish.
-      if (line.isEmpty) {
-        var time = stopwatch.elapsedMilliseconds;
-        outSink.writeln(
-            '>>> BATCH END (${totalTests - testsFailed}/$totalTests) ${time}ms');
-        io.exitCode = batchResult.ordinal;
-      }
-      // Prepare arguments.
-      var lineArgs = line.split(new RegExp('\\s+'));
-      var args = new List<String>();
-      args.addAll(sharedArgs);
-      args.addAll(lineArgs);
-      args.remove('-b');
-      args.remove('--batch');
-      // Analyze single set of arguments.
-      try {
-        totalTests++;
-        ErrorSeverity result = await handler(args);
-        bool resultPass = result != ErrorSeverity.ERROR;
-        if (!resultPass) {
-          testsFailed++;
-        }
-        batchResult = batchResult.max(result);
-        // Write stderr end token and flush.
-        errorSink.writeln('>>> EOF STDERR');
-        String resultPassString = resultPass ? 'PASS' : 'FAIL';
-        outSink.writeln(
-            '>>> TEST $resultPassString ${stopwatch.elapsedMilliseconds}ms');
-      } catch (e, stackTrace) {
-        errorSink.writeln(e);
-        errorSink.writeln(stackTrace);
-        errorSink.writeln('>>> EOF STDERR');
-        outSink.writeln('>>> TEST CRASH');
-      }
-    });
-  }
 }
 
 class _DriverError implements Exception {

@@ -5,10 +5,10 @@
 // Test that elements are not needlessly required by dart2js.
 
 import 'package:async_helper/async_helper.dart';
+import 'package:compiler/src/common/names.dart';
 import 'package:compiler/src/compiler.dart';
 import 'package:compiler/src/elements/elements.dart';
 import 'package:compiler/src/enqueue.dart';
-import 'package:compiler/src/js_backend/backend_helpers.dart';
 import 'package:expect/expect.dart';
 import 'memory_compiler.dart';
 
@@ -44,13 +44,14 @@ analyze(String code,
       compiler.resolution.wasProxyConstantComputedTestingOnly,
       "Unexpected computation of proxy constant.");
 
-  LibraryElement coreLibrary = compiler.commonElements.coreLibrary;
+  LibraryElement coreLibrary =
+      compiler.frontendStrategy.commonElements.coreLibrary;
   checkInstantiated(
       compiler, coreLibrary.find('_Proxy'), proxyConstantComputed);
   checkInstantiated(compiler, coreLibrary.find('Deprecated'), deprecatedClass);
 
   LibraryElement jsHelperLibrary =
-      compiler.libraryLoader.lookupLibrary(BackendHelpers.DART_JS_HELPER);
+      compiler.libraryLoader.lookupLibrary(Uris.dart__js_helper);
   jsHelperLibrary.forEachLocalMember((Element element) {
     Uri uri = element.compilationUnit.script.resourceUri;
     if (element.isClass && uri.path.endsWith('annotations.dart')) {

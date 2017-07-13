@@ -50,6 +50,7 @@
 #include <winsock2.h>
 #include <Rpc.h>
 #include <shellapi.h>
+#include <VersionHelpers.h>
 #endif  // defined(_WIN32)
 
 #if !defined(_WIN32)
@@ -87,36 +88,33 @@
 #if defined(__ANDROID__)
 
 // Check for Android first, to determine its difference from Linux.
-#define TARGET_OS_ANDROID 1
+#define HOST_OS_ANDROID 1
 
 #elif defined(__linux__) || defined(__FreeBSD__)
 
 // Generic Linux.
-#define TARGET_OS_LINUX 1
+#define HOST_OS_LINUX 1
 
 #elif defined(__APPLE__)
 
 // Define the flavor of Mac OS we are running on.
 #include <TargetConditionals.h>
-// TODO(iposva): Rename TARGET_OS_MACOS to TARGET_OS_MAC to inherit
+// TODO(iposva): Rename HOST_OS_MACOS to HOST_OS_MAC to inherit
 // the value defined in TargetConditionals.h
-#define TARGET_OS_MACOS 1
+#define HOST_OS_MACOS 1
 #if TARGET_OS_IPHONE
-// Test for this #define by saying '#if TARGET_OS_IOS' rather than the usual
-// '#if defined(TARGET_OS_IOS)'. TARGET_OS_IOS is defined to be 0 in
-// XCode >= 7.0. See Issue #24453.
-#define TARGET_OS_IOS 1
+#define HOST_OS_IOS 1
 #endif
 
 #elif defined(_WIN32)
 
 // Windows, both 32- and 64-bit, regardless of the check for _WIN32.
-#define TARGET_OS_WINDOWS 1
+#define HOST_OS_WINDOWS 1
 
 #elif defined(__Fuchsia__)
-#define TARGET_OS_FUCHSIA
+#define HOST_OS_FUCHSIA
 
-#elif !defined(TARGET_OS_FUCHSIA)
+#elif !defined(HOST_OS_FUCHSIA)
 #error Automatic target os detection failed.
 #endif
 
@@ -214,13 +212,8 @@ typedef simd128_value_t fpu_register_t;
 #elif defined(_M_IX86) || defined(__i386__)
 #define HOST_ARCH_IA32 1
 #define ARCH_IS_32_BIT 1
-#if defined(TARGET_ARCH_MIPS)
-#define kFpuRegisterSize 8
-typedef double fpu_register_t;
-#else
 #define kFpuRegisterSize 16
 typedef simd128_value_t fpu_register_t;
-#endif
 #elif defined(__ARMEL__)
 #define HOST_ARCH_ARM 1
 #define ARCH_IS_32_BIT 1
@@ -243,14 +236,6 @@ typedef simd_value_t fpu_register_t;
     reinterpret_cast<simd_value_t*>(addr)->data_[3] = value.data_[3];          \
   } while (0)
 
-#elif defined(__MIPSEL__)
-#define HOST_ARCH_MIPS 1
-#define ARCH_IS_32_BIT 1
-#define kFpuRegisterSize 8
-typedef double fpu_register_t;
-#elif defined(__MIPSEB__)
-#error Big-endian MIPS is not supported by Dart. Try passing -EL to your      \
- compiler.
 #elif defined(__aarch64__)
 #define HOST_ARCH_ARM64 1
 #define ARCH_IS_64_BIT 1
@@ -282,7 +267,7 @@ typedef simd128_value_t fpu_register_t;
 #error Automatic compiler detection failed.
 #endif
 
-// DART_UNUSED inidicates to the compiler that a variable/typedef is expected
+// DART_UNUSED indicates to the compiler that a variable or typedef is expected
 // to be unused and disables the related warning.
 #ifdef __GNUC__
 #define DART_UNUSED __attribute__((unused))
@@ -290,7 +275,15 @@ typedef simd128_value_t fpu_register_t;
 #define DART_UNUSED
 #endif
 
-// DART_NORETURN indicates to the compiler that a function doees not return.
+// DART_USED indicates to the compiler that a global variable or typedef is used
+// disables e.g. the gcc warning "unused-variable"
+#ifdef __GNUC__
+#define DART_USED __attribute__((used))
+#else
+#define DART_USED
+#endif
+
+// DART_NORETURN indicates to the compiler that a function does not return.
 // It should be used on functions that unconditionally call functions like
 // exit(), which end the program. We use it to avoid compiler warnings in
 // callers of DART_NORETURN functions.
@@ -310,16 +303,11 @@ typedef simd128_value_t fpu_register_t;
 #error Automatic compiler detection failed.
 #endif
 
-#if !defined(TARGET_ARCH_MIPS)
-#if !defined(TARGET_ARCH_ARM)
-#if !defined(TARGET_ARCH_X64)
-#if !defined(TARGET_ARCH_IA32)
-#if !defined(TARGET_ARCH_ARM64)
-#if !defined(TARGET_ARCH_DBC)
+#if !defined(TARGET_ARCH_ARM) && !defined(TARGET_ARCH_X64) &&                  \
+    !defined(TARGET_ARCH_IA32) && !defined(TARGET_ARCH_ARM64) &&               \
+    !defined(TARGET_ARCH_DBC)
 // No target architecture specified pick the one matching the host architecture.
-#if defined(HOST_ARCH_MIPS)
-#define TARGET_ARCH_MIPS 1
-#elif defined(HOST_ARCH_ARM)
+#if defined(HOST_ARCH_ARM)
 #define TARGET_ARCH_ARM 1
 #elif defined(HOST_ARCH_X64)
 #define TARGET_ARCH_X64 1
@@ -331,11 +319,6 @@ typedef simd128_value_t fpu_register_t;
 #error Automatic target architecture detection failed.
 #endif
 #endif
-#endif
-#endif
-#endif
-#endif
-#endif
 
 // Verify that host and target architectures match, we cannot
 // have a 64 bit Dart VM generating 32 bit code or vice-versa.
@@ -343,8 +326,7 @@ typedef simd128_value_t fpu_register_t;
 #if !defined(ARCH_IS_64_BIT)
 #error Mismatched Host/Target architectures.
 #endif
-#elif defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_ARM) ||                 \
-    defined(TARGET_ARCH_MIPS)
+#elif defined(TARGET_ARCH_IA32) || defined(TARGET_ARCH_ARM)
 #if !defined(ARCH_IS_32_BIT)
 #error Mismatched Host/Target architectures.
 #endif
@@ -365,11 +347,6 @@ typedef simd128_value_t fpu_register_t;
 #define USING_SIMULATOR 1
 #endif
 
-#elif defined(TARGET_ARCH_MIPS)
-#if !defined(HOST_ARCH_MIPS)
-#define USING_SIMULATOR 1
-#endif
-
 #elif defined(TARGET_ARCH_DBC)
 #define USING_SIMULATOR 1
 
@@ -384,17 +361,27 @@ typedef simd128_value_t fpu_register_t;
 #endif
 
 
-#if defined(TARGET_ARCH_ARM)
-#if defined(TARGET_ABI_IOS) && defined(TARGET_ABI_EABI)
-#error Both TARGET_ABI_IOS and TARGET_ABI_EABI defined.
-#elif !defined(TARGET_ABI_IOS) && !defined(TARGET_ABI_EABI)
-#if defined(TARGET_OS_MAC)
-#define TARGET_ABI_IOS 1
+#if !defined(TARGET_OS_ANDROID) && !defined(TARGET_OS_FUCHSIA) &&              \
+    !defined(TARGET_OS_MACOS_IOS) && !defined(TARGET_OS_LINUX) &&              \
+    !defined(TARGET_OS_MACOS) && !defined(TARGET_OS_WINDOWS)
+// No target OS specified; pick the one matching the host OS.
+#if defined(HOST_OS_ANDROID)
+#define TARGET_OS_ANDROID 1
+#elif defined(HOST_OS_FUCHSIA)
+#define TARGET_OS_FUCHSIA 1
+#elif defined(HOST_OS_IOS)
+#define TARGET_OS_MACOS 1
+#define TARGET_OS_MACOS_IOS 1
+#elif defined(HOST_OS_LINUX)
+#define TARGET_OS_LINUX 1
+#elif defined(HOST_OS_MACOS)
+#define TARGET_OS_MACOS 1
+#elif defined(HOST_OS_WINDOWS)
+#define TARGET_OS_WINDOWS 1
 #else
-#define TARGET_ABI_EABI 1
+#error Automatic target OS detection failed.
 #endif
 #endif
-#endif  // TARGET_ARCH_ARM
 
 
 // Short form printf format specifiers
@@ -448,13 +435,7 @@ typedef intptr_t word;
 typedef uintptr_t uword;
 
 // Size of a class id.
-#if defined(ARCH_IS_32_BIT)
 typedef uint16_t classid_t;
-#elif defined(ARCH_IS_64_BIT)
-typedef uint32_t classid_t;
-#else
-#error Unexpected architecture word size
-#endif
 
 // Byte sizes.
 const int kWordSize = sizeof(word);
@@ -477,6 +458,7 @@ const uword kUwordMax = kMaxUint64;
 const int kBitsPerByte = 8;
 const int kBitsPerByteLog2 = 3;
 const int kBitsPerInt32 = kInt32Size * kBitsPerByte;
+const int kBitsPerInt64 = kInt64Size * kBitsPerByte;
 const int kBitsPerWord = kWordSize * kBitsPerByte;
 const int kBitsPerWordLog2 = kWordSizeLog2 + kBitsPerByteLog2;
 
@@ -579,7 +561,7 @@ static inline void USE(T) {}
 // When you use implicit_cast, the compiler checks that the cast is safe.
 // Such explicit implicit_casts are necessary in surprisingly many
 // situations where C++ demands an exact type match instead of an
-// argument type convertable to a target type.
+// argument type convertible to a target type.
 //
 // The From type can be inferred, so the preferred syntax for using
 // implicit_cast is the same as for static_cast etc.:
@@ -661,32 +643,56 @@ inline D bit_copy(const S& source) {
 }
 
 
+#if defined(HOST_ARCH_ARM) || defined(HOST_ARCH_ARM64)
 // Similar to bit_copy and bit_cast, but does take the type from the argument.
 template <typename T>
 static inline T ReadUnaligned(const T* ptr) {
   T value;
-  memcpy(&value, ptr, sizeof(value));
+  memcpy(reinterpret_cast<void*>(&value), reinterpret_cast<const void*>(ptr),
+         sizeof(value));
   return value;
 }
 
 
+// Similar to bit_copy and bit_cast, but does take the type from the argument.
+template <typename T>
+static inline void StoreUnaligned(T* ptr, T value) {
+  memcpy(reinterpret_cast<void*>(ptr), reinterpret_cast<const void*>(&value),
+         sizeof(value));
+}
+#else   // !(HOST_ARCH_ARM || HOST_ARCH_ARM64)
+// Similar to bit_copy and bit_cast, but does take the type from the argument.
+template <typename T>
+static inline T ReadUnaligned(const T* ptr) {
+  return *ptr;
+}
+
+
+// Similar to bit_copy and bit_cast, but does take the type from the argument.
+template <typename T>
+static inline void StoreUnaligned(T* ptr, T value) {
+  *ptr = value;
+}
+#endif  // !(HOST_ARCH_ARM || HOST_ARCH_ARM64)
+
+
 // On Windows the reentrent version of strtok is called
 // strtok_s. Unify on the posix name strtok_r.
-#if defined(TARGET_OS_WINDOWS)
+#if defined(HOST_OS_WINDOWS)
 #define snprintf _snprintf
 #define strtok_r strtok_s
 #endif
 
-#if !defined(TARGET_OS_WINDOWS)
+#if !defined(HOST_OS_WINDOWS)
 #if defined(TEMP_FAILURE_RETRY)
 // TEMP_FAILURE_RETRY is defined in unistd.h on some platforms. We should
 // not use that version, but instead the one in signal_blocker.h, to ensure
 // we disable signal interrupts.
 #undef TEMP_FAILURE_RETRY
 #endif  // defined(TEMP_FAILURE_RETRY)
-#endif  // !defined(TARGET_OS_WINDOWS)
+#endif  // !defined(HOST_OS_WINDOWS)
 
-#if defined(TARGET_OS_LINUX) || defined(TARGET_OS_MACOS)
+#if defined(HOST_OS_LINUX) || defined(HOST_OS_MACOS)
 // Tell the compiler to do printf format string checking if the
 // compiler supports it; see the 'format' attribute in
 // <http://gcc.gnu.org/onlinedocs/gcc-4.3.0/gcc/Function-Attributes.html>.

@@ -4,22 +4,13 @@
 
 library fasta.scope_listener;
 
-import 'package:front_end/src/fasta/scanner/token.dart' show
-    Token;
+import '../../scanner/token.dart' show Token;
 
-import 'unhandled_listener.dart' show
-    NullValue,
-    UnhandledListener;
+import 'unhandled_listener.dart' show NullValue, UnhandledListener;
 
-import '../builder/scope.dart' show
-    Scope;
+import '../scope.dart' show Scope;
 
-export '../builder/scope.dart' show
-    Scope;
-
-export 'unhandled_listener.dart' show
-    NullValue,
-    Unhandled;
+export 'unhandled_listener.dart' show NullValue, Unhandled;
 
 enum JumpTargetKind {
   Break,
@@ -34,7 +25,7 @@ abstract class ScopeListener<J> extends UnhandledListener {
 
   J continueTarget;
 
-  ScopeListener(this.scope);
+  ScopeListener(Scope scope) : scope = scope ?? new Scope.immutable();
 
   J createJumpTarget(JumpTargetKind kind, int charOffset);
 
@@ -89,8 +80,8 @@ abstract class ScopeListener<J> extends UnhandledListener {
   }
 
   @override
-  void beginFunctionBody(Token begin) {
-    debugEvent("beginFunctionBody");
+  void beginBlockFunctionBody(Token begin) {
+    debugEvent("beginBlockFunctionBody");
     enterLocalScope();
   }
 

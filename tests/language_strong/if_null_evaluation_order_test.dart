@@ -2,7 +2,7 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-// Evaluation of an if-null expresion e of the form e1 ?? e2 is equivalent to
+// Evaluation of an if-null expression e of the form e1 ?? e2 is equivalent to
 // the evaluation of the expression ((x) => x == null ? e2 : x)(e1).
 //
 // Therefore, e1 should be evaluated first; if it is non-null, e2 should not
@@ -31,6 +31,6 @@ main() {
   // status files easier to maintain.
   var _ = null ?? null;
 
-  Expect.equals(1, 1 ?? bad()); /// 01: ok
-  Expect.equals(2, first() ?? second()); /// 02: ok
+  Expect.equals(1, 1 ?? bad()); //# 01: ok
+  Expect.equals(2, first() ?? second()); //# 02: ok
 }

@@ -17,13 +17,14 @@ import 'package:analyzer/error/listener.dart';
 import 'package:analyzer/file_system/file_system.dart';
 import 'package:analyzer/file_system/memory_file_system.dart';
 import 'package:analyzer/source/error_processor.dart';
-import 'package:analyzer/src/dart/analysis/byte_store.dart';
 import 'package:analyzer/src/dart/analysis/driver.dart';
 import 'package:analyzer/src/dart/analysis/file_state.dart';
 import 'package:analyzer/src/dart/ast/token.dart';
 import 'package:analyzer/src/error/codes.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/source.dart';
+import 'package:front_end/src/base/performace_logger.dart';
+import 'package:front_end/src/incremental/byte_store.dart';
 import 'package:source_span/source_span.dart';
 import 'package:test/test.dart';
 
@@ -43,7 +44,7 @@ SourceSpanWithContext _createSpanHelper(
   int lineEnd = endLoc.offset;
   int lineNum = lineInfo.getLocation(lineEnd).lineNumber;
   while (lineEnd < content.length &&
-      lineInfo.getLocation(++lineEnd).lineNumber == lineNum);
+      lineInfo.getLocation(++lineEnd).lineNumber == lineNum) {}
 
   if (end == null) {
     end = lineEnd;
@@ -67,6 +68,11 @@ String _errorCodeName(ErrorCode errorCode) {
 
 ErrorSeverity _errorSeverity(
     AnalysisOptions analysisOptions, AnalysisError error) {
+  // TODO(brianwilkerson) Remove the if when top-level inference is made an
+  // error again.
+  if (error.errorCode.name.startsWith('STRONG_MODE_TOP_LEVEL_')) {
+    return ErrorSeverity.ERROR;
+  }
   return ErrorProcessor.getProcessor(analysisOptions, error)?.severity ??
       error.errorCode.errorSeverity;
 }
@@ -303,7 +309,7 @@ class AbstractStrongTest {
           _resourceProvider,
           new MemoryByteStore(),
           fileContentOverlay,
-          'test',
+          null,
           sourceFactory,
           analysisOptions);
       scheduler.start();

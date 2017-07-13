@@ -17,15 +17,11 @@ namespace dart {
 
 DECLARE_FLAG(bool, trace_type_checks);
 
-// Helper function in stacktrace.cc.
-void _printCurrentStackTrace();
-
 DEFINE_NATIVE_ENTRY(DartAsync_fatal, 1) {
   // The dart:async library code entered an unrecoverable state.
   const Instance& instance = Instance::CheckedHandle(arguments->NativeArgAt(0));
   const char* msg = instance.ToCString();
   OS::PrintErr("Fatal error in dart:async: %s\n", msg);
-  _printCurrentStackTrace();
   FATAL(msg);
   return Object::null();
 }
@@ -42,17 +38,25 @@ DEFINE_NATIVE_ENTRY(Object_getHash, 1) {
   // Please note that no handle is created for the argument.
   // This is safe since the argument is only used in a tail call.
   // The performance benefit is more than 5% when using hashCode.
+#if defined(HASH_IN_OBJECT_HEADER)
+  return Smi::New(Object::GetCachedHash(arguments->NativeArgAt(0)));
+#else
   Heap* heap = isolate->heap();
   ASSERT(arguments->NativeArgAt(0)->IsDartInstance());
   return Smi::New(heap->GetHash(arguments->NativeArgAt(0)));
+#endif
 }
 
 
 DEFINE_NATIVE_ENTRY(Object_setHash, 2) {
-  const Instance& instance = Instance::CheckedHandle(arguments->NativeArgAt(0));
   GET_NON_NULL_NATIVE_ARGUMENT(Smi, hash, arguments->NativeArgAt(1));
+#if defined(HASH_IN_OBJECT_HEADER)
+  Object::SetCachedHash(arguments->NativeArgAt(0), hash.Value());
+#else
+  const Instance& instance = Instance::CheckedHandle(arguments->NativeArgAt(0));
   Heap* heap = isolate->heap();
   heap->SetHash(instance.raw(), hash.Value());
+#endif
   return Object::null();
 }
 
@@ -82,9 +86,7 @@ DEFINE_NATIVE_ENTRY(Object_noSuchMethod, 6) {
   dart_arguments.SetAt(3, func_args);
   dart_arguments.SetAt(4, func_named_args);
 
-  if (is_method.value() &&
-      (((invocation_type.Value() >> InvocationMirror::kCallShift) &
-        InvocationMirror::kCallMask) != InvocationMirror::kSuper)) {
+  if (is_method.value()) {
     // Report if a function with same name (but different arguments) has been
     // found.
     Function& function = Function::Handle();
@@ -92,7 +94,12 @@ DEFINE_NATIVE_ENTRY(Object_noSuchMethod, 6) {
       function = Closure::Cast(instance).function();
     } else {
       Class& instance_class = Class::Handle(instance.clazz());
-      function = instance_class.LookupDynamicFunction(member_name);
+      const bool is_super_call =
+          ((invocation_type.Value() >> InvocationMirror::kCallShift) &
+           InvocationMirror::kCallMask) == InvocationMirror::kSuper;
+      if (!is_super_call) {
+        function = instance_class.LookupDynamicFunction(member_name);
+      }
       while (function.IsNull()) {
         instance_class = instance_class.SuperClass();
         if (instance_class.IsNull()) break;
@@ -171,15 +178,16 @@ DEFINE_NATIVE_ENTRY(Object_instanceOf, 4) {
       Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
   const TypeArguments& instantiator_type_arguments =
       TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(1));
+  const TypeArguments& function_type_arguments =
+      TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(2));
   const AbstractType& type =
-      AbstractType::CheckedHandle(zone, arguments->NativeArgAt(2));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(3));
+      AbstractType::CheckedHandle(zone, arguments->NativeArgAt(3));
   ASSERT(type.IsFinalized());
   ASSERT(!type.IsMalformed());
   ASSERT(!type.IsMalbounded());
   Error& bound_error = Error::Handle(zone, Error::null());
-  const bool is_instance_of =
-      instance.IsInstanceOf(type, instantiator_type_arguments, &bound_error);
+  const bool is_instance_of = instance.IsInstanceOf(
+      type, instantiator_type_arguments, function_type_arguments, &bound_error);
   if (FLAG_trace_type_checks) {
     const char* result_str = is_instance_of ? "true" : "false";
     OS::Print("Native Object.instanceOf: result %s\n", result_str);
@@ -195,7 +203,8 @@ DEFINE_NATIVE_ENTRY(Object_instanceOf, 4) {
   }
   if (!is_instance_of && !bound_error.IsNull()) {
     // Throw a dynamic type error only if the instanceof test fails.
-    DartFrameIterator iterator;
+    DartFrameIterator iterator(thread,
+                               StackFrameIterator::kNoCrossThreadIteration);
     StackFrame* caller_frame = iterator.NextFrame();
     ASSERT(caller_frame != NULL);
     const TokenPosition location = caller_frame->GetTokenPos();
@@ -206,27 +215,28 @@ DEFINE_NATIVE_ENTRY(Object_instanceOf, 4) {
                                         Symbols::Empty(), bound_error_message);
     UNREACHABLE();
   }
-  return Bool::Get(negate.value() ? !is_instance_of : is_instance_of).raw();
+  return Bool::Get(is_instance_of).raw();
 }
 
 DEFINE_NATIVE_ENTRY(Object_simpleInstanceOf, 2) {
   // This native is only called when the right hand side passes
-  // simpleInstanceOfType and it is a non-negative test.
+  // SimpleInstanceOfType and it is a non-negative test.
   const Instance& instance =
       Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
   const AbstractType& type =
       AbstractType::CheckedHandle(zone, arguments->NativeArgAt(1));
-  const TypeArguments& instantiator_type_arguments =
-      TypeArguments::Handle(TypeArguments::null());
   ASSERT(type.IsFinalized());
   ASSERT(!type.IsMalformed());
   ASSERT(!type.IsMalbounded());
+  ASSERT(type.IsInstantiated());
   Error& bound_error = Error::Handle(zone, Error::null());
   const bool is_instance_of =
-      instance.IsInstanceOf(type, instantiator_type_arguments, &bound_error);
+      instance.IsInstanceOf(type, Object::null_type_arguments(),
+                            Object::null_type_arguments(), &bound_error);
   if (!is_instance_of && !bound_error.IsNull()) {
     // Throw a dynamic type error only if the instanceof test fails.
-    DartFrameIterator iterator;
+    DartFrameIterator iterator(thread,
+                               StackFrameIterator::kNoCrossThreadIteration);
     StackFrame* caller_frame = iterator.NextFrame();
     ASSERT(caller_frame != NULL);
     const TokenPosition location = caller_frame->GetTokenPos();
@@ -240,80 +250,24 @@ DEFINE_NATIVE_ENTRY(Object_simpleInstanceOf, 2) {
   return Bool::Get(is_instance_of).raw();
 }
 
-DEFINE_NATIVE_ENTRY(Object_instanceOfNum, 2) {
-  const Instance& instance =
-      Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(1));
-  bool is_instance_of = instance.IsNumber();
-  if (negate.value()) {
-    is_instance_of = !is_instance_of;
-  }
-  return Bool::Get(is_instance_of).raw();
-}
 
-
-DEFINE_NATIVE_ENTRY(Object_instanceOfInt, 2) {
-  const Instance& instance =
-      Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(1));
-  bool is_instance_of = instance.IsInteger();
-  if (negate.value()) {
-    is_instance_of = !is_instance_of;
-  }
-  return Bool::Get(is_instance_of).raw();
-}
-
-
-DEFINE_NATIVE_ENTRY(Object_instanceOfSmi, 2) {
-  const Instance& instance =
-      Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(1));
-  bool is_instance_of = instance.IsSmi();
-  if (negate.value()) {
-    is_instance_of = !is_instance_of;
-  }
-  return Bool::Get(is_instance_of).raw();
-}
-
-
-DEFINE_NATIVE_ENTRY(Object_instanceOfDouble, 2) {
-  const Instance& instance =
-      Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(1));
-  bool is_instance_of = instance.IsDouble();
-  if (negate.value()) {
-    is_instance_of = !is_instance_of;
-  }
-  return Bool::Get(is_instance_of).raw();
-}
-
-
-DEFINE_NATIVE_ENTRY(Object_instanceOfString, 2) {
-  const Instance& instance =
-      Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
-  const Bool& negate = Bool::CheckedHandle(zone, arguments->NativeArgAt(1));
-  bool is_instance_of = instance.IsString();
-  if (negate.value()) {
-    is_instance_of = !is_instance_of;
-  }
-  return Bool::Get(is_instance_of).raw();
-}
-
-
-DEFINE_NATIVE_ENTRY(Object_as, 3) {
+DEFINE_NATIVE_ENTRY(Object_as, 4) {
   const Instance& instance =
       Instance::CheckedHandle(zone, arguments->NativeArgAt(0));
   const TypeArguments& instantiator_type_arguments =
       TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(1));
+  const TypeArguments& function_type_arguments =
+      TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(2));
   AbstractType& type =
-      AbstractType::CheckedHandle(zone, arguments->NativeArgAt(2));
+      AbstractType::CheckedHandle(zone, arguments->NativeArgAt(3));
   ASSERT(type.IsFinalized());
   ASSERT(!type.IsMalformed());
   ASSERT(!type.IsMalbounded());
   Error& bound_error = Error::Handle(zone);
   const bool is_instance_of =
       instance.IsNull() ||
-      instance.IsInstanceOf(type, instantiator_type_arguments, &bound_error);
+      instance.IsInstanceOf(type, instantiator_type_arguments,
+                            function_type_arguments, &bound_error);
   if (FLAG_trace_type_checks) {
     const char* result_str = is_instance_of ? "true" : "false";
     OS::Print("Object.as: result %s\n", result_str);
@@ -328,7 +282,8 @@ DEFINE_NATIVE_ENTRY(Object_as, 3) {
     }
   }
   if (!is_instance_of) {
-    DartFrameIterator iterator;
+    DartFrameIterator iterator(thread,
+                               StackFrameIterator::kNoCrossThreadIteration);
     StackFrame* caller_frame = iterator.NextFrame();
     ASSERT(caller_frame != NULL);
     const TokenPosition location = caller_frame->GetTokenPos();
@@ -336,7 +291,8 @@ DEFINE_NATIVE_ENTRY(Object_as, 3) {
         AbstractType::Handle(zone, instance.GetType(Heap::kNew));
     if (!type.IsInstantiated()) {
       // Instantiate type before reporting the error.
-      type = type.InstantiateFrom(instantiator_type_arguments, NULL, NULL, NULL,
+      type = type.InstantiateFrom(instantiator_type_arguments,
+                                  function_type_arguments, NULL, NULL, NULL,
                                   Heap::kNew);
       // Note that the instantiated type may be malformed.
     }
@@ -406,6 +362,37 @@ DEFINE_NATIVE_ENTRY(Internal_inquireIs64Bit, 0) {
 #else
   return Bool::False().raw();
 #endif  // defined(ARCH_IS_64_BIT)
+}
+
+
+DEFINE_NATIVE_ENTRY(Internal_prependTypeArguments, 3) {
+  const TypeArguments& function_type_arguments =
+      TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(0));
+  const TypeArguments& parent_type_arguments =
+      TypeArguments::CheckedHandle(zone, arguments->NativeArgAt(1));
+  if (function_type_arguments.IsNull() && parent_type_arguments.IsNull()) {
+    return TypeArguments::null();
+  }
+  GET_NON_NULL_NATIVE_ARGUMENT(Smi, smi_len, arguments->NativeArgAt(2));
+  const intptr_t len = smi_len.Value();
+  const TypeArguments& result =
+      TypeArguments::Handle(zone, TypeArguments::New(len, Heap::kNew));
+  AbstractType& type = AbstractType::Handle(zone);
+  const intptr_t split = parent_type_arguments.IsNull()
+                             ? len - function_type_arguments.Length()
+                             : parent_type_arguments.Length();
+  for (intptr_t i = 0; i < split; i++) {
+    type = parent_type_arguments.IsNull() ? Type::DynamicType()
+                                          : parent_type_arguments.TypeAt(i);
+    result.SetTypeAt(i, type);
+  }
+  for (intptr_t i = split; i < len; i++) {
+    type = function_type_arguments.IsNull()
+               ? Type::DynamicType()
+               : function_type_arguments.TypeAt(i - split);
+    result.SetTypeAt(i, type);
+  }
+  return result.Canonicalize();
 }
 
 }  // namespace dart

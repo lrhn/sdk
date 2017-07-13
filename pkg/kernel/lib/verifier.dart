@@ -31,23 +31,31 @@ class VerificationError {
       return "$file:${location.line}:${location.column}: Verification error:"
           " $details";
     } else {
-      return "Verification error: $details\nContext: '$context'.\nNode: '$node'.";
+      return "Verification error: $details\n"
+          "Context: '$context'.\n"
+          "Node: '$node'.";
     }
   }
 }
+
+enum TypedefState { Done, BeingChecked }
 
 /// Checks that a kernel program is well-formed.
 ///
 /// This does not include any kind of type checking.
 class VerifyingVisitor extends RecursiveVisitor {
   final Set<Class> classes = new Set<Class>();
-  final Set<TypeParameter> typeParameters = new Set<TypeParameter>();
+  final Set<Typedef> typedefs = new Set<Typedef>();
+  Set<TypeParameter> typeParametersInScope = new Set<TypeParameter>();
   final List<VariableDeclaration> variableStack = <VariableDeclaration>[];
+  final Map<Typedef, TypedefState> typedefState = <Typedef, TypedefState>{};
   bool classTypeParametersAreInScope = false;
 
   /// If true, relax certain checks for *outline* mode. For example, don't
   /// attempt to validate constructor initializers.
   bool isOutline = false;
+
+  bool inCatchBlock = false;
 
   Member currentMember;
   Class currentClass;
@@ -63,7 +71,8 @@ class VerifyingVisitor extends RecursiveVisitor {
     visitChildren(node);
   }
 
-  problem(TreeNode node, String details) {
+  problem(TreeNode node, String details, {TreeNode context}) {
+    context ??= this.context;
     throw new VerificationError(context, node, details);
   }
 
@@ -71,8 +80,9 @@ class VerifyingVisitor extends RecursiveVisitor {
     if (!identical(node.parent, currentParent)) {
       problem(
           node,
-          "Incorrect parent pointer: expected '${node.parent.runtimeType}',"
-          " but found: '${currentParent.runtimeType}'.");
+          "Incorrect parent pointer on ${node.runtimeType}:"
+          " expected '${currentParent.runtimeType}',"
+          " but found: '${node.parent.runtimeType}'.");
     }
     var oldParent = currentParent;
     currentParent = node;
@@ -131,14 +141,14 @@ class VerifyingVisitor extends RecursiveVisitor {
   void declareTypeParameters(List<TypeParameter> parameters) {
     for (int i = 0; i < parameters.length; ++i) {
       var parameter = parameters[i];
-      if (!typeParameters.add(parameter)) {
+      if (!typeParametersInScope.add(parameter)) {
         problem(parameter, "Type parameter '$parameter' redeclared.");
       }
     }
   }
 
   void undeclareTypeParameters(List<TypeParameter> parameters) {
-    typeParameters.removeAll(parameters);
+    typeParametersInScope.removeAll(parameters);
   }
 
   void checkVariableInScope(VariableDeclaration variable, TreeNode where) {
@@ -153,6 +163,11 @@ class VerifyingVisitor extends RecursiveVisitor {
         for (var class_ in library.classes) {
           if (!classes.add(class_)) {
             problem(class_, "Class '$class_' declared more than once.");
+          }
+        }
+        for (var typedef_ in library.typedefs) {
+          if (!typedefs.add(typedef_)) {
+            problem(typedef_, "Typedef '$typedef_' declared more than once.");
           }
         }
         library.members.forEach(declareMember);
@@ -172,11 +187,38 @@ class VerifyingVisitor extends RecursiveVisitor {
     }
   }
 
+  void checkTypedef(Typedef node) {
+    var state = typedefState[node];
+    if (state == TypedefState.Done) return;
+    if (state == TypedefState.BeingChecked) {
+      problem(node, "The typedef '$node' refers to itself", context: node);
+    }
+    assert(state == null);
+    typedefState[node] = TypedefState.BeingChecked;
+    var savedTypeParameters = typeParametersInScope;
+    typeParametersInScope = node.typeParameters.toSet();
+    var savedParent = currentParent;
+    currentParent = node;
+    // Visit children without checking the parent pointer on the typedef itself
+    // since this can be called from a context other than its true parent.
+    node.visitChildren(this);
+    currentParent = savedParent;
+    typeParametersInScope = savedTypeParameters;
+    typedefState[node] = TypedefState.Done;
+  }
+
+  visitTypedef(Typedef node) {
+    checkTypedef(node);
+    // Enter and exit the node to check the parent pointer on the typedef node.
+    exitParent(enterParent(node));
+  }
+
   visitField(Field node) {
     currentMember = node;
     var oldParent = enterParent(node);
     classTypeParametersAreInScope = !node.isStatic;
     node.initializer?.accept(this);
+    node.type.accept(this);
     classTypeParametersAreInScope = false;
     visitList(node.annotations, this);
     exitParent(oldParent);
@@ -232,7 +274,10 @@ class VerifyingVisitor extends RecursiveVisitor {
 
   visitFunctionNode(FunctionNode node) {
     declareTypeParameters(node.typeParameters);
+    bool savedInCatchBlock = inCatchBlock;
+    inCatchBlock = false;
     visitWithLocalScope(node);
+    inCatchBlock = savedInCatchBlock;
     undeclareTypeParameters(node.typeParameters);
   }
 
@@ -270,10 +315,34 @@ class VerifyingVisitor extends RecursiveVisitor {
   }
 
   visitCatch(Catch node) {
+    bool savedInCatchBlock = inCatchBlock;
+    inCatchBlock = true;
     visitWithLocalScope(node);
+    inCatchBlock = savedInCatchBlock;
+  }
+
+  @override
+  visitRethrow(Rethrow node) {
+    if (!inCatchBlock) {
+      problem(node, "Rethrow must be inside a Catch block.");
+    }
   }
 
   visitVariableDeclaration(VariableDeclaration node) {
+    var parent = node.parent;
+    if (parent is! Block &&
+        !(parent is Catch && parent.body != node) &&
+        !(parent is FunctionNode && parent.body != node) &&
+        parent is! FunctionDeclaration &&
+        !(parent is ForStatement && parent.body != node) &&
+        !(parent is ForInStatement && parent.body != node) &&
+        parent is! Let &&
+        parent is! LocalInitializer) {
+      problem(
+          node,
+          "VariableDeclaration must be a direct child of a Block, "
+          "not ${parent.runtimeType}.");
+    }
     visitChildren(node);
     declareVariable(node);
   }
@@ -430,6 +499,21 @@ class VerifyingVisitor extends RecursiveVisitor {
   }
 
   @override
+  visitContinueSwitchStatement(ContinueSwitchStatement node) {
+    if (node.target == null) {
+      problem(node, "No target.");
+    } else if (node.target.parent == null) {
+      problem(node, "Target has no parent.");
+    } else {
+      SwitchStatement statement = node.target.parent;
+      for (SwitchCase switchCase in statement.cases) {
+        if (switchCase == node.target) return;
+      }
+      problem(node, "Switch case isn't child of parent.");
+    }
+  }
+
+  @override
   defaultMemberReference(Member node) {
     if (node.transformerFlags & TransformerFlag.seenByVerifier == 0) {
       problem(
@@ -446,9 +530,17 @@ class VerifyingVisitor extends RecursiveVisitor {
   }
 
   @override
+  visitTypedefReference(Typedef node) {
+    if (!typedefs.contains(node)) {
+      problem(
+          node, "Dangling reference to '$node', parent is: '${node.parent}'");
+    }
+  }
+
+  @override
   visitTypeParameterType(TypeParameterType node) {
     var parameter = node.parameter;
-    if (!typeParameters.contains(parameter)) {
+    if (!typeParametersInScope.contains(parameter)) {
       problem(
           currentParent,
           "Type parameter '$parameter' referenced out of"
@@ -471,6 +563,19 @@ class VerifyingVisitor extends RecursiveVisitor {
           "Type $node provides ${node.typeArguments.length}"
           " type arguments but the class declares"
           " ${node.classNode.typeParameters.length} parameters.");
+    }
+  }
+
+  @override
+  visitTypedefType(TypedefType node) {
+    checkTypedef(node.typedefNode);
+    node.visitChildren(this);
+    if (node.typeArguments.length != node.typedefNode.typeParameters.length) {
+      problem(
+          currentParent,
+          "The typedef type $node provides ${node.typeArguments.length}"
+          " type arguments but the typedef declares"
+          " ${node.typedefNode.typeParameters.length} parameters.");
     }
   }
 }

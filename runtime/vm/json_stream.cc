@@ -23,6 +23,28 @@ namespace dart {
 
 #ifndef PRODUCT
 
+class MaybeOnStackBuffer {
+ public:
+  explicit MaybeOnStackBuffer(intptr_t size) {
+    if (size > kOnStackBufferCapacity) {
+      p_ = reinterpret_cast<char*>(malloc(size));
+    } else {
+      p_ = &buffer_[0];
+    }
+  }
+  ~MaybeOnStackBuffer() {
+    if (p_ != &buffer_[0]) free(p_);
+  }
+
+  char* p() { return p_; }
+
+ private:
+  static const intptr_t kOnStackBufferCapacity = 4096;
+  char* p_;
+  char buffer_[kOnStackBufferCapacity];
+};
+
+
 void AppendJSONStreamConsumer(Dart_StreamConsumer_State state,
                               const char* stream_name,
                               const uint8_t* buffer,
@@ -496,15 +518,15 @@ void JSONStream::PrintfValue(const char* format, ...) {
   va_start(args, format);
   intptr_t len = OS::VSNPrint(NULL, 0, format, args);
   va_end(args);
-  char* p = reinterpret_cast<char*>(malloc(len + 1));
+  MaybeOnStackBuffer mosb(len + 1);
+  char* p = mosb.p();
   va_start(args, format);
   intptr_t len2 = OS::VSNPrint(p, len + 1, format, args);
   va_end(args);
   ASSERT(len == len2);
   buffer_.AddChar('"');
-  AddEscapedUTF8String(p);
+  AddEscapedUTF8String(p, len);
   buffer_.AddChar('"');
-  free(p);
 }
 
 
@@ -559,12 +581,6 @@ void JSONStream::PrintValue(ThreadRegistry* reg) {
 void JSONStream::PrintValue(Thread* thread) {
   PrintCommaIfNeeded();
   thread->PrintJSON(this);
-}
-
-
-void JSONStream::PrintValue(Zone* zone) {
-  PrintCommaIfNeeded();
-  zone->PrintJSON(this);
 }
 
 
@@ -703,12 +719,6 @@ void JSONStream::PrintProperty(const char* name, Thread* thread) {
 }
 
 
-void JSONStream::PrintProperty(const char* name, Zone* zone) {
-  PrintPropertyName(name);
-  PrintValue(zone);
-}
-
-
 void JSONStream::PrintProperty(const char* name,
                                const TimelineEvent* timeline_event) {
   PrintPropertyName(name);
@@ -729,15 +739,15 @@ void JSONStream::PrintfProperty(const char* name, const char* format, ...) {
   va_start(args, format);
   intptr_t len = OS::VSNPrint(NULL, 0, format, args);
   va_end(args);
-  char* p = reinterpret_cast<char*>(malloc(len + 1));
+  MaybeOnStackBuffer mosb(len + 1);
+  char* p = mosb.p();
   va_start(args, format);
   intptr_t len2 = OS::VSNPrint(p, len + 1, format, args);
   va_end(args);
   ASSERT(len == len2);
   buffer_.AddChar('"');
-  AddEscapedUTF8String(p);
+  AddEscapedUTF8String(p, len);
   buffer_.AddChar('"');
-  free(p);
 }
 
 
@@ -932,15 +942,15 @@ void JSONObject::AddFixedServiceId(const char* format, ...) const {
   va_start(args, format);
   intptr_t len = OS::VSNPrint(NULL, 0, format, args);
   va_end(args);
-  char* p = reinterpret_cast<char*>(malloc(len + 1));
+  MaybeOnStackBuffer mosb(len + 1);
+  char* p = mosb.p();
   va_start(args, format);
   intptr_t len2 = OS::VSNPrint(p, len + 1, format, args);
   va_end(args);
   ASSERT(len == len2);
   stream_->buffer_.AddChar('"');
-  stream_->AddEscapedUTF8String(p);
+  stream_->AddEscapedUTF8String(p, len);
   stream_->buffer_.AddChar('"');
-  free(p);
 }
 
 
@@ -1006,15 +1016,15 @@ void JSONObject::AddPropertyF(const char* name, const char* format, ...) const {
   va_start(args, format);
   intptr_t len = OS::VSNPrint(NULL, 0, format, args);
   va_end(args);
-  char* p = reinterpret_cast<char*>(malloc(len + 1));
+  MaybeOnStackBuffer mosb(len + 1);
+  char* p = mosb.p();
   va_start(args, format);
   intptr_t len2 = OS::VSNPrint(p, len + 1, format, args);
   va_end(args);
   ASSERT(len == len2);
   stream_->buffer_.AddChar('"');
-  stream_->AddEscapedUTF8String(p);
+  stream_->AddEscapedUTF8String(p, len);
   stream_->buffer_.AddChar('"');
-  free(p);
 }
 
 
@@ -1024,15 +1034,15 @@ void JSONArray::AddValueF(const char* format, ...) const {
   va_start(args, format);
   intptr_t len = OS::VSNPrint(NULL, 0, format, args);
   va_end(args);
-  char* p = reinterpret_cast<char*>(malloc(len + 1));
+  MaybeOnStackBuffer mosb(len + 1);
+  char* p = mosb.p();
   va_start(args, format);
   intptr_t len2 = OS::VSNPrint(p, len + 1, format, args);
   va_end(args);
   ASSERT(len == len2);
   stream_->buffer_.AddChar('"');
-  stream_->AddEscapedUTF8String(p);
+  stream_->AddEscapedUTF8String(p, len);
   stream_->buffer_.AddChar('"');
-  free(p);
 }
 
 #endif  // !PRODUCT

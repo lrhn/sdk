@@ -5,7 +5,7 @@
 import "package:expect/expect.dart";
 import 'package:front_end/src/fasta/scanner.dart';
 import 'package:front_end/src/fasta/scanner/characters.dart';
-import 'package:front_end/src/fasta/scanner/precedence.dart';
+import 'package:front_end/src/scanner/token.dart' show TokenType;
 import 'dart:typed_data';
 
 Token scan(List<int> bytes) {
@@ -74,7 +74,7 @@ main() {
     0xc3,
     0xb1
   ]);
-  Expect.stringEquals("'Îñţérñåţîöñåļîžåţîờñ'", token.value);
+  Expect.stringEquals("'Îñţérñåţîöñåļîžåţîờñ'", token.lexeme);
 
   // Blueberry porridge in Danish: "blåbærgrød".
   token = scanUTF8([
@@ -92,7 +92,7 @@ main() {
     0xb8,
     0x64
   ]);
-  Expect.stringEquals("'blåbærgrød'", token.value);
+  Expect.stringEquals("'blåbærgrød'", token.lexeme);
 
   // "சிவா அணாமாைல", that is "Siva Annamalai" in Tamil.
   token = scanUTF8([
@@ -131,7 +131,7 @@ main() {
     0xae,
     0xb2
   ]);
-  Expect.stringEquals("'சிவா அணாமாைல'", token.value);
+  Expect.stringEquals("'சிவா அணாமாைல'", token.lexeme);
 
   // "िसवा अणामालै", that is "Siva Annamalai" in Devanagari.
   token = scanUTF8([
@@ -170,13 +170,13 @@ main() {
     0xa5,
     0x88
   ]);
-  Expect.stringEquals("'िसवा अणामालै'", token.value);
+  Expect.stringEquals("'िसवा अणामालै'", token.lexeme);
 
   if (!isRunningOnJavaScript()) {
     // DESERET CAPITAL LETTER BEE, unicode 0x10412(0xD801+0xDC12)
     // UTF-8: F0 90 90 92
     token = scanUTF8([0xf0, 0x90, 0x90, 0x92]);
-    Expect.stringEquals("'𐐒'", token.value);
+    Expect.stringEquals("'𐐒'", token.lexeme);
   } else {
     print('Skipping non-BMP character test');
   }
@@ -184,7 +184,7 @@ main() {
   // Regression test for issue 1761.
   // "#!"
   token = scan([0x23, 0x21]);
-  Expect.equals(token.info, EOF_INFO); // Treated as a comment.
+  Expect.equals(token.type, TokenType.SCRIPT_TAG); // Treated as a comment.
 
   // Regression test for issue 1761.
   // "#! Hello, World!"
@@ -206,5 +206,5 @@ main() {
     0x64,
     0x21
   ]);
-  Expect.equals(token.info, EOF_INFO); // Treated as a comment.
+  Expect.equals(token.type, TokenType.SCRIPT_TAG); // Treated as a comment.
 }

@@ -2,12 +2,12 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-library test.analysis.notification.analyzedDirectories;
-
 import 'dart:async';
 
-import 'package:analysis_server/plugin/protocol/protocol.dart';
-import 'package:analysis_server/src/constants.dart';
+import 'package:analysis_server/protocol/protocol.dart';
+import 'package:analysis_server/protocol/protocol_constants.dart';
+import 'package:analysis_server/protocol/protocol_generated.dart';
+import 'package:analyzer/file_system/file_system.dart';
 import 'package:test/test.dart';
 import 'package:test_reflective_loader/test_reflective_loader.dart';
 
@@ -17,7 +17,6 @@ import '../mocks.dart';
 main() {
   defineReflectiveSuite(() {
     defineReflectiveTests(AnalysisNotificationAnalyzedFilesTest);
-    defineReflectiveTests(AnalysisNotificationAnalyzedFilesTest_Driver);
   });
 }
 
@@ -31,13 +30,18 @@ class AnalysisNotificationAnalyzedFilesTest extends AbstractAnalysisTest {
     expect(analyzedFiles, contains(filePath));
   }
 
+  void assertHasNoFile(String filePath) {
+    expect(analyzedFilesReceived, isTrue);
+    expect(analyzedFiles, isNot(contains(filePath)));
+  }
+
   Future<Null> prepareAnalyzedFiles() async {
     addGeneralAnalysisSubscription(GeneralAnalysisService.ANALYZED_FILES);
     await pumpEventQueue();
   }
 
   void processNotification(Notification notification) {
-    if (notification.event == ANALYSIS_ANALYZED_FILES) {
+    if (notification.event == ANALYSIS_NOTIFICATION_ANALYZED_FILES) {
       AnalysisAnalyzedFilesParams params =
           new AnalysisAnalyzedFilesParams.fromNotification(notification);
       analyzedFilesReceived = true;
@@ -46,6 +50,7 @@ class AnalysisNotificationAnalyzedFilesTest extends AbstractAnalysisTest {
   }
 
   void setUp() {
+    generateSummaryFiles = true;
     super.setUp();
     createProject();
   }
@@ -65,6 +70,19 @@ class A {}
 ''');
     await prepareAnalyzedFiles();
     assertHasFile(testFile);
+  }
+
+  test_beforeAnalysis_excludeYamlFiles() async {
+    File yamlFile = resourceProvider
+        .getFolder(projectPath)
+        .getChildAssumingFile('sample.yaml');
+    yamlFile.writeAsStringSync('');
+    addTestFile('''
+class A {}
+''');
+    await prepareAnalyzedFiles();
+    assertHasFile(testFile);
+    assertHasNoFile(yamlFile.path);
   }
 
   test_insignificant_change() async {
@@ -111,16 +129,5 @@ class A {}
 
   void unsubscribeAnalyzedFiles() {
     removeGeneralAnalysisSubscription(GeneralAnalysisService.ANALYZED_FILES);
-  }
-}
-
-@reflectiveTest
-class AnalysisNotificationAnalyzedFilesTest_Driver
-    extends AnalysisNotificationAnalyzedFilesTest {
-  @override
-  void setUp() {
-    enableNewAnalysisDriver = true;
-    generateSummaryFiles = true;
-    super.setUp();
   }
 }

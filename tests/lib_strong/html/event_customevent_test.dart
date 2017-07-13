@@ -28,8 +28,8 @@ main() {
       expect(ev.detail, {'type': 'detail'});
     });
 
-    var ev = new CustomEvent('foo', canBubble: false, cancelable: false,
-        detail: {'type': 'detail'});
+    var ev = new CustomEvent('foo',
+        canBubble: false, cancelable: false, detail: {'type': 'detail'});
     el.dispatchEvent(ev);
     expect(fired, isTrue);
   });
@@ -44,7 +44,7 @@ main() {
     var fired = false;
     window.on['js_custom_event'].listen((ev) {
       fired = true;
-      expect(ev.detail, {'type': 'detail'});
+      expect((ev as CustomEvent).detail, {'type': 'detail'});
     });
 
     var script = new ScriptElement();
